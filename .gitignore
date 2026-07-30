@@ -1,0 +1,22 @@
+# Build output
+build/
+build-*/
+cmake-build-*/
+
+# The CEF binary distribution is ~350 MB and is downloaded by CMake on demand.
+# Only the vendored OMT header is kept in the tree.
+third_party/cef/
+
+# Verification tool, built by hand — see docs/02-building.md
+ndi_probe
+ndi_probe.dSYM/
+
+# macOS
+.DS_Store
+*.dSYM/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+compile_commands.json

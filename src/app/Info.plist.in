@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>WebLinked</string>
+  <key>CFBundleExecutable</key>
+  <string>WebLinked</string>
+  <key>CFBundleIdentifier</key>
+  <string>works.stoat.weblinked</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>WebLinked</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@WEBLINKED_VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@WEBLINKED_VERSION@</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>12.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <!-- The renderer is offscreen and the output is a video signal, so the app
+       must keep working with no window focused and the display asleep. -->
+  <key>LSUIElement</key>
+  <false/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+  <!-- Pages are frequently served over plain HTTP from a local machine on a
+       show network with no certificate. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <true/>
+  </dict>
+  <!-- Both are needed for a page that uses getUserMedia; macOS kills the
+       process outright if it asks without a usage description. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>WebLinked can render pages that capture audio.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>WebLinked can render pages that capture video.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>WebLinked sends video over NDI and OMT and accepts control on your local network.</string>
+</dict>
+</plist>

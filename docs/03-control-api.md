@@ -1,0 +1,169 @@
+# Control API
+
+Two protocols, the same verbs. HTTP is for the control page and for scripting;
+OSC is for a Companion button or a show-control cue. Neither is a superset of the
+other in practice, and a graphic that can only be changed by someone with a
+browser open is no use in a running show.
+
+## Security
+
+The HTTP server binds to `127.0.0.1:7654` with **no authentication by default**.
+
+If you bind it to a network interface (`--bind 0.0.0.0`), set `--token`. Anyone
+who can reach the port can change what is on air. There is no TLS: put it behind
+a reverse proxy or keep it on a trusted show network.
+
+With a token set, every request must carry `?token=<secret>` or
+`Authorization: Bearer <secret>`.
+
+OSC has no authentication at all — that is the protocol, not a choice made here.
+It listens on `0.0.0.0:7655` by default; `--no-osc` disables it.
+
+---
+
+## HTTP
+
+Base: `http://127.0.0.1:7654`
+
+### GET `/`
+
+The control page. The operator window loads this same URL, so a browser on the
+same network is a remote panel.
+
+### GET `/api/state`
+
+Everything, as one JSON object. The shape:
+
+```json
+{
+  "version": "0.1.0",
+  "running": true,
+  "format": "1920x1080p50",
+  "format_detail": { "width": 1920, "height": 1080,
+                     "rate_numerator": 50, "rate_denominator": 1,
+                     "interlaced": false },
+  "outputs": [
+    { "kind": "ndi", "name": "Graphic", "running": true, "enabled": true,
+      "pixel_format": "UYVY", "frames": 10464, "audio_frames": 10460,
+      "receivers": 1, "library": "/Library/NDI SDK for Apple/lib/macOS/libndi.dylib",
+      "sdk_version": "NDI SDK APPLE ... 6.3.2.0" }
+  ],
+  "compiled_backends": ["preview", "ndi", "omt", "decklink"],
+  "source": { "url": "...", "loaded_url": "...", "loading": false,
+              "paints": 10440, "audio_packets": 20880, "console_errors": 0,
+              "audio_muted": false, "pacing": "external" },
+  "pacing": { "ticks": 10463, "repeated_frames": 23, "dropped_ticks": 0,
+              "frames_published": 10440, "last_lateness_us": 3566 },
+  "audio": { "channels": 2, "sample_rate": 48000, "buffered_frames": 480,
+             "underruns": 0, "overruns": 0 }
+}
+```
+
+Object key order is stable, so two responses can be diffed by eye mid-show.
+
+**The numbers worth watching:**
+
+| Field | Means |
+|---|---|
+| `pacing.dropped_ticks` | The clock fell more than a frame behind. Should stay 0. |
+| `pacing.repeated_frames` | Ticks that reused the previous paint. High is normal for a static graphic; rising on an animated one means the page is too slow. |
+| `pacing.last_lateness_us` | How late the last tick fired. A few ms is scheduler noise. |
+| `audio.underruns` | The page did not supply enough audio. A few at startup are normal. |
+| `outputs[].buffered_frames` | DeckLink only. **Steady = our clock and the card's agree.** Drifting either way ends in a glitch. |
+| `outputs[].buffer_level` | The AJA equivalent. |
+| `outputs[].receivers` | How many receivers are connected (NDI/OMT). |
+
+### GET `/api/preview`
+
+The latest frame, downscaled, as raw **BGRA** bytes. Dimensions travel in
+headers so the body is a bare pixel buffer:
+
+```
+X-Frame-Width: 480
+X-Frame-Height: 270
+X-Frame-Sequence: 10440
+```
+
+No JPEG encoder and no WebSocket — the page polls this a few times a second and
+blits it into a canvas. 404 if no preview output is configured (`--no-preview`),
+503 before the first frame.
+
+### GET `/api/diagnostics`
+
+Writes a diagnostics bundle and returns its path. Deliberately a GET: *"open this
+link and send me the file it names"* is one instruction, and works from a phone.
+
+```json
+{ "bundle": "~/Library/Logs/WebLinked/WebLinked-diagnostics-20260730-131440.json",
+  "log": "~/Library/Logs/WebLinked/WebLinked.log" }
+```
+
+### POST endpoints
+
+All take a JSON body and return `{"ok":true}` or `{"error":"..."}`.
+
+| Endpoint | Body | Notes |
+|---|---|---|
+| `/api/url` | `{"url": "https://..."}` | Navigates |
+| `/api/reload` | `{"ignore_cache": true}` | `ignore_cache` bypasses the HTTP cache — what you want after a designer re-uploads a graphic |
+| `/api/script` | `{"script": "showLowerThird('Anna')"}` | Runs JavaScript in the page |
+| `/api/mute` | `{"muted": true}` | Mutes at the source |
+| `/api/format` | `{"format": "1080p50"}` | Restarts every output |
+| `/api/output` | `{"name": "Graphic", "enabled": false}` | Disabling stops the device and frees it for another application |
+| `/api/output/add` | `{"kind":"ndi","name":"Second","options":{"alpha":true}}` | |
+| `/api/output/remove` | `{"name": "Second"}` | |
+
+Status codes: 400 for a body that cannot be parsed or a format that cannot be
+understood, 401 for a bad token, 404 for an unknown output or endpoint, 409 when
+the request was valid but the device refused — for example a format the card does
+not support. A 409 from `/api/format` means the format *did* change but an output
+could not reopen at it; check `outputs[].error` in `/api/state`.
+
+Formats accept broadcast shorthand (`1080p50`, `720p59.94`, `1080i25`,
+`2160p30`) or an explicit raster (`1920x1080p50`, `3840x600p60`). Odd widths are
+rejected — 4:2:2 needs pixel pairs, and silently dropping a column would be
+worse than refusing.
+
+---
+
+## OSC
+
+Default `0.0.0.0:7655`. Address prefix `/weblinked` (fixed at
+`ControlApi::Config::oscPrefix`, so several instances can share a network).
+
+| Address | Arguments | Notes |
+|---|---|---|
+| `/weblinked/url` | `s` | Navigate |
+| `/weblinked/reload` | none or `i` | No argument = plain reload; `1` = bypass cache |
+| `/weblinked/script` | `s` | Run JavaScript |
+| `/weblinked/mute` | `i` | Non-zero mutes |
+| `/weblinked/format` | `s` | e.g. `1080p50` |
+| `/weblinked/output/<name>` | `i` | `1` starts, `0` stops |
+
+Implements what a control surface actually sends: address pattern, type tag
+string, `i`/`f`/`s`/`T`/`F` arguments, and `#bundle` unwrapping. Bundle timetags
+are ignored and contents dispatched immediately — a desk that wanted them later
+would not have sent them now. No wildcard pattern matching.
+
+`/weblinked/script` is the one that repays attention. A graphic that already
+defines its own functions can be driven from a Companion button with no
+integration work:
+
+```
+/weblinked/script  "setScore('home', 3)"
+/weblinked/script  "document.querySelector('#lower-third').classList.add('in')"
+```
+
+### Companion
+
+Use the generic OSC module. Host = the WebLinked machine, port 7655.
+
+A useful pair of buttons for a lower-third:
+
+```
+Button 1:  /weblinked/script  s  "lowerThird.show('Anna Kowalski','Head of Sound')"
+Button 2:  /weblinked/script  s  "lowerThird.hide()"
+```
+
+There is no feedback path — WebLinked does not send OSC back. Poll `/api/state`
+over HTTP for tally-style feedback.

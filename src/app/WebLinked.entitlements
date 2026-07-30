@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Only used for a real Developer ID signing run; ad-hoc builds are signed
+       without hardened runtime. See cmake/SignMacBundle.cmake for why.
+
+       Library validation must be disabled because the app loads the Chromium
+       Embedded Framework, and libndi/libomt, at run time. Every Chromium-based
+       application ships this same exemption. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+
+  <!-- Chromium's renderer allocates executable pages for V8. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+
+  <!-- A page may capture audio or video; without these the OS denies it. -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+  <key>com.apple.security.device.camera</key>
+  <true/>
+
+  <!-- NDI and OMT discovery are multicast on the local network. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <key>com.apple.security.network.server</key>
+  <true/>
+</dict>
+</plist>

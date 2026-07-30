@@ -1,0 +1,25 @@
+<!doctype html><meta charset="utf-8"><title>WebLinked test</title>
+<style>
+ html,body{margin:0;height:100%;overflow:hidden;background:#101418;
+   font:600 40px/1 -apple-system,Helvetica,sans-serif;color:#fff}
+ .bars{display:flex;height:55%}
+ .bars div{flex:1}
+ .info{padding:36px}
+ #t{font-size:96px;font-variant-numeric:tabular-nums;color:#4da3ff}
+ .box{position:absolute;width:120px;height:120px;background:#35c46a;top:60%;
+   animation:move 2s linear infinite alternate}
+ @keyframes move{from{left:0}to{left:calc(100% - 120px)}}
+</style>
+<div class="bars">
+ <div style="background:#c0c0c0"></div><div style="background:#c0c000"></div>
+ <div style="background:#00c0c0"></div><div style="background:#00c000"></div>
+ <div style="background:#c000c0"></div><div style="background:#c00000"></div>
+ <div style="background:#0000c0"></div><div style="background:#000"></div>
+</div>
+<div class="box"></div>
+<div class="info">WebLinked · frame <span id="t">0</span></div>
+<script>
+let n=0; const el=document.getElementById('t');
+function tick(){ el.textContent=String(++n).padStart(6,'0'); requestAnimationFrame(tick); }
+tick();
+</script>
