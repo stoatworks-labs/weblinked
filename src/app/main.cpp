@@ -76,6 +76,10 @@ Outputs (repeatable; without any, only the preview runs)
   --decklink[=index]       DeckLink device by index. Default: 0
   --aja[=index]            AJA device by index. Default: 0
   --alpha                  Applies to the next --ndi/--omt: send BGRA with alpha
+  --key[=mode]             Applies to the next --decklink/--aja: key + fill.
+                           external (default) puts fill and key on separate SDI
+                           connectors; internal composites over the card's input
+  --key-level <0-255>      Overall keyer opacity. Default: 255
   --no-preview             Do not run the preview output (the control page needs it)
 
 Control
@@ -103,6 +107,8 @@ std::string inlineValue(const std::string& argument) {
 
 bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
   bool nextAlpha = false;
+  std::string nextKeying;
+  int keyLevel = 255;
   bool wantPreview = true;
 
   for (int i = 1; i < argc; ++i) {
@@ -165,6 +171,22 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
     if (argument == "--verbose") { options.verbose = true; continue; }
     if (argument == "--no-preview") { wantPreview = false; continue; }
     if (argument == "--alpha") { nextAlpha = true; continue; }
+    if (argument.rfind("--key-level", 0) == 0) {
+      std::string text;
+      if (!needsValue(text)) return false;
+      keyLevel = std::atoi(text.c_str());
+      continue;
+    }
+    if (argument.rfind("--key", 0) == 0) {
+      const std::string mode = inlineValue(argument);
+      nextKeying = mode.empty() ? "external" : mode;
+      if (nextKeying != "external" && nextKeying != "internal") {
+        std::fprintf(stderr, "--key must be external or internal, not '%s'\n",
+                     nextKeying.c_str());
+        return false;
+      }
+      continue;
+    }
     if (argument == "--no-osc") { options.control.oscEnabled = false; continue; }
 
     if (argument.rfind("--ndi", 0) == 0 || argument.rfind("--omt", 0) == 0) {
@@ -188,6 +210,11 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
       const std::string index = inlineValue(argument);
       spec.deviceIndex = index.empty() ? 0 : std::atoi(index.c_str());
       spec.name = spec.kind + std::to_string(spec.deviceIndex);
+      if (!nextKeying.empty()) {
+        spec.options.set("keying", json::Value(nextKeying));
+        spec.options.set("key_level", json::Value(keyLevel));
+        nextKeying.clear();
+      }
       options.outputs.push_back(spec);
       continue;
     }

@@ -244,6 +244,70 @@ WEBLINKED_TEST(uyvy_writes_nothing_outside_the_declared_extent) {
   CHECK(dst[active - 1] != 0xCD);  // and it really did fill the last active byte
 }
 
+WEBLINKED_TEST(unpremultiply_recovers_the_original_colour) {
+  // Chromium composites premultiplied: 50%-opaque pure green arrives as
+  // (0,128,0,128), not (0,255,0,128). NDI, OMT and a DeckLink keyer all expect
+  // straight alpha, so sending Chromium's buffer unchanged makes every
+  // partially transparent pixel too dark — soft edges, shadows and fades render
+  // muddy. Measured over NDI before the fix: 50% green came out at Y=95 against
+  // a correct 173.
+  struct Case {
+    uint8_t b, g, r, a;        // premultiplied input
+    uint8_t wantB, wantG, wantR;  // straight output
+  };
+  const Case cases[] = {
+      {0, 128, 0, 128, 0, 255, 0},      // half-opaque green
+      {0, 0, 64, 64, 0, 0, 255},        // quarter-opaque red
+      {10, 20, 30, 255, 10, 20, 30},    // opaque passes through untouched
+      {0, 0, 0, 0, 0, 0, 0},            // fully transparent has no colour left
+      {64, 64, 64, 128, 128, 128, 128}, // mid grey
+  };
+
+  for (const auto& test : cases) {
+    uint8_t src[4] = {test.b, test.g, test.r, test.a};
+    uint8_t dst[4] = {};
+    unpremultiplyBgra(src, 4, dst, 4, 1, 1);
+    CHECK_EQ(static_cast<int>(dst[0]), static_cast<int>(test.wantB));
+    CHECK_EQ(static_cast<int>(dst[1]), static_cast<int>(test.wantG));
+    CHECK_EQ(static_cast<int>(dst[2]), static_cast<int>(test.wantR));
+    // Alpha itself must survive untouched, or the key is wrong.
+    CHECK_EQ(static_cast<int>(dst[3]), static_cast<int>(test.a));
+  }
+}
+
+WEBLINKED_TEST(unpremultiply_clamps_rather_than_wrapping) {
+  // A colour channel above its own alpha is not physically meaningful, but it
+  // does occur — rounding in the compositor, or a source that was never really
+  // premultiplied. Dividing it up must saturate, not wrap round to near zero,
+  // which would show as bright confetti on a key edge.
+  uint8_t src[4] = {200, 200, 200, 100};
+  uint8_t dst[4] = {};
+  unpremultiplyBgra(src, 4, dst, 4, 1, 1);
+  CHECK_EQ(static_cast<int>(dst[0]), 255);
+  CHECK_EQ(static_cast<int>(dst[1]), 255);
+  CHECK_EQ(static_cast<int>(dst[2]), 255);
+  CHECK_EQ(static_cast<int>(dst[3]), 100);
+}
+
+WEBLINKED_TEST(unpremultiply_stays_inside_its_destination) {
+  // Same guard-band contract as the UYVY converter.
+  const int width = 32, height = 4;
+  const int stride = width * 4;
+  const size_t active = static_cast<size_t>(stride) * height;
+  std::vector<uint8_t> src(active, 0x40);
+  std::vector<uint8_t> dst(active + 2048, 0xCD);
+
+  unpremultiplyBgra(src.data(), stride, dst.data(), stride, width, height);
+
+  for (size_t i = active; i < dst.size(); ++i) {
+    if (dst[i] != 0xCD) {
+      CHECK(false);
+      break;
+    }
+  }
+  CHECK(dst[active - 1] != 0xCD);
+}
+
 WEBLINKED_TEST(downscale_preserves_a_solid_colour) {
   const int width = 8, height = 8, stride = width * 4;
   std::vector<uint8_t> src(static_cast<size_t>(stride) * height);

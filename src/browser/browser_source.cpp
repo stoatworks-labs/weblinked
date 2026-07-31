@@ -156,6 +156,84 @@ void BrowserSource::requestFrame() {
   onUiThread([browser]() { browser->GetHost()->SendExternalBeginFrame(); });
 }
 
+void BrowserSource::sendInput(const InputEvent& event, int x, int y) {
+  auto browser = client_->browser();
+  if (browser == nullptr) {
+    return;
+  }
+
+  CefMouseEvent mouse;
+  mouse.x = x;
+  mouse.y = y;
+  mouse.modifiers = event.modifiers;
+
+  switch (event.type) {
+    case InputEvent::Type::kMove: {
+      const bool leaving = event.leaving;
+      onUiThread([browser, mouse, leaving]() {
+        browser->GetHost()->SendMouseMoveEvent(mouse, leaving);
+      });
+      break;
+    }
+    case InputEvent::Type::kButton: {
+      cef_mouse_button_type_t button = MBT_LEFT;
+      if (event.button == InputEvent::Button::kMiddle) {
+        button = MBT_MIDDLE;
+      } else if (event.button == InputEvent::Button::kRight) {
+        button = MBT_RIGHT;
+      }
+      const bool up = !event.down;
+      const int clicks = event.clickCount;
+      onUiThread([browser, mouse, button, up, clicks]() {
+        browser->GetHost()->SendMouseClickEvent(mouse, button, up, clicks);
+      });
+      break;
+    }
+    case InputEvent::Type::kWheel: {
+      const int dx = event.deltaX;
+      const int dy = event.deltaY;
+      onUiThread([browser, mouse, dx, dy]() {
+        browser->GetHost()->SendMouseWheelEvent(mouse, dx, dy);
+      });
+      break;
+    }
+    case InputEvent::Type::kKey: {
+      CefKeyEvent key;
+      switch (event.keyAction) {
+        case InputEvent::KeyAction::kKeyDown: key.type = KEYEVENT_KEYDOWN; break;
+        case InputEvent::KeyAction::kKeyUp:   key.type = KEYEVENT_KEYUP;   break;
+        case InputEvent::KeyAction::kChar:    key.type = KEYEVENT_CHAR;    break;
+        case InputEvent::KeyAction::kRawKeyDown:
+        default:                              key.type = KEYEVENT_RAWKEYDOWN; break;
+      }
+      key.modifiers = event.modifiers;
+      key.windows_key_code = event.keyCode;
+      // Chromium tolerates a zero native code on this path; supplying a wrong
+      // platform scancode would be worse than supplying none.
+      key.native_key_code = 0;
+      key.is_system_key = 0;
+      key.character = static_cast<char16_t>(event.character);
+      key.unmodified_character = static_cast<char16_t>(event.character);
+      key.focus_on_editable_field = 0;
+      onUiThread([browser, key]() { browser->GetHost()->SendKeyEvent(key); });
+      break;
+    }
+    case InputEvent::Type::kFocus: {
+      const bool focused = event.focused;
+      onUiThread([browser, focused]() { browser->GetHost()->SetFocus(focused); });
+      break;
+    }
+  }
+}
+
+void BrowserSource::setFocused(bool focused) {
+  auto browser = client_->browser();
+  if (browser == nullptr) {
+    return;
+  }
+  onUiThread([browser, focused]() { browser->GetHost()->SetFocus(focused); });
+}
+
 void BrowserSource::setAudioMuted(bool muted) {
   auto browser = client_->browser();
   if (browser == nullptr) {

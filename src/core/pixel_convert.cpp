@@ -1,6 +1,7 @@
 #include "core/pixel_convert.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 
 namespace weblinked {
@@ -109,6 +110,50 @@ void copyBgra(const uint8_t* src, int srcStride,
     const int srcY = flipVertically ? (height - 1 - y) : y;
     std::memcpy(dst + static_cast<size_t>(y) * dstStride,
                 src + static_cast<size_t>(srcY) * srcStride, rowBytes);
+  }
+}
+
+void unpremultiplyBgra(const uint8_t* src, int srcStride,
+                       uint8_t* dst, int dstStride,
+                       int width, int height) {
+  // A 256-entry reciprocal table: for each alpha, the 16.16 multiplier that
+  // divides by it. Cheaper than a divide per channel per pixel, and exact
+  // enough that the round trip is stable.
+  static const auto kReciprocal = [] {
+    std::array<uint32_t, 256> table{};
+    table[0] = 0;
+    for (int a = 1; a < 256; ++a) {
+      table[static_cast<size_t>(a)] =
+          static_cast<uint32_t>((255U * 65536U + a / 2) / static_cast<uint32_t>(a));
+    }
+    return table;
+  }();
+
+  for (int y = 0; y < height; ++y) {
+    const uint8_t* srcRow = src + static_cast<size_t>(y) * srcStride;
+    uint8_t* dstRow = dst + static_cast<size_t>(y) * dstStride;
+    for (int x = 0; x < width; ++x) {
+      const uint8_t alpha = srcRow[3];
+      if (alpha == 255) {
+        dstRow[0] = srcRow[0];
+        dstRow[1] = srcRow[1];
+        dstRow[2] = srcRow[2];
+      } else if (alpha == 0) {
+        // Nothing to recover: the colour was multiplied away.
+        dstRow[0] = 0;
+        dstRow[1] = 0;
+        dstRow[2] = 0;
+      } else {
+        const uint32_t scale = kReciprocal[alpha];
+        for (int c = 0; c < 3; ++c) {
+          const uint32_t value = (srcRow[c] * scale + (1U << 15)) >> 16;
+          dstRow[c] = static_cast<uint8_t>(std::min<uint32_t>(value, 255));
+        }
+      }
+      dstRow[3] = alpha;
+      srcRow += 4;
+      dstRow += 4;
+    }
   }
 }
 

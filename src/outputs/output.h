@@ -64,6 +64,14 @@ class IOutput {
   /// preparing it when nothing wants it.
   virtual bool wantsAudio() const { return true; }
 
+  /// True when this output carries the alpha channel and expects it *straight*
+  /// (unassociated), which NDI, OMT and a DeckLink keyer all do.
+  ///
+  /// Chromium paints premultiplied, so the engine has to undo that — but only
+  /// for outputs that actually key. An opaque output would be paying for a
+  /// conversion whose result it then throws away.
+  virtual bool wantsStraightAlpha() const { return false; }
+
   /// Opens the device or sender. On failure returns false and fills `error`
   /// with something an operator can act on.
   virtual bool start(const VideoFormat& format, std::string& error) = 0;

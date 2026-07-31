@@ -1,5 +1,7 @@
 #include "control/control_api.h"
 
+#include <algorithm>
+
 #include "control/web_assets.h"
 #include "core/json.h"
 #include "diag/diag.h"
@@ -27,6 +29,66 @@ bool parseBody(const HttpServer::Request& request, json::Value& out,
 }
 
 void ok(HttpServer::Response& response) { response.json("{\"ok\":true}"); }
+
+/// Builds an InputEvent from the control page's JSON.
+///
+/// Positions arrive normalised (0..1) because only the page knows how big its
+/// preview canvas is; the engine scales them to the current raster.
+bool parseInputEvent(const json::Value& value, InputEvent& out,
+                     HttpServer::Response& response) {
+  const std::string type = value["type"].asString();
+
+  out.nx = value["nx"].asDouble(0.0);
+  out.ny = value["ny"].asDouble(0.0);
+  out.modifiers = static_cast<uint32_t>(value["modifiers"].asInt64(0));
+
+  if (type == "move") {
+    out.type = InputEvent::Type::kMove;
+    out.leaving = value["leaving"].asBool(false);
+    return true;
+  }
+  if (type == "down" || type == "up") {
+    out.type = InputEvent::Type::kButton;
+    out.down = type == "down";
+    const int button = value["button"].asInt(0);
+    out.button = button == 1   ? InputEvent::Button::kMiddle
+                 : button == 2 ? InputEvent::Button::kRight
+                               : InputEvent::Button::kLeft;
+    // Chromium uses the click count to distinguish single from double clicks;
+    // clamped because a page that receives clickCount 900 behaves oddly.
+    out.clickCount = std::clamp(value["clicks"].asInt(1), 1, 3);
+    return true;
+  }
+  if (type == "wheel") {
+    out.type = InputEvent::Type::kWheel;
+    out.deltaX = value["dx"].asInt(0);
+    out.deltaY = value["dy"].asInt(0);
+    return true;
+  }
+  if (type == "key") {
+    out.type = InputEvent::Type::kKey;
+    const std::string action = value["action"].asString("down");
+    if (action == "up") {
+      out.keyAction = InputEvent::KeyAction::kKeyUp;
+    } else if (action == "char") {
+      out.keyAction = InputEvent::KeyAction::kChar;
+    } else {
+      out.keyAction = InputEvent::KeyAction::kRawKeyDown;
+    }
+    out.keyCode = value["key_code"].asInt(0);
+    out.character = value["character"].asInt(0);
+    return true;
+  }
+  if (type == "focus") {
+    out.type = InputEvent::Type::kFocus;
+    out.focused = value["focused"].asBool(true);
+    return true;
+  }
+
+  response.error(400, "unknown input event type '" + type +
+                          "' — expected move, down, up, wheel, key or focus");
+  return false;
+}
 
 }  // namespace
 
@@ -166,6 +228,32 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
 
   if (path == "/api/mute") {
     engine_->setAudioMuted(body["muted"].asBool(true));
+    ok(response);
+    return;
+  }
+
+  if (path == "/api/input") {
+    // Accepts one event or a batch. A batch matters for pointer moves: the
+    // control page coalesces them, so a drag is one request rather than sixty.
+    const json::Value& batch = body["events"];
+    if (batch.isArray()) {
+      for (size_t i = 0; i < batch.size(); ++i) {
+        InputEvent event;
+        if (parseInputEvent(batch.at(i), event, response)) {
+          engine_->sendInput(event);
+        } else {
+          return;
+        }
+      }
+      ok(response);
+      return;
+    }
+
+    InputEvent event;
+    if (!parseInputEvent(body, event, response)) {
+      return;
+    }
+    engine_->sendInput(event);
     ok(response);
     return;
   }

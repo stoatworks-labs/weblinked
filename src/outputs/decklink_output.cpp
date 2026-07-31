@@ -142,13 +142,47 @@ class CompletionCallback final : public IDeckLinkVideoOutputCallback {
   std::atomic<ULONG> refCount_{1};
 };
 
+/// What the card should do with the page's alpha channel.
+enum class Keying {
+  /// Ignore alpha; composite over black and send 4:2:2 YUV.
+  kOff,
+  /// Fill and key on two SDI connectors, for a downstream keyer or vision
+  /// mixer. This is what "key + fill" means on a broadcast card.
+  kExternal,
+  /// The card composites our frame over its own SDI *input* and sends the
+  /// result. No downstream keyer needed, but it costs an input.
+  kInternal,
+};
+
+Keying parseKeying(const std::string& text) {
+  if (text == "external" || text == "keyfill" || text == "key+fill") {
+    return Keying::kExternal;
+  }
+  if (text == "internal") {
+    return Keying::kInternal;
+  }
+  return Keying::kOff;
+}
+
+const char* keyingToString(Keying keying) {
+  switch (keying) {
+    case Keying::kExternal: return "external";
+    case Keying::kInternal: return "internal";
+    case Keying::kOff:      return "off";
+  }
+  return "off";
+}
+
 class DeckLinkOutput final : public IOutput {
  public:
   explicit DeckLinkOutput(const OutputSpec& spec)
       : IOutput(spec.name.empty() ? "decklink" : spec.name),
         deviceIndex_(spec.deviceIndex),
         prerollFrames_(std::max(2, spec.optionInt("preroll", 3))),
-        audioChannels_(spec.optionInt("audio_channels", 2)) {}
+        audioChannels_(spec.optionInt("audio_channels", 2)),
+        keying_(parseKeying(spec.optionString("keying", "off"))),
+        keyLevel_(static_cast<uint8_t>(
+            std::clamp(spec.optionInt("key_level", 255), 0, 255))) {}
 
   ~DeckLinkOutput() override { stop(); }
 
@@ -156,7 +190,19 @@ class DeckLinkOutput final : public IOutput {
 
   /// 8-bit YUV (UYVY on the wire) is the card's native SDI format; handing it
   /// BGRA would make the driver convert on the CPU behind our back.
-  PixelFormat pixelFormat() const override { return PixelFormat::kUYVY; }
+  ///
+  /// Keying is the exception, and it is not optional: 4:2:2 YUV has nowhere to
+  /// put an alpha channel, so a keyed output has to be fed 8-bit BGRA and let
+  /// the card derive fill and key from it.
+  PixelFormat pixelFormat() const override {
+    return keying_ == Keying::kOff ? PixelFormat::kUYVY : PixelFormat::kBGRA;
+  }
+
+  bool wantsStraightAlpha() const override { return keying_ != Keying::kOff; }
+
+  BMDPixelFormat cardPixelFormat() const {
+    return keying_ == Keying::kOff ? bmdFormat8BitYUV : bmdFormat8BitBGRA;
+  }
 
   bool start(const VideoFormat& format, std::string& error) override {
     stop();
@@ -167,6 +213,11 @@ class DeckLinkOutput final : public IOutput {
       return false;
     }
     if (!findDisplayMode(format, error)) {
+      stop();
+      return false;
+    }
+
+    if (!configureKeyer(error)) {
       stop();
       return false;
     }
@@ -236,6 +287,10 @@ class DeckLinkOutput final : public IOutput {
         videoEnabled_ = false;
       }
     }
+    if (keyer_ != nullptr) {
+      keyer_->Disable();
+    }
+    safeRelease(keyer_);
     safeRelease(callback_);
     safeRelease(output_);
     safeRelease(device_);
@@ -251,8 +306,8 @@ class DeckLinkOutput final : public IOutput {
 
     IDeckLinkMutableVideoFrame* frame = nullptr;
     if (output_->CreateVideoFrame(format_.width, format_.height,
-                                  format_.rowBytes(PixelFormat::kUYVY),
-                                  bmdFormat8BitYUV, bmdFrameFlagDefault,
+                                  format_.rowBytes(pixelFormat()),
+                                  cardPixelFormat(), bmdFrameFlagDefault,
                                   &frame) != S_OK ||
         frame == nullptr) {
       ++createFailures_;
@@ -296,6 +351,11 @@ class DeckLinkOutput final : public IOutput {
     value.set("frames_late", json::Value(counters_.late.load()));
     value.set("frames_dropped", json::Value(counters_.dropped.load()));
     value.set("create_failures", json::Value(createFailures_));
+    value.set("keying", json::Value(keyingToString(keying_)));
+    if (keying_ != Keying::kOff) {
+      value.set("key_level", json::Value(static_cast<int>(keyLevel_)));
+      value.set("keyer_active", json::Value(keyer_ != nullptr));
+    }
 
     if (output_ != nullptr) {
       uint32_t buffered = 0;
@@ -430,23 +490,76 @@ class DeckLinkOutput final : public IOutput {
     DeckLinkBool supported = false;
     BMDDisplayMode actualMode = displayMode_;
     if (output_->DoesSupportVideoMode(bmdVideoConnectionUnspecified, displayMode_,
-                                      bmdFormat8BitYUV,
+                                      cardPixelFormat(),
                                       bmdNoVideoOutputConversion,
                                       bmdSupportedVideoModeDefault, &actualMode,
                                       &supported) == S_OK &&
         !supported) {
       error = "'" + deviceName_ + "' reports " + format.toString() +
-              " as unsupported for 8-bit YUV output";
+              " as unsupported for " +
+              (keying_ == Keying::kOff ? "8-bit YUV" : "8-bit BGRA") + " output";
       return false;
     }
+    return true;
+  }
+
+  /// Turns the card's keyer on, having first checked it has one.
+  ///
+  /// Worth checking rather than just trying: keying is a hardware capability
+  /// that varies by model and, on some cards, by the active profile. Enable()
+  /// failing gives no reason, whereas the attribute flag lets us say which of
+  /// the two kinds this card lacks — the difference between "buy a different
+  /// card" and "switch to internal keying".
+  bool configureKeyer(std::string& error) {
+    if (keying_ == Keying::kOff) {
+      return true;
+    }
+
+    IDeckLinkProfileAttributes* attributes = nullptr;
+    if (device_->QueryInterface(IID_IDeckLinkProfileAttributes,
+                                reinterpret_cast<void**>(&attributes)) == S_OK &&
+        attributes != nullptr) {
+      const BMDDeckLinkAttributeID attribute =
+          keying_ == Keying::kExternal ? BMDDeckLinkSupportsExternalKeying
+                                       : BMDDeckLinkSupportsInternalKeying;
+      DeckLinkBool supported = false;
+      const bool queried = attributes->GetFlag(attribute, &supported) == S_OK;
+      attributes->Release();
+      if (queried && !supported) {
+        error = "'" + deviceName_ + "' does not support " +
+                std::string(keyingToString(keying_)) + " keying";
+        return false;
+      }
+    }
+
+    if (device_->QueryInterface(IID_IDeckLinkKeyer,
+                                reinterpret_cast<void**>(&keyer_)) != S_OK ||
+        keyer_ == nullptr) {
+      error = "'" + deviceName_ + "' has no keyer interface";
+      return false;
+    }
+
+    // Enable(true) is external — fill and key on separate connectors.
+    // Enable(false) is internal — composited over the card's own SDI input.
+    if (keyer_->Enable(keying_ == Keying::kExternal) != S_OK) {
+      error = "could not enable " + std::string(keyingToString(keying_)) +
+              " keying on '" + deviceName_ + "'";
+      safeRelease(keyer_);
+      return false;
+    }
+
+    // The keyer's overall opacity, independent of per-pixel alpha. 255 means
+    // the page's own alpha decides everything, which is what you want unless
+    // you are deliberately fading the whole graphic.
+    keyer_->SetLevel(keyLevel_);
     return true;
   }
 
   bool scheduleBlackFrame(std::string& error) {
     IDeckLinkMutableVideoFrame* frame = nullptr;
     if (output_->CreateVideoFrame(format_.width, format_.height,
-                                  format_.rowBytes(PixelFormat::kUYVY),
-                                  bmdFormat8BitYUV, bmdFrameFlagDefault,
+                                  format_.rowBytes(pixelFormat()),
+                                  cardPixelFormat(), bmdFrameFlagDefault,
                                   &frame) != S_OK ||
         frame == nullptr) {
       error = "CreateVideoFrame failed while pre-rolling";
@@ -454,8 +567,15 @@ class DeckLinkOutput final : public IOutput {
     }
     void* bytes = nullptr;
     if (frame->GetBytes(&bytes) == S_OK && bytes != nullptr) {
-      fillBlackUyvy(static_cast<uint8_t*>(bytes), frame->GetRowBytes(),
-                    format_.width, format_.height);
+      if (keying_ == Keying::kOff) {
+        fillBlackUyvy(static_cast<uint8_t*>(bytes), frame->GetRowBytes(),
+                      format_.width, format_.height);
+      } else {
+        // Pre-roll a *transparent* frame when keying: opaque black would punch
+        // a black hole in whatever is behind the key for the first few frames.
+        std::memset(bytes, 0,
+                    static_cast<size_t>(frame->GetRowBytes()) * format_.height);
+      }
     }
     scheduleFrame(frame);
     return true;
@@ -517,6 +637,7 @@ class DeckLinkOutput final : public IOutput {
 
   IDeckLink* device_ = nullptr;
   IDeckLinkOutput* output_ = nullptr;
+  IDeckLinkKeyer* keyer_ = nullptr;
   CompletionCallback* callback_ = nullptr;
   CompletionCallback::Counters counters_;
 
@@ -526,6 +647,8 @@ class DeckLinkOutput final : public IOutput {
   int deviceIndex_;
   int prerollFrames_;
   int audioChannels_;
+  Keying keying_;
+  uint8_t keyLevel_;
   bool videoEnabled_ = false;
   bool audioEnabled_ = false;
   bool playing_ = false;

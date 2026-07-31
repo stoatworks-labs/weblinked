@@ -45,6 +45,21 @@ void copyBgra(const uint8_t* src, int srcStride,
               int width, int height,
               bool flipVertically);
 
+/// Converts premultiplied BGRA to straight (unassociated) alpha, in place or
+/// between buffers.
+///
+/// Chromium composites with premultiplied alpha — a 50%-opaque pure green
+/// arrives as (0,128,0,128), not (0,255,0,128). NDI, OMT and a DeckLink keyer
+/// all expect straight alpha, so passing Chromium's buffer through unchanged
+/// makes every partially transparent pixel too dark: soft edges, drop shadows
+/// and fades render muddy, and the error is invisible on fully opaque graphics,
+/// which is why it survives casual testing.
+///
+/// Fully transparent pixels have no recoverable colour and are left at zero.
+void unpremultiplyBgra(const uint8_t* src, int srcStride,
+                       uint8_t* dst, int dstStride,
+                       int width, int height);
+
 /// Fills a BGRA buffer with opaque black. Used to pre-roll outputs before the
 /// first paint arrives, so a card is never handed uninitialised memory.
 void fillBlackBgra(uint8_t* dst, int stride, int width, int height);

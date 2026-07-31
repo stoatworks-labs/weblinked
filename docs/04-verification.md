@@ -16,7 +16,7 @@ CEF 150.0.17 / Chromium 150.0.7871.187.
 
 ```bash
 cmake --build build && ./build/tests/weblinked_tests
-# 46 tests, 24882 checks, 0 failures
+# 49 tests, 24902 checks, 0 failures
 ```
 
 The two that carry real weight:
@@ -148,7 +148,74 @@ This is not cosmetic. Killing an earlier build without a handler left a stale
 source advertised on the network, and the next run was undiscoverable for
 several minutes — which looked exactly like a broken sender.
 
-## 7. The operator window — verified
+## 7. Alpha over NDI — verified, and it found a bug
+
+Rendering a page with four vertical bands — opaque red, 50% green, 25% blue and
+nothing at all — at 1080p50 with `--alpha`, and measuring what a receiver got.
+
+The receiver negotiated **UYVA** (UYVY plus a full-resolution alpha plane) rather
+than BGRA under `recv_color_format_fastest`, which is worth knowing: an alpha
+check that only looks at BGRA silently reports nothing.
+
+Alpha itself was right first time:
+
+```
+x= 240  A=255      x= 720  A=128      x=1200  A= 64      x=1680  A=  0
+```
+
+The *colour* was not. The 50% green band came back at **Y=95** where straight
+alpha requires **173**:
+
+```
+before   x= 720  Y= 95   (premultiplied, sent as if straight)
+after    x= 720  Y=173   (expected 172.6)
+```
+
+Chromium composites with premultiplied alpha, and NDI, OMT and a DeckLink keyer
+all expect straight. Passing Chromium's buffer through unchanged makes every
+partially transparent pixel too dark — soft edges, drop shadows and fades render
+muddy — and the error is *invisible on fully opaque graphics*, which is exactly
+why it survives casual testing. `unpremultiplyBgra` now undoes it for outputs
+that key, and all four bands match the reference:
+
+```
+        measured    expected
+red     Y= 61 A=255  Y= 62.6 A=255
+green   Y=173 A=128  Y=172.6 A=128
+blue    Y= 31 A= 64  Y= 31.8 A= 64
+empty   Y= 16 A=  0  Y= 16.0 A=  0
+```
+
+`tests/test_pixel_convert.cpp` pins the conversion, including saturation rather
+than wraparound when a channel exceeds its own alpha.
+
+## 8. An interactive preview — verified
+
+Pointer and keyboard input forwarded to the offscreen page, measured by watching
+the *output*, not the API's return value.
+
+- **Clicking dismissed a cookie banner** on a test page: the button was hit and
+  the banner disappeared from the NDI output.
+- **Coordinates are exact.** The page reported the click at `211,165`; the
+  request sent `nx 0.11, ny 0.153` against a 1920x1080 raster, which is
+  `211.2, 165.2`.
+- **Scrolling** registered a wheel delta.
+- **Typing** put `WebLinked` into a real `<input>`, with case preserved and the
+  caret visible.
+
+Two things this turned up, both now in the API docs:
+
+- An offscreen browser has no focus until told, so keyboard input goes nowhere
+  until a `focus` event is sent.
+- The `character` has to be on the *keydown*, not just the char event. With only
+  a virtual-key code the page sees `e.key` as `"Unidentified"`, so a graphic
+  listening for a particular key never fires. The first typing attempt failed
+  for exactly this reason.
+
+**DeckLink key + fill is implemented but unverified**, like the rest of the
+DeckLink backend — see below.
+
+## 9. The operator window — verified
 
 The window opens, shows the control page, and its preview updates live. Verified
 by the window server reporting a top-level window owned by the process, and by
@@ -240,6 +307,14 @@ Unknowns worth expecting: whether the pre-roll depth is right in practice,
 whether the audio and video stream clocks stay aligned over hours, and how the
 buffer level behaves when the engine's software clock and the card's genlocked
 clock disagree. `buffered_frames` in `/api/state` is the number to watch.
+
+**DeckLink key + fill.** `--key` enables the card's keyer through
+`IDeckLinkKeyer`, switching the output to 8-bit BGRA so the alpha survives, and
+checks `BMDDeckLinkSupportsExternalKeying`/`SupportsInternalKeying` first so an
+unsupported card gets a clear message rather than a bare failure. Compiles
+against SDK 12.2, and the alpha it feeds the card is verified correct by the NDI
+measurement above — but no card has confirmed that fill and key actually appear
+on separate connectors.
 
 **AJA.** Compiles against libajantv2 18.1. AutoCirculate playout follows the
 SDK's documented sequence. No card connected. Also untested: whether

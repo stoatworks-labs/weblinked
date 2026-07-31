@@ -16,6 +16,7 @@
 #include "core/json.h"
 #include "core/pixel_convert.h"
 #include "core/video_format.h"
+#include "engine/input_event.h"
 #include "outputs/output.h"
 
 namespace weblinked {
@@ -67,6 +68,13 @@ class Engine {
   /// SDI device can change mode while running.
   bool setFormat(const VideoFormat& format, std::string& error);
 
+  /// Forwards a pointer or keyboard event to the page.
+  ///
+  /// Normalised coordinates are scaled to the current raster here, under the
+  /// same lock that guards a format change — so a click cannot be scaled against
+  /// a raster that has just been replaced.
+  void sendInput(const InputEvent& event);
+
   VideoFormat format() const;
 
   /// The whole state tree, as served by GET /api/state.
@@ -103,6 +111,10 @@ class Engine {
 
   /// Returns `source` converted into `target`, reusing per-format scratch frames.
   const VideoFrame* frameInFormat(const VideoFramePtr& source, PixelFormat target);
+
+  /// Returns `source` with its alpha un-premultiplied, for keyed outputs.
+  /// Null if the source is the wrong raster, exactly as frameInFormat.
+  const VideoFrame* unpremultiplied(const VideoFramePtr& source);
 
   struct Entry {
     OutputSpec spec;
@@ -150,7 +162,9 @@ class Engine {
   // thread while the clock thread is parked — see pauseMutex_ above.
   FramePoolPtr uyvyPool_;
   FramePoolPtr blackPool_;
+  FramePoolPtr straightPool_;
   VideoFramePtr uyvyScratch_;
+  VideoFramePtr straightScratch_;
   VideoFramePtr blackFrame_;
   std::vector<float> audioInterleaved_;
   std::vector<std::vector<float>> audioPlanes_;

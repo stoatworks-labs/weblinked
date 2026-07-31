@@ -278,6 +278,41 @@ int main(int argc, char** argv) {
                       fourcc, video.line_stride_in_bytes, video.xres * 2,
                       static_cast<double>(video.picture_aspect_ratio));
 
+          // UYVA is UYVY followed by a full-resolution 8-bit alpha plane. The
+          // NDI receiver picks it in preference to BGRA under
+          // recv_color_format_fastest, so an alpha check has to handle both or
+          // it silently reports nothing.
+          if (video.FourCC == NDIlib_FourCC_video_type_UYVA) {
+            const auto* px = static_cast<const uint8_t*>(video.p_data);
+            const size_t alphaPlane =
+                static_cast<size_t>(video.yres) * video.line_stride_in_bytes;
+            std::printf("\n  alpha across the raster (UYVA alpha plane):\n");
+            for (int i = 0; i < 4; ++i) {
+              const int x = video.xres / 8 + i * video.xres / 4;
+              const Ycbcr pixel = sampleUyvy(px, video.line_stride_in_bytes, x,
+                                             video.yres / 2);
+              // The alpha plane is one byte per pixel, its own stride being the
+              // raster width.
+              const size_t off = alphaPlane +
+                                 static_cast<size_t>(video.yres / 2) * video.xres +
+                                 static_cast<size_t>(x);
+              std::printf("    x=%4d  Y=%3d Cb=%3d Cr=%3d  A=%3d\n", x, pixel.y,
+                          pixel.cb, pixel.cr, px[off]);
+            }
+          } else if (video.FourCC == NDIlib_FourCC_video_type_BGRA ||
+                     video.FourCC == NDIlib_FourCC_video_type_BGRX) {
+            const auto* px = static_cast<const uint8_t*>(video.p_data);
+            std::printf("\n  alpha across the raster (BGRA byte 3):\n");
+            for (int i = 0; i < 4; ++i) {
+              const int x = video.xres / 8 + i * video.xres / 4;
+              const size_t off = static_cast<size_t>(video.yres / 2) *
+                                     video.line_stride_in_bytes +
+                                 static_cast<size_t>(x) * 4;
+              std::printf("    x=%4d  B=%3d G=%3d R=%3d  A=%3d\n", x, px[off],
+                          px[off + 1], px[off + 2], px[off + 3]);
+            }
+          }
+
           if (checkBars) {
             if (video.FourCC == NDIlib_FourCC_video_type_UYVY) {
               barFailures = checkColourBars(video);

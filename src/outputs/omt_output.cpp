@@ -160,6 +160,8 @@ class OmtOutput final : public IOutput {
     return alpha_ ? PixelFormat::kBGRA : PixelFormat::kUYVY;
   }
 
+  bool wantsStraightAlpha() const override { return alpha_; }
+
   bool start(const VideoFormat& format, std::string& error) override {
     stop();
 

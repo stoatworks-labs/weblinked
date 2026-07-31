@@ -112,6 +112,44 @@ All take a JSON body and return `{"ok":true}` or `{"error":"..."}`.
 | `/api/output` | `{"name": "Graphic", "enabled": false}` | Disabling stops the device and frees it for another application |
 | `/api/output/add` | `{"kind":"ndi","name":"Second","options":{"alpha":true}}` | |
 | `/api/output/remove` | `{"name": "Second"}` | |
+| `/api/input` | see below | Pointer and keyboard input to the page |
+
+### `/api/input`
+
+Makes the page interactive. Positions are **normalised** (0..1 across the
+raster), because the control page's preview is a downscaled canvas whose size
+nothing outside the browser knows; the engine scales to the current raster, so a
+format change mid-drag cannot send a click off the edge.
+
+```jsonc
+{"type": "move",  "nx": 0.5, "ny": 0.5}
+{"type": "down",  "nx": 0.5, "ny": 0.5, "button": 0, "clicks": 1}
+{"type": "up",    "nx": 0.5, "ny": 0.5, "button": 0}
+{"type": "wheel", "nx": 0.5, "ny": 0.5, "dx": 0, "dy": -240}
+{"type": "key",   "action": "down", "key_code": 87, "character": 87}
+{"type": "focus", "focused": true}
+```
+
+Batch several as `{"events": [ ... ]}` — the control page does this for pointer
+moves, so a drag is one request rather than sixty.
+
+`modifiers` is a bitmask of CEF event flags: shift `1<<1`, control `1<<2`,
+alt `1<<3`, command `1<<7`.
+
+Two things that are easy to get wrong:
+
+- **An offscreen browser has no focus until you give it some.** Send
+  `{"type":"focus","focused":true}` before any keyboard input or it goes nowhere.
+- **Typing needs three events per character**, and the `character` must be on the
+  keydown as well as the char event. With only a virtual-key code Chromium
+  cannot tell which key was pressed and the page sees `e.key` as
+  `"Unidentified"` — so a graphic listening for a specific key never fires:
+
+  ```jsonc
+  {"type":"key","action":"down","key_code":87,"character":87}
+  {"type":"key","action":"char","key_code":87,"character":87}
+  {"type":"key","action":"up",  "key_code":87,"character":87}
+  ```
 
 Status codes: 400 for a body that cannot be parsed or a format that cannot be
 understood, 401 for a bad token, 404 for an unknown output or endpoint, 409 when

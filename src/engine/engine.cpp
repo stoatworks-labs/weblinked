@@ -26,6 +26,7 @@ bool Engine::start(const Config& config, std::string& error) {
 
   uyvyPool_ = FramePool::create(config.format, PixelFormat::kUYVY, 4);
   blackPool_ = FramePool::create(config.format, PixelFormat::kBGRA, 2);
+  straightPool_ = FramePool::create(config.format, PixelFormat::kBGRA, 4);
   blackFrame_ = blackPool_->acquire();
   fillBlackBgra(blackFrame_->data(), blackFrame_->rowBytes(), config.format.width,
                 config.format.height);
@@ -148,6 +149,24 @@ const VideoFrame* Engine::frameInFormat(const VideoFramePtr& source,
   return source.get();
 }
 
+const VideoFrame* Engine::unpremultiplied(const VideoFramePtr& source) {
+  // Same guard as frameInFormat: the pool is sized for the current raster, and a
+  // frame still in flight from before a format change is the wrong shape.
+  if (!(straightPool_->format() == source->format())) {
+    return nullptr;
+  }
+  if (!straightScratch_ ||
+      !(straightScratch_->format() == source->format())) {
+    straightScratch_ = straightPool_->acquire();
+  }
+  unpremultiplyBgra(source->data(), source->rowBytes(), straightScratch_->data(),
+                    straightScratch_->rowBytes(), source->format().width,
+                    source->format().height);
+  straightScratch_->setSequence(source->sequence());
+  straightScratch_->setCaptureNanos(source->captureNanos());
+  return straightScratch_.get();
+}
+
 void Engine::pauseClock() {
   std::unique_lock<std::mutex> lock(pauseMutex_);
   pauseRequested_ = true;
@@ -261,27 +280,42 @@ void Engine::clockLoop() {
       continue;
     }
 
-    // Convert lazily: only formats an enabled output actually asked for.
+    // Convert lazily: only the formats an enabled output actually asked for,
+    // and each of them at most once however many outputs want it.
     bool needUyvy = false;
+    bool needStraight = false;
     for (const auto& entry : outputs_) {
-      if (entry.enabled && entry.output != nullptr && entry.output->isRunning() &&
-          entry.output->pixelFormat() == PixelFormat::kUYVY) {
+      if (!entry.enabled || entry.output == nullptr || !entry.output->isRunning()) {
+        continue;
+      }
+      if (entry.output->pixelFormat() == PixelFormat::kUYVY) {
         needUyvy = true;
-        break;
+      } else if (entry.output->wantsStraightAlpha()) {
+        needStraight = true;
       }
     }
+
     const VideoFrame* uyvy =
         needUyvy ? frameInFormat(frame, PixelFormat::kUYVY) : nullptr;
     if (needUyvy && uyvy == nullptr) {
       continue;  // conversion refused; see frameInFormat
     }
 
+    const VideoFrame* straight = needStraight ? unpremultiplied(frame) : nullptr;
+    if (needStraight && straight == nullptr) {
+      continue;
+    }
+
     for (auto& entry : outputs_) {
       if (!entry.enabled || entry.output == nullptr || !entry.output->isRunning()) {
         continue;
       }
-      const VideoFrame* payload =
-          entry.output->pixelFormat() == PixelFormat::kUYVY ? uyvy : frame.get();
+      const VideoFrame* payload = frame.get();
+      if (entry.output->pixelFormat() == PixelFormat::kUYVY) {
+        payload = uyvy;
+      } else if (entry.output->wantsStraightAlpha()) {
+        payload = straight;
+      }
       if (payload == nullptr) {
         continue;
       }
@@ -424,7 +458,9 @@ bool Engine::setFormat(const VideoFormat& format, std::string& error) {
   formatEpoch_.fetch_add(1);
   uyvyPool_ = FramePool::create(format, PixelFormat::kUYVY, 4);
   blackPool_ = FramePool::create(format, PixelFormat::kBGRA, 2);
+  straightPool_ = FramePool::create(format, PixelFormat::kBGRA, 4);
   uyvyScratch_.reset();
+  straightScratch_.reset();
   blackFrame_ = blackPool_->acquire();
   fillBlackBgra(blackFrame_->data(), blackFrame_->rowBytes(), format.width,
                 format.height);
@@ -453,6 +489,26 @@ bool Engine::setFormat(const VideoFormat& format, std::string& error) {
   }
   diag::info("engine raster now %s", format.toString().c_str());
   return allStarted;
+}
+
+void Engine::sendInput(const InputEvent& event) {
+  if (browser_ == nullptr) {
+    return;
+  }
+  int x = 0;
+  int y = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Clamp rather than reject: a drag that leaves the preview should land on
+    // the edge of the page, which is what a real pointer would do.
+    const double clampedX = std::clamp(event.nx, 0.0, 1.0);
+    const double clampedY = std::clamp(event.ny, 0.0, 1.0);
+    x = std::clamp(static_cast<int>(clampedX * format_.width), 0,
+                   format_.width - 1);
+    y = std::clamp(static_cast<int>(clampedY * format_.height), 0,
+                   format_.height - 1);
+  }
+  browser_->sendInput(event, x, y);
 }
 
 VideoFormat Engine::format() const {

@@ -9,6 +9,7 @@
 #include "core/audio_fifo.h"
 #include "core/frame_ring.h"
 #include "core/video_format.h"
+#include "engine/input_event.h"
 
 namespace weblinked {
 
@@ -70,6 +71,18 @@ class BrowserSource {
   /// Asks the browser for one frame. Called once per engine tick; a no-op under
   /// kInternalTimer pacing.
   void requestFrame();
+
+  /// Forwards a pointer or keyboard event to the page.
+  ///
+  /// `x` and `y` are in raster pixels; the caller has already scaled them. This
+  /// is what makes the control page's preview interactive — enough to dismiss a
+  /// cookie banner, close a modal or sign in, which is otherwise impossible on
+  /// a page you can only see.
+  void sendInput(const InputEvent& event, int x, int y);
+
+  /// An offscreen browser has no window manager to give it focus, so keyboard
+  /// input goes nowhere until it is told it has focus.
+  void setFocused(bool focused);
 
   /// Mutes the page's audio at the source. Cheaper than zeroing samples
   /// downstream and it stops the FIFO filling with silence.

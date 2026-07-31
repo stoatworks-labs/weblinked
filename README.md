@@ -14,6 +14,9 @@ show-control system.
 
 ```bash
 weblinked --url https://example.com/scoreboard --format 1080p50 --ndi=Scoreboard
+
+# A keyed graphic: alpha over NDI, and key + fill out of a DeckLink
+weblinked --url https://example.com/lower-third --alpha --ndi=LowerThird --key --decklink=0
 ```
 
 ---
@@ -54,8 +57,16 @@ Regenerate all three with [`tools/screenshots.sh`](tools/screenshots.sh).
 - **Frame-accurate pacing.** The engine's clock drives Chromium one frame at a
   time (`SendExternalBeginFrame`) rather than letting the browser paint on its
   own timer, so 50 ticks a second means 50 paints a second.
-- **Alpha**, where the destination supports it: NDI and OMT can carry the page's
-  transparency for a downstream keyer.
+- **Alpha, properly.** NDI and OMT carry the page's transparency, and a DeckLink
+  can output **key + fill** on separate SDI connectors (or key internally over
+  its own input). Chromium composites premultiplied and every destination here
+  expects straight alpha, so WebLinked un-premultiplies — without that, soft
+  edges, drop shadows and fades all render too dark on a keyer.
+- **An interactive preview.** The control page's preview can forward clicks,
+  scrolling and typing to the live page, which is the only practical way to
+  dismiss a cookie banner, close a modal or sign in on a machine whose browser
+  you cannot otherwise reach. Off by default, and outlined when armed, because
+  it is the on-air output.
 - **Live control**: change the URL, reload, run JavaScript in the page, change
   raster, or stop and start an output mid-show, from the control page, HTTP, or
   OSC.
@@ -127,6 +138,8 @@ operator window shows — so a phone on the same network is a remote panel.
 curl -X POST -d '{"url":"https://example.com/next"}' http://127.0.0.1:7654/api/url
 curl -X POST -d '{"ignore_cache":true}'              http://127.0.0.1:7654/api/reload
 curl -X POST -d '{"name":"Graphic","enabled":false}' http://127.0.0.1:7654/api/output
+# Click at the centre of the page, in normalised coordinates
+curl -X POST -d '{"type":"down","nx":0.5,"ny":0.5}'  http://127.0.0.1:7654/api/input
 ```
 
 Over OSC, on port 7655 — the shape a Companion button sends:

@@ -98,6 +98,15 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
   dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }
   dt { color: var(--dim); }
   dd { margin: 0; font-variant-numeric: tabular-nums; }
+  section h2 .toggle {
+    float: right; text-transform: none; letter-spacing: 0; font-weight: 400;
+    color: var(--dim); cursor: pointer; display: inline-flex; align-items: center;
+    gap: 5px; font-size: 11px;
+  }
+  section h2 .toggle input { margin: 0; accent-color: var(--accent); }
+  .hint { font-size: 11px; color: var(--dim); margin: 8px 0 0; }
+  .hint strong { color: var(--bad); font-weight: 600; }
+  #preview.live { outline: 2px solid var(--accent); outline-offset: 2px; cursor: crosshair; }
   #toast {
     position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
     background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
@@ -135,8 +144,16 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
     </section>
 
     <section>
-      <h2>Preview</h2>
-      <canvas id="preview" width="480" height="270"></canvas>
+      <h2>Preview
+        <label class="toggle" title="Forward clicks and keys to the page. Remember the page is on air.">
+          <input type="checkbox" id="interactive"> interactive
+        </label>
+      </h2>
+      <canvas id="preview" width="480" height="270" tabindex="0"></canvas>
+      <p id="interactive-hint" class="hint" hidden>
+        Clicks, scrolling and typing go to the live page — enough to dismiss a
+        cookie banner or close a popup. <strong>This is the on-air output.</strong>
+      </p>
     </section>
 
     <section>
@@ -345,6 +362,144 @@ async function refresh() {
       Math.min(100, preview.audio_peak * 100) + '%';
   }
 }
+
+// --- interaction -------------------------------------------------------------
+//
+// The preview canvas can forward pointer and keyboard events to the live page,
+// which is the only practical way to dismiss a cookie banner, close a modal or
+// sign in on a machine whose browser you cannot otherwise reach.
+//
+// Off by default and visibly outlined when on, because this is the on-air
+// output: a stray click lands on the programme feed.
+//
+// Positions are sent normalised. The canvas is a downscaled preview whose CSS
+// size depends on the window, so pixel coordinates here mean nothing to the
+// engine; it scales 0..1 to whatever the current raster is.
+
+const interactiveToggle = document.getElementById('interactive');
+const interactiveHint = document.getElementById('interactive-hint');
+let interactive = false;
+
+interactiveToggle.onchange = () => {
+  interactive = interactiveToggle.checked;
+  canvas.classList.toggle('live', interactive);
+  interactiveHint.hidden = !interactive;
+  sendInput({ type: 'focus', focused: interactive });
+  if (interactive) canvas.focus();
+};
+
+function eventPosition(e) {
+  const box = canvas.getBoundingClientRect();
+  return {
+    nx: Math.min(1, Math.max(0, (e.clientX - box.left) / box.width)),
+    ny: Math.min(1, Math.max(0, (e.clientY - box.top) / box.height)),
+  };
+}
+
+// CEF event flags, from cef_types.h.
+function modifiersOf(e) {
+  let m = 0;
+  if (e.shiftKey) m |= 1 << 1;
+  if (e.ctrlKey)  m |= 1 << 2;
+  if (e.altKey)   m |= 1 << 3;
+  if (e.metaKey)  m |= 1 << 7;
+  if (e.buttons & 1) m |= 1 << 4;
+  if (e.buttons & 4) m |= 1 << 5;
+  if (e.buttons & 2) m |= 1 << 6;
+  return m;
+}
+
+// Pointer moves are coalesced into one request per animation frame. Sending one
+// HTTP request per mousemove would swamp the control server during a drag.
+let pendingMove = null;
+let moveScheduled = false;
+
+function flushMove() {
+  moveScheduled = false;
+  if (pendingMove) { sendInput(pendingMove); pendingMove = null; }
+}
+
+async function sendInput(event) {
+  try {
+    await fetch(api('/api/input'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(event),
+    });
+  } catch (err) {
+    /* a dropped input event is not worth a dialog */
+  }
+}
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!interactive) return;
+  pendingMove = { type: 'move', ...eventPosition(e), modifiers: modifiersOf(e) };
+  if (!moveScheduled) { moveScheduled = true; requestAnimationFrame(flushMove); }
+});
+
+canvas.addEventListener('mouseleave', (e) => {
+  if (!interactive) return;
+  sendInput({ type: 'move', ...eventPosition(e), leaving: true, modifiers: 0 });
+});
+
+canvas.addEventListener('mousedown', (e) => {
+  if (!interactive) return;
+  e.preventDefault();
+  canvas.focus();
+  sendInput({ type: 'down', ...eventPosition(e), button: e.button,
+              clicks: e.detail || 1, modifiers: modifiersOf(e) });
+});
+
+canvas.addEventListener('mouseup', (e) => {
+  if (!interactive) return;
+  e.preventDefault();
+  sendInput({ type: 'up', ...eventPosition(e), button: e.button,
+              clicks: e.detail || 1, modifiers: modifiersOf(e) });
+});
+
+canvas.addEventListener('contextmenu', (e) => { if (interactive) e.preventDefault(); });
+
+canvas.addEventListener('wheel', (e) => {
+  if (!interactive) return;
+  e.preventDefault();
+  // Chromium expects pixel deltas; a wheel line is conventionally about 40.
+  const scale = e.deltaMode === 1 ? 40 : 1;
+  sendInput({ type: 'wheel', ...eventPosition(e),
+              dx: Math.round(-e.deltaX * scale), dy: Math.round(-e.deltaY * scale),
+              modifiers: modifiersOf(e) });
+}, { passive: false });
+
+canvas.addEventListener('keydown', (e) => {
+  if (!interactive) return;
+  e.preventDefault();
+  const modifiers = modifiersOf(e);
+  const printable = e.key.length === 1 && !e.ctrlKey && !e.metaKey;
+  // The character has to go on the *keydown* too, not just the CHAR event.
+  // Without it Chromium cannot work out which key was pressed from a bare
+  // virtual-key code and the page sees e.key as "Unidentified" — so a graphic
+  // listening for a specific key never fires. Verified: with it, the page reads
+  // the right e.key and text lands in input fields.
+  const character = printable ? e.key.charCodeAt(0) : 0;
+  sendInput({ type: 'key', action: 'down', key_code: e.keyCode, character, modifiers });
+
+  // A key that produces text needs a separate CHAR event, or the keystroke
+  // arrives but nothing is typed.
+  if (printable) {
+    sendInput({ type: 'key', action: 'char', key_code: e.keyCode,
+                character: e.key.charCodeAt(0), modifiers });
+  } else if (e.key === 'Enter') {
+    sendInput({ type: 'key', action: 'char', key_code: 13, character: 13, modifiers });
+  }
+});
+
+canvas.addEventListener('keyup', (e) => {
+  if (!interactive) return;
+  e.preventDefault();
+  const printable = e.key.length === 1 && !e.ctrlKey && !e.metaKey;
+  sendInput({ type: 'key', action: 'up', key_code: e.keyCode,
+              character: printable ? e.key.charCodeAt(0) : 0,
+              modifiers: modifiersOf(e) });
+});
 
 // --- preview ----------------------------------------------------------------
 
