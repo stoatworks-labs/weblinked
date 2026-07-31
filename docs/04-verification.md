@@ -827,12 +827,34 @@ the app carries on, and the reason reaches both the log and `outputs[].error`:
 ERROR output 'screen5' (screen) failed to start: display 5 does not exist (1 attached)
 ```
 
-**Not verified.** A second physical display — this machine has one, so
-multi-head selection, and `--screen=1` succeeding rather than erroring, are
-untested. Colour was checked against the same bars page rather than against
-`ndi_probe`'s independent BT.709 reference; the layer's colour space is pinned
-to sRGB precisely so it *can* be compared that way, but that comparison has not
-been made. Nothing has been shown on a projector.
+**A second display — verified, and it found the bug that mattered most.** An
+ASUS PA148 (1920x1080, 60 Hz) was attached after the first pass and `--screen=1`
+run against it. See the bug list: the window was landing off-screen on every
+display except the main one, while every counter claimed success.
+
+After the fix, on the external head at 1080p50:
+
+```
+submitted 50.1/s  presented 60.1/s  dropped 5 (in 15s)  ratio 1.199
+```
+
+1.199 against a theoretical 60/50 = 1.200. This is the claim the whole design
+rests on — that presentation follows the *display* and a slower source is
+repeated rather than torn — measured on a real second head rather than inferred
+from one panel. Picture confirmed by screenshotting that display: 1920x1080
+content on a 1920x1080 head, so edge to edge with no bars, all four corner
+markers and the full border present.
+
+Worth recording that the built-in panel reported 50 Hz during the first pass and
+120 Hz during this one. It is a ProMotion display and its refresh genuinely
+varies, which is exactly why `displays[].refresh_hz` is read live rather than
+cached, and why the first pass's numbers looked suspicious.
+
+**Still not verified.** Colour was checked against the same bars page rather than
+against `ndi_probe`'s independent BT.709 reference; the layer's colour space is
+pinned to sRGB precisely so it *can* be compared that way, but that comparison
+has not been made. Nothing has been shown on a projector. Three or more displays
+are untested.
 
 **Windows and Linux: never run.** `screen_window_win.cpp` (D3D11) and
 `screen_window_linux.cpp` (X11 + EGL) are written and compile-targeted only.
@@ -900,6 +922,26 @@ on the build machine.
 
 Recorded because they are the argument for doing it at all. Every one was found
 by running the thing, not by reading it.
+
+**The screen output's window landed off-screen on every display but the main
+one, and every counter said it was working.** `-[NSWindow
+initWithContentRect:styleMask:backing:defer:screen:]` interprets the rect
+relative to the origin of the *screen it is given*, while `-[NSScreen frame]` is
+in global coordinates. Passing one to the other applies the screen's offset
+twice. The main display's origin is (0,0), so the two agree and it worked — which
+is why the first pass, on a machine with one display, verified the feature
+thoroughly and completely missed this.
+
+What makes it worth recording is how convincing the failure was. `open()`
+succeeded. The CVDisplayLink was created on the correct display and ticked at
+that display's exact refresh rate. Metal drew. `presented` climbed at 60/s
+against a 50 Hz source — the precise 1.2 ratio the design predicts, on the right
+head, which reads as proof the feature works. Nothing was on any screen. It was
+found only by screenshotting *both* displays and discovering the picture on
+neither; every number available from inside the process said it was fine.
+
+Fixed by creating the window with `screen:nil` and then `-setFrame:display:`,
+which is unambiguously global. Section 20.
 
 **The screen output's window, released twice, which took the process down on the
 second remove/add cycle.** `NSWindow.isReleasedWhenClosed` defaults to **YES**
@@ -1095,8 +1137,8 @@ operation.
 **The tray launcher end to end.** See sections 14, 18 and 21. The unpack the
 Start button triggers is verified by hand and by test; the click itself is not.
 
-**A second display.** This machine has one, so `--screen=1`, multi-head
-selection and anything about a projector are untested. Section 20.
+**A projector, and three or more displays.** Two displays are now verified
+(section 20); nothing has been shown on a projector.
 
 **The screen output on Windows and Linux.** Written, compile-targeted, never
 run — like AJA and OMT before them.

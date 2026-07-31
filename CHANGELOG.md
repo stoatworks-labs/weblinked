@@ -54,6 +54,15 @@ Two things, both about WebLinked being usable somewhere other than a terminal.
 
 ### Fixed
 
+- **The screen output's window landed off-screen on every display except the
+  main one.** `initWithContentRect:...screen:` interprets its rect relative to
+  the origin of the screen it is given, while `-[NSScreen frame]` is global, so
+  the offset was applied twice. The main display's origin is (0,0), so it worked
+  there and nowhere else. The failure was thoroughly convincing: `open()`
+  succeeded, the display link ran on the correct head at its exact refresh rate,
+  and `presented` climbed at 60/s against a 50 Hz source — the right ratio, on
+  the right display, with nothing on any screen. Found by screenshotting both
+  displays and finding the picture on neither.
 - **The screen output's window was released twice**, which took the process down
   on the second remove/add cycle. `NSWindow.isReleasedWhenClosed` defaults to YES
   for a window built with `initWithContentRect:`, so `-close` had already

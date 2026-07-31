@@ -275,11 +275,29 @@ bool MacScreenWindow::open(const VideoFormat& format, int display,
 
     // ---- the window ---------------------------------------------------------
     const NSRect frame = [screen frame];
-    window_ = [[NSWindow alloc] initWithContentRect:frame
+    // screen:nil, then setFrame: — and that is not a stylistic choice.
+    //
+    // initWithContentRect:...screen: interprets the rect relative to the origin
+    // of the screen it is given, while -[NSScreen frame] is in *global*
+    // coordinates. Passing one to the other therefore applies the screen's
+    // offset twice, and every display except the main one — whose origin is
+    // (0,0), so the two agree — gets a window somewhere off the desktop.
+    //
+    // The failure is silent and deeply misleading: open() succeeds, the
+    // CVDisplayLink is created on the correct display and ticks at that
+    // display's exact refresh rate, Metal draws, and `presented` climbs at
+    // 60/s against a 50 Hz source — every counter says it is working, and
+    // nothing is on any screen. Found only by screenshotting both displays and
+    // discovering the picture on neither.
+    //
+    // -setFrame:display: is unambiguous: always global coordinates.
+    window_ = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, frame.size.width,
+                                                               frame.size.height)
                                           styleMask:NSWindowStyleMaskBorderless
                                             backing:NSBackingStoreBuffered
                                               defer:NO
-                                             screen:screen];
+                                             screen:nil];
+    [window_ setFrame:frame display:YES];
     // NOT optional, and not obvious. isReleasedWhenClosed defaults to YES for a
     // window built with initWithContentRect:, so -close would release it and
     // the -release in close() below becomes an over-release. That does not
