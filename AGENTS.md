@@ -48,6 +48,12 @@ and a hung control API. See §4.
 and NDI, so if the preview is right the outputs are right. Don't shortcut it
 straight from the browser.
 
+**Sources know nothing about each other.** `SourceManager` holds N whole
+Engines; no engine ever learns that the others exist, which is what makes one
+hung page or one missing card harmless to the rest. The manager is a map and a
+lock, nothing more — resist the urge to give it a shared clock, a shared frame
+pool or a shared browser. The independence *is* the feature.
+
 ## 3. Layout
 
 ```
@@ -175,6 +181,29 @@ screenshot.
 **Never let the settings page rewrite itself under someone's fingers.** The
 state poll runs every second; the editors are built only on arriving at the view
 and after a successful mutation.
+
+**Never hold a bare `Engine*` across anything.** Every call reaches an engine
+through `SourceManager::withSource`, which holds a shared lock for the duration;
+`add`, `remove` and `stop` take the exclusive one. `Engine` reads `browser_`
+without a lock and `Engine::stop()` destroys it, so a pointer that outlives the
+lookup is a use-after-free waiting for an operator to remove a source mid-show.
+The expensive halves of add and remove happen *outside* the lock on purpose —
+holding it across a browser start would freeze every other source's control
+surface.
+
+**The control page has no build step, so a stray byte is invisible until
+run time.** A single NUL inside a `.join(' ')` compiled fine, served 200, rendered
+the HTML, and killed every line of JavaScript after it — the page just sat on
+"connecting" with a black preview. A NUL also makes `grep` treat `web_assets.h`
+as binary and return *nothing*, which will send you the wrong way for ten
+minutes. If the page looks dead, run its own script text through `new Function()`
+in a browser: it names the offending line immediately. The earlier TDZ bug had
+the same shape.
+
+**"Hidden" does not mean nobody is looking.** `document.hidden` is true for a
+kiosk shell, an embedded webview and a screenshot tool. Throttle polling when
+hidden; never skip it. Skipping is exactly why every source thumbnail came out
+black the first time the strip was built.
 
 ## 5. Verified vs assumed — read this before claiming anything works
 

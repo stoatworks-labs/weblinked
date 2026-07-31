@@ -17,6 +17,9 @@ weblinked --url https://example.com/scoreboard --format 1080p50 --ndi=Scoreboard
 
 # A keyed graphic: alpha over NDI, and key + fill out of a DeckLink
 weblinked --url https://example.com/lower-third --alpha --ndi=LowerThird --key --decklink=0
+
+# Several at once, each with its own browser, clock, raster and outputs
+weblinked --config show.json
 ```
 
 ---
@@ -30,10 +33,12 @@ appears, because none has ever been connected. See
 
 ![The WebLinked control page, rendering github.com to NDI at 1080p50](docs/images/control-page.png)
 
-*The control page. It is both the operator window and a remote panel — the app
-opens this same page in its own window, and any browser on the network can reach
-it. The preview is fed by the same frame pipeline as the SDI and NDI outputs, so
-if the preview is right, the outputs are right.*
+*The control page, driving two sources. It is both the operator window and a
+remote panel — the app opens this same page in its own window, and any browser
+on the network can reach it. The strip along the top carries a live thumbnail per
+source and only appears when there is more than one, so a single-source launch
+looks exactly as it always did. The preview is fed by the same frame pipeline as
+the SDI and NDI outputs, so if the preview is right, the outputs are right.*
 
 | Settings | Diagnostics |
 |---|---|
@@ -47,7 +52,10 @@ browser. They are what a vision mixer would have seen.
 | A live page | A time-of-day clock |
 |---|---|
 | ![github.com rendered to 1080p50 and received over NDI](docs/images/output-github.png) | ![A clock page rendered to 1080p50 and received over NDI](docs/images/output-clock.png) |
-| `--url https://github.com` | `--url file://tools/clock.html` |
+| source `site` | source `clock` |
+
+Both were on the network **at the same time**, from the one process that served
+the control page above — which is what the two chips in its strip are.
 
 `tools/clock.html` ships with the repo. It is a useful thing to point at a feed:
 a clock is the quickest way to see at a glance whether a signal is live, and its
@@ -92,13 +100,27 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 - **Live control**: change the URL, reload, run JavaScript in the page, change
   raster, or stop and start an output mid-show, from the control page, HTTP, or
   OSC.
+- **Several sources in one process.** `--config show.json` starts any number of
+  independent pipelines — each its own browser, clock, raster and outputs — and
+  they share nothing but Chromium's process. A page that hangs, a card that will
+  not open or a raster change on one source cannot touch the others. The control
+  page grows a strip along the top with a live thumbnail per source; HTTP verbs
+  take `?source=<id>` and OSC takes `/weblinked/source/<id>/<verb>`. Leave the id
+  off and the request goes to the first source, so everything that drove a
+  single-source WebLinked still does.
+
+  How many a machine can carry is a property of that machine, not a setting.
+  Three 1080p sources drop frames on an M4 Max; three at 720p25 do not. Measure
+  it where the show will run — [docs/04-verification.md](docs/04-verification.md)
+  has the numbers and the method.
 - **A tray launcher** ([`launcher/`](launcher/)) for a machine where WebLinked
   should come up at login and live in the menu bar rather than in a terminal.
 
 ## What it does not do
 
-- No compositing, no layers, no playlist. It renders one page. If you need two
-  graphics at once, that is what the page is for.
+- No compositing, no layers, no playlist. Each source renders one page. If you
+  need two graphics in one picture, that is what the page is for; if you need two
+  pictures, that is what a second source is for.
 - No capture or input. Output only.
 - No genlock. The engine's clock is a software clock; an SDI card's own scheduled
   playback absorbs the difference. See
@@ -113,6 +135,7 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 |---|---|
 | **NDI** | **Verified end to end**, including alpha. A real receiver confirms raster, rate, pixel format, colour and audio. |
 | **Preview** | Verified, and interactive — it is the control page's confidence monitor. |
+| **Several sources** | **Verified**: three at once on three rasters, each confirmed by a separate receiver, with one retargeted and a fourth added and removed mid-run without disturbing the others. Frame rates are a capacity question — see below. |
 | **Settings + diagnostics pages** | Verified against a running instance: outputs added, renamed and removed, settings saved and read back after a restart, the log and bundle served. |
 | **Tray launcher** | Builds; its config is unit-tested against the file it ships. **Not clicked through against a live WebLinked** — see [launcher/README.md](launcher/README.md). |
 | **OMT** | Compiles against `libomt.h` 1.0.0.16. **Never tested against an OMT receiver.** |
@@ -168,6 +191,11 @@ curl -X POST -d '{"ignore_cache":true}'              http://127.0.0.1:7654/api/r
 curl -X POST -d '{"name":"Graphic","enabled":false}' http://127.0.0.1:7654/api/output
 # Click at the centre of the page, in normalised coordinates
 curl -X POST -d '{"type":"down","nx":0.5,"ny":0.5}'  http://127.0.0.1:7654/api/input
+
+# With several sources, ?source= picks one; without it you get the first
+curl http://127.0.0.1:7654/api/sources
+curl -X POST -d '{"url":"https://example.com/next"}' \
+     'http://127.0.0.1:7654/api/url?source=lower-third'
 ```
 
 Over OSC, on port 7655 — the shape a Companion button sends:
@@ -177,6 +205,9 @@ Over OSC, on port 7655 — the shape a Companion button sends:
 /weblinked/reload       1
 /weblinked/output/Graphic  0
 /weblinked/script       "showLowerThird('Anna Kowalski')"
+
+# One feed by name, when several are running
+/weblinked/source/lower-third/url  "https://example.com/next"
 ```
 
 `/weblinked/script` is the useful one: a graphic that already exposes a function

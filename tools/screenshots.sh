@@ -28,6 +28,7 @@ NDI_INC="/Library/NDI SDK for Apple/include"
 NDI_LIB="/Library/NDI SDK for Apple/lib/macOS/libndi.dylib"
 PORT=7654
 SOURCE_NAME="WebLinkedShots"
+CLOCK_NAME="WebLinkedShotsClock"
 
 for required in "$APP" "$CHROME" "$NDI_LIB"; do
   [ -e "$required" ] || { echo "missing: $required" >&2; exit 1; }
@@ -44,10 +45,25 @@ clang++ -std=c++20 -O1 -I"$NDI_INC" tools/ndi_probe.cpp "$NDI_LIB" \
 pkill -f "WebLinked.app/Contents/MacOS/WebLinked" 2>/dev/null || true
 sleep 2
 
-echo "==> starting WebLinked on https://github.com"
+# Two sources rather than one, because the control page's source strip only
+# appears when there is more than one — and the strip is the thing the pictures
+# now have to show. It also removes the mid-run URL switch the old script needed
+# to get a second output frame: both are simply on air at once.
+cat >"$WORK/shots.json" <<JSON
+{
+  "control": { "http_bind": "127.0.0.1", "http_port": $PORT },
+  "sources": [
+    { "id": "site",  "url": "https://github.com", "format": "1080p50",
+      "outputs": [ { "kind": "ndi", "name": "$SOURCE_NAME" } ] },
+    { "id": "clock", "url": "file://$ROOT/tools/clock.html", "format": "1080p50",
+      "outputs": [ { "kind": "ndi", "name": "$CLOCK_NAME" } ] }
+  ]
+}
+JSON
+
+echo "==> starting WebLinked with two sources"
 WEBLINKED_LOG_DIR="$WORK/logs" "$APP" \
-  --url "https://github.com" --format 1080p50 --ndi="$SOURCE_NAME" \
-  --port "$PORT" --headless >"$WORK/app.log" 2>&1 &
+  --config "$WORK/shots.json" --headless >"$WORK/app.log" 2>&1 &
 APP_PID=$!
 trap 'kill -TERM $APP_PID 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
@@ -64,27 +80,21 @@ capture_gui() {   # capture_gui <output.png> [view]
     "http://127.0.0.1:$PORT/?view=$view" >/dev/null 2>&1
 }
 
-capture_frame() { # capture_frame <output.png>
+capture_frame() { # capture_frame <output.png> <ndi source name>
   # --save-after skips the first frames so the page has settled.
-  "$WORK/ndi_probe" --source "$SOURCE_NAME" --frames 30 \
+  "$WORK/ndi_probe" --source "$2" --frames 30 \
     --save "$WORK/frame.ppm" --save-after 20 --timeout 25 >/dev/null
   sips -s format png "$WORK/frame.ppm" --out "$1" >/dev/null
 }
 
-echo "==> capturing the three views and the github.com output"
+echo "==> capturing the three views"
 capture_gui "$OUT/control-page.png"     control
 capture_gui "$OUT/settings-page.png"    settings
 capture_gui "$OUT/diagnostics-page.png" diagnostics
-capture_frame "$OUT/output-github.png"
 
-echo "==> switching to the clock page"
-curl -fsS -X POST -H 'Content-Type: application/json' \
-  -d "{\"url\":\"file://$ROOT/tools/clock.html\"}" \
-  "http://127.0.0.1:$PORT/api/url" >/dev/null
-sleep 6
-
-echo "==> capturing clock output"
-capture_frame "$OUT/output-clock.png"
+echo "==> capturing both outputs, straight off the network"
+capture_frame "$OUT/output-github.png" "$SOURCE_NAME"
+capture_frame "$OUT/output-clock.png"  "$CLOCK_NAME"
 
 echo
 echo "wrote:"
