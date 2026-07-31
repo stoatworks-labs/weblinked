@@ -20,10 +20,15 @@ endif()
 
 project(weblinked VERSION 0.2.0 LANGUAGES C CXX)
 
-if(APPLE)
-  # mac_application.mm: CEF requires an NSApplication subclass.
-  enable_language(OBJCXX)
-endif()
+# Deliberately NOT enable_language(OBJCXX), even though src/app/mac_application.mm
+# is Objective-C++. Enabling it makes CMake compile every .mm as OBJCXX —
+# including CEF's own, inside libcef_dll_wrapper — and CEF only ever sets the CXX
+# flags, so its cef_scoped_sandbox_context_mac.mm fails with "unknown type name
+# 'constexpr'". Left alone, CMake compiles .mm as CXX and clang infers
+# Objective-C++ from the extension, which is exactly how CEF builds its own.
+#
+# This only shows up in a clean build: an incremental one has the CEF wrapper
+# objects already cached and never recompiles them.
 
 set(WEBLINKED_VERSION "${PROJECT_VERSION}")
 
@@ -32,6 +37,16 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+if(WIN32)
+  # NOMINMAX is not optional here. <windows.h> defines max() and min() as
+  # macros, and CEF's own cef_ref_counted.h calls std::numeric_limits<>::max() —
+  # so the moment a translation unit sees both, the macro eats the call and MSVC
+  # reports "C2589: '(': illegal token on right side of '::'" pointing inside a
+  # CEF header, which looks like a broken SDK rather than a macro collision.
+  # WIN32_LEAN_AND_MEAN keeps the rest of the Windows surface out of the way.
+  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
 
 # ----------------------------------------------------------------------------
 # Options

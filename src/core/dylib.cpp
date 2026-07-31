@@ -3,6 +3,11 @@
 #include <utility>
 
 #if defined(_WIN32)
+// See the NOMINMAX note in CMakeLists.txt: windows.h's max/min macros
+// collide with std::numeric_limits<>::max() in CEF's headers.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #else
 #include <dlfcn.h>

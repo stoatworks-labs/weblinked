@@ -33,10 +33,28 @@ class RenderClient : public CefClient,
                      public CefLoadHandler,
                      public CefDisplayHandler {
  public:
+  /// What to do when the page tries to open a new tab or window.
+  ///
+  /// Never "let it": a windowless browser cannot parent a windowed popup, and
+  /// CEF's default is to create one. See OnBeforePopup for the failure that
+  /// caused.
+  enum class PopupPolicy {
+    /// Load the popup's target in this browser instead. The default: an
+    /// operator who clicks a `target="_blank"` link in the preview means "go
+    /// there", and there is only one raster to go there in.
+    kNavigateInPlace,
+    /// Drop it and log. For a page whose stray `window.open` calls must never
+    /// take the on-air graphic off its own URL.
+    kBlock,
+  };
+
   RenderClient(VideoFormat format, LatestFrameSlot* slot, AudioFifo* audio);
 
   /// Called on the UI thread once the browser exists.
   void setBrowserReadyCallback(std::function<void()> callback);
+
+  void setPopupPolicy(PopupPolicy policy) { popupPolicy_.store(policy); }
+  PopupPolicy popupPolicy() const { return popupPolicy_.load(); }
 
   void setFormat(const VideoFormat& format);
   VideoFormat format() const;
@@ -49,10 +67,12 @@ class RenderClient : public CefClient,
     int64_t paints = 0;
     int64_t audioPackets = 0;
     int64_t consoleErrors = 0;
+    int64_t popups = 0;
     bool loading = false;
     int lastHttpStatus = 0;
     std::string lastError;
     std::string lastConsoleError;
+    std::string lastPopupUrl;
     std::string url;
   };
   Diagnostics diagnostics() const;

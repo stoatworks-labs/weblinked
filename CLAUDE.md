@@ -76,7 +76,10 @@ clang++ -std=c++20 -I"/Library/NDI SDK for Apple/include" tools/ndi_probe.cpp \
 7. **`FramePool` is always held by `shared_ptr`** (`FramePool::create`).
 8. **macOS bundles are signed inside-out, ad-hoc without hardened runtime.** See
    `cmake/SignMacBundle.cmake` before changing anything there.
-9. Commit means commit **and push**.
+9. **Build clean (`rm -rf build`) before tagging a release.** An incremental
+   build reuses the CEF wrapper's objects, so anything that breaks CEF's own
+   compilation passes locally and fails on CI.
+10. Commit means commit **and push**.
 
 ## Layout
 

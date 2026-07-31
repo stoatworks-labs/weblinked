@@ -125,6 +125,19 @@ never exits.
 Keychain dialog on every launch. A modal dialog on a machine that is live to air
 is not acceptable, and it is startling during development too.
 
+**Build clean before you tag.** An incremental build keeps the CEF wrapper's
+objects and never recompiles them, so a change that breaks *CEF's* build is
+invisible locally and fails on CI. `enable_language(OBJCXX)` did exactly this:
+it made CMake compile every `.mm` as OBJCXX including CEF's own, and CEF only
+sets the CXX flags, so its `cef_scoped_sandbox_context_mac.mm` failed with
+"unknown type name 'constexpr'". Leave OBJCXX alone — CMake compiles `.mm` as
+CXX and clang infers Objective-C++ from the extension, which is how CEF builds
+its own.
+
+**Windows needs NOMINMAX.** `<windows.h>`'s `max`/`min` macros collide with
+`std::numeric_limits<>::max()` inside CEF's `cef_ref_counted.h`, and MSVC blames
+the CEF header rather than the macro.
+
 **Killing the process without a clean shutdown leaves a stale NDI source** that
 receivers keep trying to connect to, and the next run can be undiscoverable for
 minutes. The SIGTERM handler exists because of this, not for tidiness.

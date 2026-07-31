@@ -72,7 +72,11 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --config Release --parallel
+        # Linux runners get OOM-killed building libcef_dll_wrapper at full
+        # parallelism: the job dies mid-compile with "the runner has received a
+        # shutdown signal", which reads like infrastructure flakiness rather
+        # than memory exhaustion. Two jobs fits.
+        run: cmake --build build --config Release --parallel ${{ runner.os == 'Linux' && 2 || 4 }}
 
       - name: Report which backends were compiled in
         shell: bash
