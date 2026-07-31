@@ -4,22 +4,6 @@
 // reference written here rather than shared with WebLinked, so this is a check
 // on the round trip and not a restatement of it. Proves what came back off the
 // wire, not what the application believes it sent.
-//
-// Build (adjust the SDK path):
-//   SDK="/path/to/Blackmagic DeckLink SDK/Mac/include"
-//   clang++ -std=c++17 -fobjc-arc -I"$SDK" "$SDK/DeckLinkAPIDispatch.cpp" \
-//     tools/sdi_probe.mm -framework CoreFoundation -o sdi_probe
-//
-// Usage:
-//   ./sdi_probe [index] [1080p25] [bands]
-//     index    device to capture on (default 1)
-//     1080p25  capture at 1080p25 instead of 1080p50
-//     bands    check the four alpha bands instead of eight colour bars
-//
-// On a Duo 2 in full-duplex the SAME sub-device owns connectors 1 and 3, so a
-// cable from 1 to 3 loops index 0 back to itself. Enabling external keying
-// turns connector 3 into the key output and the capture goes dark — that is
-// key + fill working, not a fault.
 #include "DeckLinkAPI.h"
 #include <atomic>
 #include <cmath>

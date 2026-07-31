@@ -593,20 +593,34 @@ Verified the way NDI was, with an independent receiver: `sdi_probe`, written
 against the DeckLink SDK with its own BT.709 reference, capturing what actually
 came back down a BNC cable rather than reading WebLinked's counters.
 
-The connector map, established by moving one cable and capturing on each
-sub-device rather than by reading a manual — each sub-device owns one output and
-one input, and they interleave:
+### Which connector is which — partly, and honestly
 
-| Sub-device | SDI out | SDI in |
-|---|---|---|
-| index 0, Duo (1) | connector **1** | connector **3** |
-| index 1, Duo (2) | connector **2** | connector **4** |
+An earlier revision of this document published a confident connector map. Later
+cable positions contradicted it, so it is withdrawn: what the physical BNC labels
+correspond to could not be pinned down from software, and guessing produced two
+wrong asks in a row.
 
-Proven by elimination: a cable from 1 to 3 captures on index 0; the same cable
-moved to 1-to-2 is dark on *both* sub-devices, so connector 2 is an output. A
-cross-sub-device loop therefore needs **1 to 4**, not 1 to 2 — which matters,
-because externally keyed fill can only be captured on the *other* sub-device once
-connector 3 has become the key output.
+What is solid, because each line was measured:
+
+| Cable position (as labelled on the card) | Transmit | Capture | Result |
+|---|---|---|---|
+| 1 to 3 | index 0 | index 0 | locks, all bars exact |
+| 1 to 2 | index 0 | index 0 and 1 | dark on both |
+| 1 to 4 | index 0 | index 0 and 1 | dark on both |
+| 1 to 4 | **index 1** | **index 0** | locks, `no-source=0`, bars exact |
+
+The operational facts that follow, which is what actually matters:
+
+- Each active sub-device has one output and one input, and they are **not** the
+  connector pair you would guess from the numbering.
+- A loop can be same-sub-device or cross-sub-device depending on which pair is
+  patched, and only a cross one can capture externally keyed **fill** — keying
+  consumes the second connector of the transmitting pair for the key.
+- **Diagnose it rather than reason about it.** `tools/sdi_probe.mm` reports
+  `no-source` frames separately from good ones, so "input locked, nothing
+  arriving" is distinguishable from "not the input you think". A free-running
+  input with nothing plugged in reports mode `ntsc` and a mix of both, which is
+  the signature of no lock rather than of a signal.
 
 With SDI out (connector 1) looped to SDI in (connector 3) — the same sub-device,
 index 0:
@@ -684,24 +698,58 @@ raster without it; this card accepts a keyed 1920x1080 at 24000/1001,
 24000/1000, 25000/1000, 30000/1001, 30000/1000, 25000/1000 (interlaced), ...
 ```
 
-### External keying takes the second connector
+### Key + fill, measured — the fill carries straight alpha
 
-With external keying enabled on index 0, the loopback goes dark; with keying off
-at the identical raster and rate it captures perfectly. That is key + fill doing
-what it is supposed to — connector 3 stops being an input and becomes the **key**
-output beside the fill on connector 1 — but it means this cable arrangement
-cannot see a keyed signal. Inferred from the controlled comparison rather than
-measured directly.
+The measurement worth having. With external keying on index 1 and a
+cross-sub-device capture on index 0, the **fill** off the wire, against four
+bands of known alpha:
+
+```
+bar            sampled Y/Cb/Cr    expected Y/Cb/Cr   verdict
+red a=1.0       51  108  212        51  109  212       ok
+green a=0.5    132   63   52       134   63   51       ok
+blue a=0.25     27  211  120        28  212  120       ok
+empty a=0       16  128  128        16  128  128       ok
+PASS
+```
+
+The 50%-alpha green reads **132**. Premultiplied it would read about **95** —
+which is exactly the value the NDI path produced before `unpremultiplyBgra`
+existed (section 7). So the fill of a keyed SDI signal carries *straight*
+(unassociated) colour, correctly, and the bug that was real on NDI is not present
+here. This is invisible on opaque graphics, so nothing short of this measurement
+would have shown it either way.
+
+Also confirmed: with external keying on, the second connector of the
+transmitting pair stops being an input and becomes the **key** output — a
+same-sub-device loopback goes dark exactly when keying is enabled and captures
+perfectly with it off, at an otherwise identical raster and rate.
+
+### Internal keying, over a live input
+
+Overlay composites over whatever the card is receiving, so keying over our own
+output is a feedback path rather than a test. Driven properly instead, with two
+WebLinked processes at once — the thing v0.5.2 made possible — one transmitting a
+background into the other's input:
+
+```
+port 7801  device 1  keying off       running  frames 694  buffered 5
+port 7802  device 0  keying internal  running  frames 371  buffered 6
+```
+
+The keyer engages against a genuine incoming signal and both sub-devices run
+from separate processes without interfering. **The composite itself is not
+verified**: with the cable feeding the background in, there is no spare input
+left to capture the keyed result on.
 
 **Still not verified, and now for concrete reasons:**
 
-- **The content of a keyed signal.** Proving fill carries straight (not
-  premultiplied) colour and key carries alpha needs a capture on a *different*
-  sub-device, i.e. a cable from connector 1 to connector 2 or 4. The equivalent
-  bug was real on NDI (section 7), so this is worth doing.
-- **Internal keying compositing over a real input.** Overlay keys over whatever
-  the card is receiving; looping our own output into it is a feedback path, not a
-  test. It needs an external source.
+- **The key channel itself.** The fill is measured above; that the *key* output
+  carries alpha as luma is not. It needs the key connector of the transmitting
+  pair patched to a free input.
+- **The internal-keying composite.** The keyer engages over a live input, but
+  capturing the composited result needs a third connection this cabling has no
+  input left for.
 - **Audio over SDI.** Not exercised at all.
 - **Genlock over hours**, rather than two minutes.
 - **AJA.** Still no card. Unchanged from "compiles and nothing more".

@@ -1,0 +1,13 @@
+<!doctype html><meta charset="utf-8">
+<style>
+  html,body{margin:0;height:100%;background:transparent}
+  .row{display:flex;height:100%}
+  .b{flex:1}
+  /* Opaque red, 50% green, 25% blue, and nothing at all — the same four bands
+     the NDI alpha verification used, so the two are comparable. */
+  .b1{background:rgba(192,0,0,1)}
+  .b2{background:rgba(0,192,0,0.5)}
+  .b3{background:rgba(0,0,192,0.25)}
+  .b4{background:transparent}
+</style>
+<div class="row"><div class="b b1"></div><div class="b b2"></div><div class="b b3"></div><div class="b b4"></div></div>
