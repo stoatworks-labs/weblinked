@@ -20,3 +20,5 @@ ndi_probe.dSYM/
 .idea/
 *.swp
 compile_commands.json
+dist-release/
+build-release/

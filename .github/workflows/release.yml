@@ -1,0 +1,215 @@
+name: release
+
+# Build WebLinked and publish installable artefacts.
+#
+# One job per architecture, deliberately. CEF ships a per-architecture binary
+# distribution (cmake/FetchCEF.cmake maps to macosarm64 / macosx64 / windows64 /
+# linux64), so a "universal" macOS build would need two distributions and a lipo
+# pass — see docs/02-building.md. CMakeLists.txt sets CMAKE_OSX_ARCHITECTURES
+# before project() for exactly this reason; a build that sets it afterwards
+# silently produces a single-arch binary.
+#
+# OUTPUT BACKENDS DIFFER FROM A LOCAL BUILD. NDI and DeckLink are found via
+# find_package and quietly disabled when their SDKs are absent, which they are
+# on hosted runners — so these artefacts ship with OMT (vendored in
+# third_party/omt) and without NDI or DeckLink. A local build on a machine with
+# the SDKs installed gets more. The release notes say so rather than letting
+# someone discover it after downloading.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macos-arm64,   os: macos-14 }
+          - { name: windows-x86_64, os: windows-latest }
+          - { name: linux-x86_64,  os: ubuntu-22.04 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux CEF dependencies
+        if: runner.os == 'Linux'
+        # CEF links GTK and the usual X11/NSS stack; without these the link
+        # step fails long after the (slow) CEF download has completed.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev libnss3-dev libasound2-dev libxss-dev \
+            libxtst-dev libatk-bridge2.0-dev libdrm-dev libgbm-dev
+
+      - name: Cache the CEF distribution
+        uses: actions/cache@v4
+        with:
+          # FetchCEF downloads a ~200MB archive per architecture and verifies it
+          # by sha1; caching it keeps the run from re-fetching every time.
+          path: third_party/cef
+          key: cef-${{ matrix.name }}-${{ hashFiles('cmake/FetchCEF.cmake') }}
+
+      - name: Derive version
+        id: ver
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          case "$version" in
+            [0-9]*) ;;
+            *) version="$(sed -n 's/^project(weblinked VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)" ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "building $version"
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Report which backends were compiled in
+        shell: bash
+        # find_package silently disables a missing backend, so state the result
+        # instead of leaving it to be discovered at runtime.
+        run: |
+          grep -E "WEBLINKED_WITH_(NDI|OMT|DECKLINK|AJA)" build/CMakeCache.txt || true
+
+      - name: Installers (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        # Ad-hoc signed before packaging. CEF makes this load-bearing: the app
+        # has five name-matched helper .apps nested inside it, and approving
+        # the outer bundle does not unquarantine them — Gatekeeper SIGKILLs a
+        # quarantined helper silently, which looks like the renderer simply
+        # never starting.
+        run: |
+          source scripts/release-lib.sh
+          rl_init "WebLinked" weblinked "${{ steps.ver.outputs.version }}" \
+            com.stoatworks.weblinked "$GITHUB_WORKSPACE"
+          app="build/Release/WebLinked.app"
+          if [ ! -d "$app" ]; then echo "no .app produced" >&2; exit 1; fi
+          echo "--- helper apps (CEF needs all five) ---"
+          ls "$app/Contents/Frameworks/"
+          stage="$RUNNER_TEMP/stage-mac"
+          rm -rf "$stage"; mkdir -p "$stage"
+          cp -R "$app" "$stage/"
+          cp README.md LICENSE "$stage/" 2>/dev/null || true
+          rl_adhoc_sign "$stage/WebLinked.app"
+          rl_dmg "${{ matrix.name }}" "$stage" --app "WebLinked.app"
+          rl_pkg "${{ matrix.name }}" "$stage" --app "WebLinked.app"
+
+      - name: Archive (Windows / Linux)
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          mkdir -p out
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp -R build/Release/* out/
+          else
+            cp -R build/Release/* out/ 2>/dev/null || cp -R build/* out/
+          fi
+          cp README.md LICENSE out/ 2>/dev/null || true
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a "weblinked-${{ steps.ver.outputs.version }}-${{ matrix.name }}.zip" ./out/*
+          else
+            tar czf "weblinked-${{ steps.ver.outputs.version }}-${{ matrix.name }}.tar.gz" -C out .
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: weblinked-${{ matrix.name }}
+          path: |
+            *.zip
+            *.tar.gz
+            *.dmg
+            *.pkg
+          if-no-files-found: error
+
+  windows-installer:
+    name: Windows installer
+    needs: build
+    runs-on: ubuntu-latest
+    # makensis cross-compiles, so the installer is wrapped here from the zip the
+    # Windows job uploaded rather than depending on whatever NSIS the Windows
+    # image happens to carry.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Install NSIS
+        run: sudo apt-get update && sudo apt-get install -y nsis
+
+      - name: Build installer
+        shell: bash
+        run: |
+          source scripts/release-lib.sh
+          version="${GITHUB_REF_NAME#v}"
+          case "$version" in
+            [0-9]*) ;;
+            *) version="$(sed -n 's/^project(weblinked VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)" ;;
+          esac
+          rl_init "WebLinked" weblinked "$version" com.stoatworks.weblinked "$PWD/installers"
+          zip="$(find artifacts -name "weblinked-*-windows-x86_64.zip" | head -1)"
+          if [ -z "$zip" ]; then echo "no Windows artefact, nothing to do"; exit 0; fi
+          stage="$RUNNER_TEMP/stage-win"
+          rm -rf "$stage"; mkdir -p "$stage"
+          unzip -q "$zip" -d "$stage"
+          rl_nsis windows-x86_64 "$stage" --gui "WebLinked.exe"
+          ls -l installers
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: weblinked-windows-installer
+          path: installers/*
+          if-no-files-found: warn
+
+  release:
+    name: Publish release
+    needs: [build, windows-installer]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          body: |
+            **macOS** — `.pkg` installs WebLinked into /Applications; `.dmg` lets you drag it.
+            Apple Silicon only: CEF's binary distribution is per-architecture, so an Intel or
+            universal build needs a second distribution and a lipo pass.
+
+            **Windows** — `-setup.exe` installs with shortcuts; `.zip` is portable. x86_64.
+
+            **Linux** — portable `.tar.gz`, x86_64.
+
+            **Output backends in these builds:** OMT only. NDI and DeckLink are located with
+            `find_package` and silently disabled when their SDKs are absent, which they are on
+            hosted runners. Build locally with the SDKs installed to get those backends — see
+            docs/02-building.md.
+
+            Verification status is in docs/04-verification.md: NDI has been confirmed
+            end-to-end against a real receiver; DeckLink, AJA and OMT compile against the real
+            SDKs but have never been run against hardware.
+
+            Builds are unsigned. On macOS, after installing:
+
+            ```
+            xattr -dr com.apple.quarantine "/Applications/WebLinked.app"
+            ```
+
+            That step matters more here than usual — the app nests five CEF helper .apps, and
+            approving the outer bundle does not unquarantine them. A quarantined helper is
+            killed silently and looks like the renderer simply failing to start.
+          generate_release_notes: true

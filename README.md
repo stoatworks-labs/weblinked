@@ -87,10 +87,10 @@ Regenerate all three with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 | Backend | State |
 |---|---|
-| **NDI** | **Verified end to end.** A real receiver confirms raster, rate, pixel format, colour and audio. |
-| **Preview** | Verified — it is the control page's confidence monitor. |
+| **NDI** | **Verified end to end**, including alpha. A real receiver confirms raster, rate, pixel format, colour and audio. |
+| **Preview** | Verified, and interactive — it is the control page's confidence monitor. |
 | **OMT** | Compiles against `libomt.h` 1.0.0.16. **Never tested against an OMT receiver.** |
-| **DeckLink** | Compiles against DeckLink SDK 12.2. **Never run against a card.** |
+| **DeckLink** | Compiles against DeckLink SDK 12.2, key + fill included. **Never run against a card.** |
 | **AJA** | Compiles against libajantv2 18.1. **Never run against a card.** Off by default. |
 
 Read [docs/04-verification.md](docs/04-verification.md) before trusting any of

@@ -18,7 +18,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_ARCHITECTURES)
   set(CMAKE_OSX_ARCHITECTURES "${CMAKE_HOST_SYSTEM_PROCESSOR}" CACHE STRING "")
 endif()
 
-project(weblinked VERSION 0.1.0 LANGUAGES C CXX)
+project(weblinked VERSION 0.2.0 LANGUAGES C CXX)
 
 if(APPLE)
   # mac_application.mm: CEF requires an NSApplication subclass.
@@ -139,6 +139,8 @@ set(WEBLINKED_CORE_SOURCES
   src/core/json.h
   src/core/dylib.cpp
   src/core/dylib.h
+  src/core/source_config.cpp
+  src/core/source_config.h
   src/diag/diag.cpp
   src/diag/diag.h
 )

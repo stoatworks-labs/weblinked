@@ -363,6 +363,15 @@ async function refresh() {
   }
 }
 
+// The canvas is declared here, above both the interaction and preview sections,
+// because both use it. It used to live further down with the preview code, which
+// put the interaction listeners in its temporal dead zone: the script threw on
+// load, refresh() was never called, and the whole page sat on "connecting" with
+// an empty preview. Nothing in the UI worked and there was no console error to
+// see unless you were already attached.
+const canvas = document.getElementById('preview');
+const context = canvas.getContext('2d');
+
 // --- interaction -------------------------------------------------------------
 //
 // The preview canvas can forward pointer and keyboard events to the live page,
@@ -503,8 +512,6 @@ canvas.addEventListener('keyup', (e) => {
 
 // --- preview ----------------------------------------------------------------
 
-const canvas = document.getElementById('preview');
-const context = canvas.getContext('2d');
 let previewBusy = false;
 let lastPull = 0;
 
