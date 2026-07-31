@@ -21,6 +21,13 @@ weblinked --url https://example.com/lower-third --alpha --ndi=LowerThird --key -
 
 ---
 
+[![Watch it running — 54 seconds](docs/video-thumb.png)](https://www.youtube.com/watch?v=kYVqPqA-u9I)
+
+*A 54-second tour of the real app, driven over its own HTTP control API. The output is
+NDI, picked up by a separate receiver (`tools/ndi_probe`) — no DeckLink or AJA card
+appears, because none has ever been connected. See
+[docs/04-verification.md](docs/04-verification.md) for what is verified and what is not.*
+
 ![The WebLinked control page, rendering github.com to NDI at 1080p50](docs/images/control-page.png)
 
 *The control page. It is both the operator window and a remote panel — the app
