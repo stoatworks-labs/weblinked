@@ -16,7 +16,7 @@ CEF 150.0.17 / Chromium 150.0.7871.187.
 
 ```bash
 cmake --build build && ./build/tests/weblinked_tests
-# 66 tests, 24999 checks, 0 failures
+# 74 tests, 25063 checks, 0 failures
 ```
 
 The two that carry real weight:
@@ -421,10 +421,71 @@ command-line launch is unchanged. Two bugs found doing it — see below.
 
 ---
 
+## 16. Two instances at once — verified
+
+Section 15 covers several *sources* inside one process. This is the other axis:
+two separate WebLinked processes, which until v0.5.2 was not reliably possible
+at all.
+
+The bug was that no Chromium profile directory was ever set, so every instance
+fell back to CEF's default — one directory shared by every CEF application on
+the machine. Chromium permits exactly one browser process per profile directory,
+so the second instance found the lock held and showed *"Your profile could not be
+loaded correctly"* instead of starting. Reproduced from the shipped v0.5.1 app:
+the lock in `~/Library/Application Support/CEF/User Data` was held by one
+WebLinked while a second refused to come up, and CEF's own log said so —
+`Please customize CefSettings.root_cache_path for your application. Use of the
+default value may lead to unintended process singleton behavior.`
+
+Verified after the fix, on macOS arm64:
+
+```bash
+WebLinked --headless --no-preview --no-osc --port 7801 &
+WebLinked --headless --no-preview --no-osc --port 7802 &
+```
+
+Both come up and both answer on their own control port. Each holds its own lock,
+in its own directory, from its own process:
+
+```
+…/WebLinked/profiles/7801/SingletonLock -> Mac-60106
+…/WebLinked/profiles/7802/SingletonLock -> Mac-60153
+```
+
+`grep root_cache_path` over both logs returns nothing — the CEF warning is gone,
+which is the check that the path is actually being applied rather than merely
+computed.
+
+A third instance on a port already taken exits 1 before Chromium starts:
+
+```
+control port 7801 on 127.0.0.1 is already in use — another WebLinked is
+probably running. Quit it, or give this one --port.
+```
+
+That ordering is the point. The port clash used to reach the profile lock first
+and surface as the dialog above, which says nothing about ports and sends you
+looking in the wrong place.
+
+**Not verified:** the same on Windows and Linux, which share the code path but
+have not been run (see below); and whether two instances driving real SDI cards
+contend for anything at the driver level, which is a hardware question and no
+card has ever been connected.
+
+---
+
 ## Bugs this verification actually found
 
 Recorded because they are the argument for doing it at all. Every one was found
 by running the thing, not by reading it.
+
+**The profile lock, which shipped in every release up to v0.5.1.** Not found by
+verification at all — found by an operator double-clicking the installed app and
+getting a dialog. Worth recording for that reason: every run in this document
+started one instance, from a terminal, on a machine where nothing else CEF-based
+was running, and that is precisely the shape of test the bug survives. CEF had
+been printing a warning naming the exact cause into a log nobody grepped for
+five releases. Section 16 now covers it.
 
 **OSC silently dropped a quarter of all messages — and this one shipped in
 v0.3.0.** `readString` advanced its offset by `padded(textLength + 1)` when

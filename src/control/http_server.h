@@ -70,6 +70,15 @@ class HttpServer {
   int port() const { return port_; }
   const std::string& bindAddress() const { return bindAddress_; }
 
+  /// Whether `bindAddress:port` can be listened on right now.
+  ///
+  /// Advisory, and inherently racy — something can take the port a microsecond
+  /// later. It exists so that the far more common case, a second WebLinked
+  /// started while the first is still running, is caught before CefInitialize
+  /// rather than after: past that point the clash surfaces as a Chromium
+  /// profile-error dialog, which says nothing about ports.
+  static bool portAvailable(const std::string& bindAddress, int port);
+
   /// Percent-decoding, exposed for the OSC path which shares the same encoding
   /// habits when a URL arrives from Companion.
   static std::string urlDecode(const std::string& text);

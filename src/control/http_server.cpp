@@ -199,6 +199,38 @@ HttpServer::HttpServer() = default;
 
 HttpServer::~HttpServer() { stop(); }
 
+bool HttpServer::portAvailable(const std::string& bindAddress, int port) {
+  ensureWinsock();
+
+  const socket_t probe = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (probe == WL_INVALID_SOCKET) {
+    // Cannot tell, so do not block a launch on it.
+    return true;
+  }
+
+  // Matching start()'s options, or the probe would answer a different question
+  // from the one the real bind is about to ask.
+  int reuse = 1;
+  ::setsockopt(probe, SOL_SOCKET, SO_REUSEADDR,
+               reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_port = htons(static_cast<uint16_t>(port));
+  if (bindAddress.empty() || bindAddress == "0.0.0.0") {
+    address.sin_addr.s_addr = INADDR_ANY;
+  } else if (::inet_pton(AF_INET, bindAddress.c_str(), &address.sin_addr) != 1) {
+    // A malformed address is start()'s error to report, with its own message.
+    WL_CLOSE_SOCKET(probe);
+    return true;
+  }
+
+  const bool bound =
+      ::bind(probe, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
+  WL_CLOSE_SOCKET(probe);
+  return bound;
+}
+
 bool HttpServer::start(const std::string& bindAddress, int port,
                        const std::string& token, Handler handler,
                        std::string& error) {

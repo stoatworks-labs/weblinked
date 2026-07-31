@@ -48,8 +48,9 @@ void BrowserApp::OnContextInitialized() {
   diag::info("cef: context initialised");
 }
 
-void configureCefSettings(CefSettings& settings, const std::string& cachePath,
-                          bool verboseLogging) {
+void configureCefSettings(CefSettings& settings,
+                          const std::string& rootCachePath,
+                          const std::string& cachePath, bool verboseLogging) {
   settings.no_sandbox = true;
   // The whole point: paint into our buffer rather than onto a screen.
   settings.windowless_rendering_enabled = true;
@@ -57,8 +58,20 @@ void configureCefSettings(CefSettings& settings, const std::string& cachePath,
   settings.multi_threaded_message_loop = false;
   settings.log_severity = verboseLogging ? LOGSEVERITY_INFO : LOGSEVERITY_WARNING;
 
+  // Never left unset. CEF's default profile directory is shared by every CEF
+  // application on the machine, and Chromium allows exactly one browser process
+  // per profile directory — so the second one to start finds the lock taken,
+  // fails to hand off to a headless render host that has no window to raise,
+  // and puts up "your profile could not be loaded correctly" instead of video.
+  // CEF warns about precisely this if you leave it alone.
+  if (!rootCachePath.empty()) {
+    CefString(&settings.root_cache_path).FromString(rootCachePath);
+  }
+
+  // Separate from the profile directory: this is what survives a restart.
+  // Empty is meaningful — it keeps cookies and storage in memory, which is what
+  // an operator gets when they do not pass --cache.
   if (!cachePath.empty()) {
-    CefString(&settings.root_cache_path).FromString(cachePath);
     CefString(&settings.cache_path).FromString(cachePath);
   }
 

@@ -70,6 +70,27 @@ WEBLINKED_TEST(settings_default_path_is_under_a_config_directory) {
   CHECK(settings::defaultPath().find("settings.json") != std::string::npos);
 }
 
+// The regression this guards is not a parse failure but a launch failure: two
+// instances sharing one Chromium profile directory means the second gets a
+// "profile could not be loaded correctly" dialog and renders nothing. The
+// control port is what keeps them apart, so it has to reach the path.
+WEBLINKED_TEST(settings_profile_directory_differs_per_control_port) {
+  const std::string first = settings::profileDirectory(7654);
+  const std::string second = settings::profileDirectory(7664);
+
+  CHECK(first != second);
+  CHECK(first.find("7654") != std::string::npos);
+  CHECK(second.find("7664") != std::string::npos);
+
+  // Under the app's own directory, not CEF's machine-wide default, which is
+  // shared with every other CEF application installed.
+  CHECK(first.find(settings::directory()) == 0);
+
+  // Deterministic: the same port on the next launch reuses the same profile
+  // rather than leaving a directory behind every time.
+  CHECK(settings::profileDirectory(7654) == first);
+}
+
 WEBLINKED_TEST(settings_round_trip_through_a_file) {
   TemporaryPath file("weblinked-settings-round-trip.json");
   std::string error;

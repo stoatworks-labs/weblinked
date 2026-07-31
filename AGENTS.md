@@ -90,6 +90,18 @@ nothing. Both `installSignalHandlers()` and `diag::installCrashHandler()` are
 called *after* `CefInitialize` for exactly this reason — the first symptom was a
 crash that produced no crash report.
 
+**`root_cache_path` is not optional.** Left unset, CEF picks a default profile
+directory shared by *every* CEF application on the machine, and Chromium allows
+exactly one browser process per profile directory. The second one to start finds
+the lock taken, tries to hand off to a holder that is a headless render host
+with no window to raise, times out, and shows "your profile could not be loaded
+correctly" — a dialog, on a machine that is live to air. CEF warns about this by
+name in the log, and the warning was ignored for five releases. It is now always
+set, to `settings::profileDirectory(controlPort)`; `--cache` overrides it and so
+must itself be unique per instance. Keying on the control port is what lets
+several instances run at once — don't make it per-process, or every launch
+leaves a directory behind.
+
 **Never convert a frame into a buffer sized for a different raster.** During a
 format change the slot can hold a pre-resize paint while the pools have already
 been rebuilt. Converting one into the other wrote four megabytes past the end of

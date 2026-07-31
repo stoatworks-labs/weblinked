@@ -25,6 +25,22 @@ namespace settings {
 /// The directory the settings file lives in. Not created by this call.
 std::string directory();
 
+/// The Chromium profile directory for the instance whose control port is
+/// `controlPort`. Not created by this call.
+///
+/// Chromium permits exactly one browser process per profile directory and
+/// enforces it with a lock file inside it. CEF's default is shared by every CEF
+/// application on the machine, so leaving it alone means a second WebLinked —
+/// or somebody else's CEF app entirely — takes the lock first and this instance
+/// comes up with "your profile could not be loaded correctly" and no video.
+///
+/// Keyed on the control port because that is already what makes an instance
+/// unique: two of them cannot share a port, so they cannot share a profile
+/// either. Deterministic rather than per-process on purpose — a rendered show
+/// restarted on the same port reuses its shader cache instead of leaving a
+/// directory behind on every launch.
+std::string profileDirectory(int controlPort);
+
 /// `directory()/settings.json`. Overridden by $WEBLINKED_SETTINGS.
 std::string defaultPath();
 

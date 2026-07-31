@@ -22,7 +22,9 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -106,7 +108,10 @@ Source
   --pacing <external|internal>
                            Who drives frames. Default: external (we do)
   --no-audio               Ignore the page's audio entirely
-  --cache <dir>            Persist cookies and storage here. Default: none
+  --cache <dir>            Persist cookies and storage here. Default: none,
+                           which keeps them in memory. Two instances cannot
+                           share a directory — Chromium locks it — so give
+                           each one its own if you set this at all.
   --popups <navigate|block>
                            What a link that wants a new tab does. navigate
                            (default) loads it here; block drops it. A real
@@ -735,8 +740,43 @@ int main(int argc, char** argv) {
   }
   weblinked::diag::setConfig(describeOptions(options));
 
+  // Before CefInitialize, because a control port already in use almost always
+  // means another WebLinked is running — and that same clash reaches Chromium's
+  // profile lock first, where it becomes a dialog about a profile that cannot
+  // be loaded rather than a sentence about a port.
+  if (!weblinked::HttpServer::portAvailable(options.control.httpBind,
+                                            options.control.httpPort)) {
+    const std::string message =
+        "control port " + std::to_string(options.control.httpPort) + " on " +
+        options.control.httpBind +
+        " is already in use — another WebLinked is probably running. Quit it, "
+        "or give this one --port.";
+    weblinked::diag::error("%s", message.c_str());
+    std::fprintf(stderr, "%s\n", message.c_str());
+    return 1;
+  }
+
+  // Chromium keeps one lock per profile directory and refuses to start a second
+  // browser process in the same one. --cache names a profile explicitly, so it
+  // serves as both the root and the persistent cache; without it each instance
+  // gets a directory of its own and storage stays in memory.
+  const std::string rootCachePath =
+      options.cachePath.empty()
+          ? weblinked::settings::profileDirectory(options.control.httpPort)
+          : options.cachePath;
+  std::error_code cacheError;
+  std::filesystem::create_directories(rootCachePath, cacheError);
+  if (cacheError) {
+    const std::string message = "cannot create the profile directory " +
+                                rootCachePath + ": " + cacheError.message();
+    weblinked::diag::error("%s", message.c_str());
+    std::fprintf(stderr, "%s\n", message.c_str());
+    return 1;
+  }
+
   CefSettings settings;
-  weblinked::configureCefSettings(settings, options.cachePath, options.verbose);
+  weblinked::configureCefSettings(settings, rootCachePath, options.cachePath,
+                                  options.verbose);
 
   CefRefPtr<weblinked::BrowserApp> app(new weblinked::BrowserApp());
   if (!CefInitialize(mainArgs, settings, app, nullptr)) {

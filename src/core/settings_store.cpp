@@ -44,6 +44,12 @@ std::string directory() {
 #endif
 }
 
+std::string profileDirectory(int controlPort) {
+  return (std::filesystem::path(directory()) / "profiles" /
+          std::to_string(controlPort))
+      .string();
+}
+
 std::string defaultPath() {
   if (const char* fromEnv = std::getenv("WEBLINKED_SETTINGS")) {
     if (*fromEnv != '\0') {

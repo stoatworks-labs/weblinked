@@ -104,3 +104,41 @@ offers. Changing it takes effect next launch.
 The control surface's own bind address, port and token are saved, but the
 running process does not re-bind itself from a reload. They are there so the
 file describes a whole deployment.
+
+## The profile directory
+
+Chromium keeps a profile directory — its "user data dir" — separate from
+anything above, and it is not something the settings page edits. WebLinked puts
+it here:
+
+```
+macOS    ~/Library/Application Support/WebLinked/profiles/<control port>
+Windows  %APPDATA%\WebLinked\profiles\<control port>
+Linux    $XDG_CONFIG_HOME/WebLinked/profiles/<control port>
+```
+
+Chromium permits **exactly one browser process per profile directory** and
+enforces it with a lock file inside it. A second process that finds the lock
+taken tries to hand the request to the holder, and when the holder is a headless
+render host with no window to raise, the attempt times out and Chromium puts up
+*"Your profile could not be loaded correctly"* — a dialog, on a machine that is
+probably live to air, instead of a picture.
+
+Keying the directory on the control port is what makes several instances legal:
+two of them cannot share a port, so they cannot collide on a profile either.
+Nothing valuable is kept there — without `--cache`, cookies and storage stay in
+memory and the directory holds only Chromium's own scratch state, so deleting it
+while WebLinked is not running costs nothing.
+
+Two ways to still get it wrong:
+
+- **`--cache <dir>`** makes that directory both the profile and the persistent
+  store, overriding the per-port default. Pointing two instances at one `--cache`
+  directory brings the clash straight back. Give each its own.
+- **Reusing a port.** Caught before Chromium starts, so it reads
+  `control port 7654 on 127.0.0.1 is already in use — another WebLinked is
+  probably running`, which is the actual problem.
+
+Earlier builds set no profile directory at all, which left CEF using a default
+shared by *every* CEF application on the machine — so a second WebLinked, or an
+unrelated app built on CEF, could take the lock first.

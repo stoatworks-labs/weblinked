@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.5.2 — 2026-07-31
+
+The launch failure that made a second instance impossible.
+
+### Fixed
+
+- **"Your profile could not be loaded correctly" on launch.** WebLinked never
+  set a Chromium profile directory, so every instance fell back to CEF's
+  default — a single directory shared by every CEF application on the machine.
+  Chromium permits exactly one browser process per profile directory, so a
+  second WebLinked (or an unrelated CEF app) took the lock first and the next
+  one came up with a dialog instead of a picture. Each instance now gets
+  `…/WebLinked/profiles/<control port>` of its own, which also means **several
+  instances can run at once**, which they could not reliably do before.
+  `--cache` still names a profile explicitly and still has to be unique per
+  instance. See [docs/05-settings.md](docs/05-settings.md).
+- **A reused control port** is now reported as one — `control port 7654 … is
+  already in use` — and checked before Chromium starts. It previously reached
+  the profile lock first and surfaced as the dialog above, which said nothing
+  about ports.
+
 ## v0.3.0 — 2026-07-31
 
 A settings page, diagnostics you can reach without a shell, a tray launcher, and

@@ -31,7 +31,13 @@ class BrowserApp : public CefApp, public CefBrowserProcessHandler {
 
 /// Populates CefSettings for an offscreen render host, including the macOS
 /// framework and helper paths.
-void configureCefSettings(CefSettings& settings, const std::string& cachePath,
-                          bool verboseLogging);
+///
+/// `rootCachePath` is the Chromium profile directory and must always be given —
+/// see settings::profileDirectory() for why leaving it to CEF is a bug.
+/// `cachePath` is where cookies and storage persist, and may be empty, which
+/// keeps them in memory; when set it must be `rootCachePath` or below it.
+void configureCefSettings(CefSettings& settings,
+                          const std::string& rootCachePath,
+                          const std::string& cachePath, bool verboseLogging);
 
 }  // namespace weblinked
