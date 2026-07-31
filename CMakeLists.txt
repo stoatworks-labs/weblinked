@@ -18,7 +18,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_ARCHITECTURES)
   set(CMAKE_OSX_ARCHITECTURES "${CMAKE_HOST_SYSTEM_PROCESSOR}" CACHE STRING "")
 endif()
 
-project(weblinked VERSION 0.5.0 LANGUAGES C CXX)
+project(weblinked VERSION 0.5.1 LANGUAGES C CXX)
 
 # Deliberately NOT enable_language(OBJCXX), even though src/app/mac_application.mm
 # is Objective-C++. Enabling it makes CMake compile every .mm as OBJCXX —

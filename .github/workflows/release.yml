@@ -126,13 +126,35 @@ jobs:
             Windows)
               curl -sL -o "$rt/rt.exe" \
                 "https://downloads.ndi.tv/SDK/NDI_SDK/NDI%206%20Runtime.exe"
-              # windows-latest ships 7z, which reads Inno Setup archives.
-              7z e -y -o"$rt" "$rt/rt.exe" "app/Processing.NDI.Lib.x64.dll" \
-                 "app/Processing.NDI.Lib.Licenses.txt" >/dev/null
-              [ -f "$rt/Processing.NDI.Lib.Licenses.txt" ] \
-                && mv "$rt/Processing.NDI.Lib.Licenses.txt" "$rt/libndi_licenses.txt"
+              # Run the vendor's own installer rather than unpacking it. Stock
+              # 7z cannot read an Inno Setup archive - it exits 0 having
+              # extracted nothing, which silently produced an artefact with no
+              # DLL in it. Silent install is what Vizrt documents anyway.
+              "$rt/rt.exe" //VERYSILENT //NORESTART //SUPPRESSMSGBOXES || true
+              for d in "/c/Program Files/NDI/NDI 6 Runtime/v6" \
+                       "/c/Program Files/NDI/NDI 6 Runtime" \
+                       "/c/Program Files/NDI/NDI 5 Runtime/v5"; do
+                if [ -f "$d/Processing.NDI.Lib.x64.dll" ]; then
+                  cp "$d/Processing.NDI.Lib.x64.dll" "$rt/"
+                  cp "$d"/*Licenses.txt "$rt/libndi_licenses.txt" 2>/dev/null || true
+                  break
+                fi
+              done
               ;;
           esac
+          # Never let a silent extraction failure produce an artefact that looks
+          # complete and has no runtime in it - that is the exact bug this whole
+          # change exists to fix.
+          case "$RUNNER_OS" in
+            macOS)   want=libndi.dylib ;;
+            Linux)   want=libndi.so.6 ;;
+            Windows) want=Processing.NDI.Lib.x64.dll ;;
+          esac
+          if ! ls "$rt/$want"* >/dev/null 2>&1; then
+            echo "::error::NDI runtime fetch produced no $want in $rt" >&2
+            ls -la "$rt" >&2
+            exit 1
+          fi
           echo "RL_NDI_DIR_$(echo '${{ matrix.name }}' | tr '[:lower:]-' '[:upper:]_')=$rt" >> "$GITHUB_ENV"
           ls -la "$rt" | head
 
