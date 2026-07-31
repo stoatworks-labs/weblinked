@@ -38,6 +38,16 @@ endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+if(MSVC)
+  # CEF's wrapper is built against the *static* runtime (/MT), so everything
+  # linked beside it must be too, or the link fails with a wall of LNK2038
+  # "mismatch detected for RuntimeLibrary: MT_StaticRelease doesn't match
+  # MD_DynamicRelease". Setting the property rather than rewriting CMAKE_CXX_FLAGS
+  # is what makes it reach libcef_dll_wrapper as well, since that comes in via
+  # add_subdirectory below — and it has to be set before any target exists.
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 if(WIN32)
   # NOMINMAX is not optional here. <windows.h> defines max() and min() as
   # macros, and CEF's own cef_ref_counted.h calls std::numeric_limits<>::max() —
