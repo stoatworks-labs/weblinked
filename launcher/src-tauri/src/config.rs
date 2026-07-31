@@ -332,6 +332,18 @@ pub fn build_launch(
 mod tests {
     use super::*;
 
+    /// A path, escaped for a TOML *basic* string.
+    ///
+    /// On Windows `template.display()` is `C:\\Users\\RUNNER~1\\...`, and a lone
+    /// backslash in a basic string is an escape sequence — so interpolating one
+    /// raw produced "too few unicode value digits" and these tests failed on
+    /// Windows only. No-op on Unix. The same trap bit launchers/windows.toml,
+    /// which uses a literal string instead; that is not available here because
+    /// the surrounding text is a format! template.
+    fn toml_path(p: &Path) -> String {
+        p.display().to_string().replace('\\', "\\\\")
+    }
+
     fn parse(toml: &str) -> LauncherConfig {
         toml::from_str(toml).expect("valid launcher config")
     }
@@ -362,7 +374,7 @@ mod tests {
             set_key = "bind"
             value = "{{host}}:{{port}}"
             "#,
-            template.display()
+            toml_path(&template)
         ));
 
         let launch = build_launch(&cfg, "10.0.0.5", 9000, &tmp, None).unwrap();
@@ -398,7 +410,7 @@ mod tests {
             set_key = "web.bind"
             value = "{{host}}:{{port}}"
             "#,
-            template.display()
+            toml_path(&template)
         ));
 
         let launch = build_launch(&cfg, "0.0.0.0", 8080, &tmp, None).unwrap();
@@ -521,6 +533,36 @@ mod tests {
                 "{name} argv"
             );
         }
+    }
+
+    /// A Windows-shaped path must survive being written into a config.
+    ///
+    /// Hardcoded rather than taken from the platform, so this fails on Linux and
+    /// macOS too. The real bug only appeared on a Windows runner, which is a
+    /// place nobody looks until CI turns red on a release tag.
+    #[test]
+    fn windows_style_paths_survive_toml() {
+        let raw = Path::new(r"C:\Users\RUNNER~1\AppData\Local\Temp\x.toml");
+        let escaped = toml_path(raw);
+        assert!(escaped.contains(r"\\"), "backslashes not doubled: {escaped}");
+
+        let cfg = parse(&format!(
+            r#"
+            [app]
+            name = "flock"
+            command = "/bin/flock"
+            [inject]
+            mode = "configfile"
+            [inject.configfile]
+            template = "{escaped}"
+            set_key = "bind"
+            "#
+        ));
+        // Round-trips back to the path we started with.
+        assert_eq!(
+            cfg.inject.configfile.unwrap().template,
+            raw.display().to_string()
+        );
     }
 
     /// args mode: {host}/{port} substituted directly into argv.
