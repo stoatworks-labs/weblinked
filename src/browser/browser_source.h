@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "include/cef_browser.h"
@@ -65,8 +67,19 @@ class BrowserSource {
   /// Changes the raster. Triggers a CEF resize and a fresh frame pool.
   void setFormat(const VideoFormat& format);
 
-  void setPacing(Pacing pacing) { pacing_ = pacing; }
-  Pacing pacing() const { return pacing_; }
+  /// Changes who drives frames. Rebuilds the browser at the current URL if one
+  /// is already open, because the mode is fixed when the browser is created.
+  void setPacing(Pacing pacing);
+  Pacing pacing() const { return pacing_.load(); }
+
+  /// What happens when the page opens a new tab or window. Thread-safe; see
+  /// RenderClient::PopupPolicy for why "let it" is not one of the options.
+  void setPopupPolicy(RenderClient::PopupPolicy policy) {
+    client_->setPopupPolicy(policy);
+  }
+  RenderClient::PopupPolicy popupPolicy() const {
+    return client_->popupPolicy();
+  }
 
   /// Asks the browser for one frame. Called once per engine tick; a no-op under
   /// kInternalTimer pacing.
@@ -97,7 +110,9 @@ class BrowserSource {
   VideoFormat format_;
   std::string url_;
   mutable std::mutex mutex_;
-  Pacing pacing_ = Pacing::kExternalBeginFrame;
+  /// Atomic: the clock thread reads it in requestFrame() on every tick, and the
+  /// control surface can change it.
+  std::atomic<Pacing> pacing_{Pacing::kExternalBeginFrame};
 };
 
 }  // namespace weblinked

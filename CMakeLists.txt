@@ -156,6 +156,8 @@ set(WEBLINKED_CORE_SOURCES
   src/core/dylib.h
   src/core/source_config.cpp
   src/core/source_config.h
+  src/core/settings_store.cpp
+  src/core/settings_store.h
   src/diag/diag.cpp
   src/diag/diag.h
 )

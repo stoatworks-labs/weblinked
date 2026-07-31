@@ -21,6 +21,38 @@ void onUiThread(Fn&& fn) {
                                      std::forward<Fn>(fn)));
 }
 
+/// Creates the offscreen browser. Free of BrowserSource so it can be posted to
+/// the UI thread without capturing `this` — see setPacing.
+bool createOffscreenBrowser(const CefRefPtr<RenderClient>& client,
+                            BrowserSource::Pacing pacing, const std::string& url,
+                            std::string& error) {
+  CefWindowInfo windowInfo;
+  // The whole browser is offscreen; there is no parent view.
+  windowInfo.SetAsWindowless(nullptr);
+  windowInfo.windowless_rendering_enabled = true;
+  // Painting on request rather than on Chromium's timer. This is what makes one
+  // engine tick produce exactly one paint. Fixed for the browser's lifetime,
+  // which is why changing pacing has to build a new one.
+  windowInfo.external_begin_frame_enabled =
+      pacing == BrowserSource::Pacing::kExternalBeginFrame;
+  windowInfo.shared_texture_enabled = false;  // we want CPU pixels, not a texture
+
+  CefBrowserSettings browserSettings;
+  // Only consulted under internal-timer pacing. 60 is CEF's ceiling.
+  browserSettings.windowless_frame_rate = 60;
+  // A transparent background so a page with no <body> colour keys correctly on
+  // an alpha-capable output. Opaque outputs composite it over black.
+  browserSettings.background_color = CefColorSetARGB(0, 0, 0, 0);
+
+  CefRefPtr<CefRequestContext> context = CefRequestContext::GetGlobalContext();
+  if (!CefBrowserHost::CreateBrowser(windowInfo, client, url, browserSettings,
+                                     nullptr, context)) {
+    error = "CefBrowserHost::CreateBrowser failed";
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 BrowserSource::BrowserSource(VideoFormat format, LatestFrameSlot* slot,
@@ -34,35 +66,50 @@ bool BrowserSource::open(const std::string& url, std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);
     url_ = url;
   }
-
-  CefWindowInfo windowInfo;
-  // The whole browser is offscreen; there is no parent view.
-  windowInfo.SetAsWindowless(nullptr);
-  windowInfo.windowless_rendering_enabled = true;
-  // Painting on request rather than on Chromium's timer. This is what makes one
-  // engine tick produce exactly one paint.
-  windowInfo.external_begin_frame_enabled =
-      pacing_ == Pacing::kExternalBeginFrame;
-  windowInfo.shared_texture_enabled = false;  // we want CPU pixels, not a texture
-
-  CefBrowserSettings browserSettings;
-  // Only consulted under internal-timer pacing, but set either way so switching
-  // does not need a restart. 60 is CEF's ceiling.
-  browserSettings.windowless_frame_rate = 60;
-  // A transparent background so a page with no <body> colour keys correctly on
-  // an alpha-capable output. Opaque outputs composite it over black.
-  browserSettings.background_color = CefColorSetARGB(0, 0, 0, 0);
-
-  CefRefPtr<CefRequestContext> context = CefRequestContext::GetGlobalContext();
-  if (!CefBrowserHost::CreateBrowser(windowInfo, client_, url, browserSettings,
-                                     nullptr, context)) {
-    error = "CefBrowserHost::CreateBrowser failed";
+  if (!createOffscreenBrowser(client_, pacing_.load(), url, error)) {
     return false;
   }
-
   diag::info("browser: opening %s at %s", url.c_str(),
              format_.toString().c_str());
   return true;
+}
+
+void BrowserSource::setPacing(Pacing pacing) {
+  if (pacing_.exchange(pacing) == pacing) {
+    return;
+  }
+  auto existing = client_->browser();
+  if (existing == nullptr) {
+    // Not open yet; open() will use the new value.
+    return;
+  }
+
+  // A live browser cannot be switched: external_begin_frame_enabled is part of
+  // CefWindowInfo and only read when the browser is created. Setting the field
+  // alone used to look like it worked and then produced no frames at all —
+  // requestFrame() stopped asking, and a browser created with external begin
+  // frame does not paint on its own. So the browser is rebuilt at the same URL.
+  //
+  // The old and new browsers overlap for a moment. That is safe because
+  // RenderClient::OnBeforeClose ignores any browser that is not the one it is
+  // currently rendering.
+  const std::string current = url();
+  diag::info("browser: pacing now %s — reopening %s",
+             pacing == Pacing::kExternalBeginFrame ? "external" : "internal",
+             current.c_str());
+
+  // Captures only refcounted handles and values, never `this`: the task can
+  // outlive nothing here, but a dangling BrowserSource would be a crash on
+  // shutdown.
+  CefRefPtr<RenderClient> client = client_;
+  onUiThread([client, existing, pacing, current]() {
+    existing->GetHost()->CloseBrowser(true);
+    std::string error;
+    if (!createOffscreenBrowser(client, pacing, current, error)) {
+      diag::error("browser: could not reopen after a pacing change: %s",
+                  error.c_str());
+    }
+  });
 }
 
 void BrowserSource::close() {
@@ -142,7 +189,7 @@ void BrowserSource::setFormat(const VideoFormat& format) {
 }
 
 void BrowserSource::requestFrame() {
-  if (pacing_ != Pacing::kExternalBeginFrame) {
+  if (pacing_.load() != Pacing::kExternalBeginFrame) {
     return;
   }
   auto browser = client_->browser();

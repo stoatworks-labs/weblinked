@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "core/source_config.h"
 #include "diag/diag.h"
 #include "outputs/preview_output.h"
 
@@ -33,6 +34,8 @@ bool Engine::start(const Config& config, std::string& error) {
 
   browser_ = std::make_unique<BrowserSource>(config.format, &slot_, &audio_);
   browser_->setPacing(config.pacing);
+  browser_->setPopupPolicy(config.popupPolicy);
+  interactiveByDefault_.store(config.interactiveByDefault);
   if (!browser_->open(config.url, error)) {
     return false;
   }
@@ -140,7 +143,7 @@ const VideoFrame* Engine::frameInFormat(const VideoFramePtr& source,
     }
     bgraToUyvy(source->data(), source->rowBytes(), uyvyScratch_->data(),
                uyvyScratch_->rowBytes(), source->format().width,
-               source->format().height, matrix_);
+               source->format().height, matrix_.load());
     uyvyScratch_->setSequence(source->sequence());
     uyvyScratch_->setCaptureNanos(source->captureNanos());
     return uyvyScratch_.get();
@@ -351,6 +354,123 @@ void Engine::setAudioMuted(bool muted) {
   }
 }
 
+void Engine::setPacing(BrowserSource::Pacing pacing) {
+  if (browser_ != nullptr) {
+    browser_->setPacing(pacing);
+  }
+}
+
+void Engine::setPopupPolicy(RenderClient::PopupPolicy policy) {
+  if (browser_ != nullptr) {
+    browser_->setPopupPolicy(policy);
+  }
+}
+
+void Engine::setMatrix(ColourMatrix matrix) { matrix_.store(matrix); }
+
+ColourMatrix Engine::matrix() const { return matrix_.load(); }
+
+std::vector<OutputSpec> Engine::outputSpecs() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<OutputSpec> specs;
+  specs.reserve(outputs_.size());
+  for (const auto& entry : outputs_) {
+    specs.push_back(entry.spec);
+  }
+  return specs;
+}
+
+SourceConfig Engine::configuration() const {
+  SourceConfig config;
+  config.id = "main";
+  config.url = browser_ != nullptr ? browser_->url() : std::string("about:blank");
+  config.matrix = matrix_.load();
+  config.externalPacing =
+      browser_ == nullptr ||
+      browser_->pacing() == BrowserSource::Pacing::kExternalBeginFrame;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    config.format = format_;
+    config.audioEnabled = audioEnabled_;
+    for (const auto& entry : outputs_) {
+      config.outputs.push_back(outputConfigFromSpec(entry.spec));
+    }
+  }
+  // Whether a preview is present is a property of the list we just captured;
+  // asking for one to be added on load would duplicate it.
+  config.wantPreview = false;
+  return config;
+}
+
+bool Engine::applyConfiguration(const SourceConfig& config, std::string& error) {
+  std::string firstError;
+  const auto note = [&firstError](const std::string& message) {
+    if (firstError.empty()) {
+      firstError = message;
+    }
+  };
+
+  if (config.format != format()) {
+    std::string formatError;
+    if (!setFormat(config.format, formatError)) {
+      note(formatError);
+    }
+  }
+
+  setMatrix(config.matrix);
+  setPacing(config.externalPacing ? BrowserSource::Pacing::kExternalBeginFrame
+                                  : BrowserSource::Pacing::kInternalTimer);
+
+  // Outputs the configuration does not mention go first, so a card being handed
+  // from one output to another is released before the new one claims it.
+  for (const auto& spec : outputSpecs()) {
+    const bool wanted =
+        std::any_of(config.outputs.begin(), config.outputs.end(),
+                    [&](const OutputConfig& candidate) {
+                      return candidate.name == spec.name;
+                    });
+    if (!wanted) {
+      removeOutput(spec.name);
+    }
+  }
+
+  for (const auto& outputConfig : config.outputs) {
+    const OutputSpec spec = outputSpecFromConfig(outputConfig);
+    const auto existing = outputSpecs();
+    const bool present = std::any_of(existing.begin(), existing.end(),
+                                     [&](const OutputSpec& candidate) {
+                                       return candidate.name == spec.name;
+                                     });
+    std::string outputError;
+    if (present) {
+      // An output whose settings are unchanged is left alone — restarting it
+      // would drop frames on air for no reason.
+      const auto same = std::find_if(existing.begin(), existing.end(),
+                                     [&](const OutputSpec& candidate) {
+                                       return candidate.name == spec.name;
+                                     });
+      if (same->kind == spec.kind && same->deviceIndex == spec.deviceIndex &&
+          same->options.serialize() == spec.options.serialize()) {
+        continue;
+      }
+      if (!updateOutput(spec.name, spec, outputError)) {
+        note(outputError);
+      }
+    } else if (!addOutput(spec, outputError)) {
+      note(outputError);
+    }
+  }
+
+  if (config.url != (browser_ != nullptr ? browser_->url() : std::string{})) {
+    setUrl(config.url);
+  }
+
+  setAudioMuted(!config.audioEnabled);
+
+  error = firstError;
+  return firstError.empty();
+}
+
 bool Engine::setOutputEnabled(const std::string& name, bool enabled,
                               std::string& error) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -412,6 +532,71 @@ bool Engine::addOutput(const OutputSpec& spec, std::string& error) {
   outputs_.push_back(std::move(entry));
   diag::info("output '%s' (%s) added", spec.name.c_str(), spec.kind.c_str());
   return true;
+}
+
+bool Engine::updateOutput(const std::string& name, const OutputSpec& spec,
+                          std::string& error) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto it = std::find_if(outputs_.begin(), outputs_.end(),
+                               [&](const Entry& entry) {
+                                 return entry.spec.name == name;
+                               });
+  if (it == outputs_.end()) {
+    error = "no output named '" + name + "'";
+    return false;
+  }
+  if (spec.name != name) {
+    for (const auto& entry : outputs_) {
+      if (entry.spec.name == spec.name) {
+        error = "an output named '" + spec.name + "' already exists";
+        return false;
+      }
+    }
+  }
+
+  const OutputSpec previousSpec = it->spec;
+  const bool wasEnabled = it->enabled;
+
+  // The old device has to be released before the new one is opened: on a rename
+  // of the same DeckLink or the same NDI name, the two would otherwise be
+  // fighting over one resource and the new one would simply fail.
+  if (it->output != nullptr) {
+    it->output->stop();
+    it->output.reset();
+  }
+
+  auto replacement = createOutput(spec, error);
+  std::string startError;
+  if (replacement != nullptr && replacement->start(format_, startError)) {
+    it->spec = spec;
+    it->output = std::move(replacement);
+    it->enabled = true;
+    it->lastError.clear();
+    diag::info("output '%s' updated (now '%s', %s)", name.c_str(),
+               spec.name.c_str(), spec.kind.c_str());
+    return true;
+  }
+  if (replacement != nullptr) {
+    error = startError;
+  }
+
+  // Put back what was there. If even that fails the entry keeps its original
+  // spec and carries the error, so the settings page shows the output as broken
+  // rather than silently dropping it.
+  std::string restoreError;
+  it->output = createOutput(previousSpec, restoreError);
+  it->enabled = false;
+  it->lastError = error;
+  if (it->output != nullptr && wasEnabled) {
+    if (it->output->start(format_, restoreError)) {
+      it->enabled = true;
+    } else {
+      diag::error("output '%s' could not be restored after a failed update: %s",
+                  name.c_str(), restoreError.c_str());
+    }
+  }
+  diag::warn("output '%s' update rejected: %s", name.c_str(), error.c_str());
+  return false;
 }
 
 bool Engine::removeOutput(const std::string& name) {
@@ -550,6 +735,10 @@ json::Value Engine::state() const {
       value.set("name", json::Value(entry.spec.name));
       value.set("kind", json::Value(entry.spec.kind));
       value.set("enabled", json::Value(entry.enabled));
+      // The spec as configured, so the settings page can populate its editor
+      // without keeping a second copy of what it asked for.
+      value.set("device_index", json::Value(entry.spec.deviceIndex));
+      value.set("options", entry.spec.options);
       if (!entry.lastError.empty()) {
         value.set("error", json::Value(entry.lastError));
       }
@@ -579,6 +768,18 @@ json::Value Engine::state() const {
                                    BrowserSource::Pacing::kExternalBeginFrame
                                ? "external"
                                : "internal"));
+    // Popups are worth surfacing rather than only logging: a page that keeps
+    // trying to open windows is usually one that is about to behave oddly on
+    // air, and the count is the only sign of it.
+    source.set("popups", json::Value(diagnostics.popups));
+    source.set("popup_policy",
+               json::Value(browser_->popupPolicy() ==
+                                   RenderClient::PopupPolicy::kBlock
+                               ? "block"
+                               : "navigate"));
+    if (!diagnostics.lastPopupUrl.empty()) {
+      source.set("last_popup_url", json::Value(diagnostics.lastPopupUrl));
+    }
     if (!diagnostics.lastError.empty()) {
       source.set("last_error", json::Value(diagnostics.lastError));
     }
@@ -587,6 +788,16 @@ json::Value Engine::state() const {
     }
     root.set("source", source);
   }
+
+  json::Value settings = json::Value::object();
+  settings.set("matrix", json::Value(colourMatrixToString(matrix_.load())));
+  settings.set("interactive_by_default",
+               json::Value(interactiveByDefault_.load()));
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    settings.set("audio_enabled", json::Value(audioEnabled_));
+  }
+  root.set("settings", settings);
 
   json::Value pacing = json::Value::object();
   pacing.set("ticks", json::Value(ticks_.load()));

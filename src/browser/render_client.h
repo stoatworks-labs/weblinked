@@ -104,6 +104,15 @@ class RenderClient : public CefClient,
                           const CefString& message) override;
 
   // CefLifeSpanHandler
+  bool OnBeforePopup(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
+                     int popupId, const CefString& targetUrl,
+                     const CefString& targetFrameName,
+                     WindowOpenDisposition targetDisposition, bool userGesture,
+                     const CefPopupFeatures& popupFeatures,
+                     CefWindowInfo& windowInfo, CefRefPtr<CefClient>& client,
+                     CefBrowserSettings& settings,
+                     CefRefPtr<CefDictionaryValue>& extraInfo,
+                     bool* noJavascriptAccess) override;
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
   void OnBeforeClose(CefRefPtr<CefBrowser> browser) override;
 
@@ -135,7 +144,9 @@ class RenderClient : public CefClient,
   std::atomic<int64_t> paints_{0};
   std::atomic<int64_t> audioPackets_{0};
   std::atomic<int64_t> consoleErrors_{0};
+  std::atomic<int64_t> popups_{0};
   std::atomic<bool> loading_{false};
+  std::atomic<PopupPolicy> popupPolicy_{PopupPolicy::kNavigateInPlace};
   Diagnostics diagnostics_;
 };
 

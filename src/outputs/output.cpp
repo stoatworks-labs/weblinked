@@ -17,6 +17,24 @@ bool OutputSpec::optionBool(const std::string& key, bool fallback) const {
   return options[key].isNull() ? fallback : options[key].asBool(fallback);
 }
 
+OutputSpec outputSpecFromConfig(const OutputConfig& config) {
+  OutputSpec spec;
+  spec.kind = config.kind;
+  spec.name = config.name;
+  spec.deviceIndex = config.deviceIndex;
+  spec.options = config.options;
+  return spec;
+}
+
+OutputConfig outputConfigFromSpec(const OutputSpec& spec) {
+  OutputConfig config;
+  config.kind = spec.kind;
+  config.name = spec.name;
+  config.deviceIndex = spec.deviceIndex;
+  config.options = spec.options;
+  return config;
+}
+
 std::vector<std::string> compiledOutputKinds() {
   std::vector<std::string> kinds{"preview"};
 #if defined(WEBLINKED_WITH_NDI)

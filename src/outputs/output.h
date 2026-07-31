@@ -6,6 +6,7 @@
 
 #include "core/frame.h"
 #include "core/json.h"
+#include "core/source_config.h"
 #include "core/video_format.h"
 
 namespace weblinked {
@@ -94,6 +95,13 @@ class IOutput {
   std::string name_;
   bool running_ = false;
 };
+
+/// OutputSpec and OutputConfig carry the same thing for different reasons: one
+/// is what the engine opens, the other is what a settings file holds and what
+/// `core` can parse without linking a single vendor SDK. These are the only
+/// place that knows they are the same fields.
+OutputSpec outputSpecFromConfig(const OutputConfig& config);
+OutputConfig outputConfigFromSpec(const OutputSpec& spec);
 
 /// Which backends this binary was actually built with. The control UI lists
 /// these, so an operator can tell a missing SDK from a missing device.

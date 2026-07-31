@@ -51,6 +51,7 @@ RenderClient::Diagnostics RenderClient::diagnostics() const {
   out.paints = paints_.load(std::memory_order_relaxed);
   out.audioPackets = audioPackets_.load(std::memory_order_relaxed);
   out.consoleErrors = consoleErrors_.load(std::memory_order_relaxed);
+  out.popups = popups_.load(std::memory_order_relaxed);
   out.loading = loading_.load(std::memory_order_relaxed);
   return out;
 }
@@ -178,7 +179,70 @@ void RenderClient::OnAudioStreamError(CefRefPtr<CefBrowser> browser,
   diag::warn("browser: audio stream error: %s", message.ToString().c_str());
 }
 
+bool RenderClient::OnBeforePopup(
+    CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int popupId,
+    const CefString& targetUrl, const CefString& targetFrameName,
+    WindowOpenDisposition targetDisposition, bool userGesture,
+    const CefPopupFeatures& popupFeatures, CefWindowInfo& windowInfo,
+    CefRefPtr<CefClient>& client, CefBrowserSettings& settings,
+    CefRefPtr<CefDictionaryValue>& extraInfo, bool* noJavascriptAccess) {
+  (void)frame;
+  (void)popupId;
+  (void)targetFrameName;
+  (void)targetDisposition;
+  (void)userGesture;
+  (void)popupFeatures;
+  (void)windowInfo;
+  (void)client;
+  (void)settings;
+  (void)extraInfo;
+  (void)noJavascriptAccess;
+
+  // Returning false here — CEF's default — is what took the application down.
+  //
+  // A `target="_blank"` link, or any window.open, asks CEF for a second
+  // browser. The default path gives it a *windowed* one, parented to this
+  // browser, which is windowless: there is no window to parent it to, and the
+  // popup arrives at this same client, whose render handler answers for the
+  // offscreen raster. Two further things then went wrong on top of that:
+  // OnAfterCreated rebound browser_ to the popup, so the engine's frame
+  // requests, navigation and input all went to a browser nothing was reading,
+  // and OnBeforeClose cleared browser_ when that popup closed — leaving the
+  // programme output pointed at nothing.
+  //
+  // So the popup is always cancelled, and the URL it wanted is handled here
+  // instead. Found by clicking an ordinary link in the interactive preview.
+  const std::string url = targetUrl.ToString();
+  popups_.fetch_add(1, std::memory_order_relaxed);
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    diagnostics_.lastPopupUrl = url;
+  }
+
+  if (popupPolicy_.load() == PopupPolicy::kBlock || url.empty()) {
+    diag::info("browser: blocked a popup to %s",
+               url.empty() ? "(no url)" : url.c_str());
+    return true;
+  }
+
+  diag::info("browser: popup to %s redirected into the main frame", url.c_str());
+  // Already on the UI thread, and the browser passed in is the opener — which
+  // is the one to navigate, not browser_, in case they ever differ.
+  if (browser != nullptr && browser->GetMainFrame() != nullptr) {
+    browser->GetMainFrame()->LoadURL(url);
+  }
+  return true;
+}
+
 void RenderClient::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
+  // A popup should never reach here now that OnBeforePopup cancels them all,
+  // but binding browser_ to one would silently redirect the whole pipeline, so
+  // the guard stays as a cheap backstop.
+  if (browser != nullptr && browser->IsPopup()) {
+    diag::warn("browser: ignoring an unexpected popup browser");
+    return;
+  }
+
   std::function<void()> callback;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -191,8 +255,13 @@ void RenderClient::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
 }
 
 void RenderClient::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
-  (void)browser;
   std::lock_guard<std::mutex> lock(mutex_);
+  // Only the browser we are actually rendering clears the reference. Anything
+  // else closing must not take the source down with it.
+  if (browser != nullptr && browser_ != nullptr &&
+      !browser->IsSame(browser_)) {
+    return;
+  }
   browser_ = nullptr;
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "core/json.h"
 
@@ -74,6 +75,19 @@ void error(const char* format, ...);
 /// Where the log and crash reports are written.
 std::string logDirectory();
 std::string logFilePath();
+
+/// Raises or lowers the level at run time, so an operator can turn on debug
+/// logging from the control page while the fault is happening rather than
+/// restarting the show to reproduce it.
+void setLevel(Level level);
+Level level();
+
+/// The most recent log lines, oldest first, up to `lines`.
+///
+/// Served from the in-memory ring rather than by reading the file back: the
+/// ring survives a rotation, and reading the log from the HTTP thread while the
+/// logging thread is appending to it is a race for no benefit.
+std::vector<std::string> tail(size_t lines);
 
 /// Writes a crash report immediately, without a crash. Used by the control API's
 /// diagnostics endpoint and by tests.

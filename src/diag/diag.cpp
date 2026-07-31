@@ -481,6 +481,35 @@ std::string logFilePath() {
   return s.logPath.string();
 }
 
+void setLevel(Level newLevel) {
+  auto& s = state();
+  {
+    std::lock_guard<std::mutex> lock(s.mutex);
+    if (s.level == newLevel) {
+      return;
+    }
+    s.level = newLevel;
+  }
+  // Logged outside the lock — writeLine takes it — and at the new level, so the
+  // change itself is visible in whatever the operator is now watching.
+  log(newLevel, "log level is now %s", levelToString(newLevel));
+}
+
+Level level() {
+  auto& s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  return s.level;
+}
+
+std::vector<std::string> tail(size_t lines) {
+  auto& s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const size_t available = s.tail.size();
+  const size_t wanted = lines == 0 || lines > available ? available : lines;
+  return std::vector<std::string>(s.tail.end() - static_cast<long>(wanted),
+                                  s.tail.end());
+}
+
 std::string writeReport(const std::string& reason) {
   // Gather the backtrace before taking the lock: if we are here from a signal
   // handler, the lock may already be held by the thread that faulted.

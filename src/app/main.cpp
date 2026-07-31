@@ -273,33 +273,55 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
 /// the last one has gone, which is what OnBeforeClose does here. It also makes
 /// closing the window with the red button quit the application, instead of
 /// leaving an invisible process holding the control port and the NDI name.
+/// It also has to survive popups. The control page can link outwards — to the
+/// documentation, or to whatever the operator has just loaded — and a
+/// `target="_blank"` gets CEF to open a second window against this same client.
+/// Before the browser count below existed, that second window's OnAfterCreated
+/// replaced browser_, so closeWindow() then closed the popup and left the real
+/// window open, and its OnBeforeClose called CefQuitMessageLoop() — so closing a
+/// popup quit the whole application, taking the outputs with it.
 class ControlWindowClient : public CefClient, public CefLifeSpanHandler {
  public:
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
 
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
-    browser_ = browser;
+    browsers_.push_back(browser);
   }
 
   void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
-    (void)browser;
-    browser_ = nullptr;
-    CefQuitMessageLoop();
-  }
-
-  /// UI thread only.
-  void closeWindow() {
-    if (browser_ != nullptr) {
-      // force_close: a beforeunload dialog would wait for a click nobody is
-      // going to give it.
-      browser_->GetHost()->CloseBrowser(true);
-    } else {
+    browsers_.erase(std::remove_if(browsers_.begin(), browsers_.end(),
+                                   [&](const CefRefPtr<CefBrowser>& held) {
+                                     return held->IsSame(browser);
+                                   }),
+                    browsers_.end());
+    // Only once the last window has gone. Quitting on the first close would end
+    // the message loop while other browsers are still alive, and CefShutdown()
+    // then blocks forever waiting for them.
+    if (browsers_.empty()) {
       CefQuitMessageLoop();
     }
   }
 
+  /// UI thread only. Closes every window this client owns, popups included —
+  /// a popup left open would otherwise keep the message loop running after a
+  /// SIGTERM.
+  void closeWindow() {
+    if (browsers_.empty()) {
+      CefQuitMessageLoop();
+      return;
+    }
+    // A copy: CloseBrowser can reach OnBeforeClose synchronously, which mutates
+    // browsers_ underneath the loop.
+    const auto open = browsers_;
+    for (const auto& browser : open) {
+      // force_close: a beforeunload dialog would wait for a click nobody is
+      // going to give it.
+      browser->GetHost()->CloseBrowser(true);
+    }
+  }
+
  private:
-  CefRefPtr<CefBrowser> browser_;
+  std::vector<CefRefPtr<CefBrowser>> browsers_;
   IMPLEMENT_REFCOUNTING(ControlWindowClient);
 };
 
