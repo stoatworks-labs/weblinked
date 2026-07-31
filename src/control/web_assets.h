@@ -83,6 +83,16 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
   #add-source {
     flex: 0 0 auto; align-self: center; margin-left: 4px;
   }
+  #new-source {
+    display: flex; align-items: center; gap: 6px; flex: 0 0 auto;
+    align-self: center; margin-left: 4px;
+  }
+  #new-source[hidden] { display: none; }
+  #new-source input {
+    padding: 5px 7px; border-radius: 6px; font-size: 11px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+  }
+  #new-source input:invalid { border-color: var(--bad); }
   main {
     display: grid; grid-template-columns: minmax(320px, 1fr) minmax(280px, 420px);
     gap: 14px; padding: 14px; align-items: start;
@@ -217,9 +227,18 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
 <!-- The source strip. Hidden entirely when there is only one source, so a
      command-line launch looks exactly as it did before this existed and an
      operator with one feed is never asked to think about a collection. -->
-<div id="source-strip" hidden>
+<div id="source-strip">
   <div id="source-chips"></div>
-  <button id="add-source" title="Start another pipeline">+ source</button>
+  <button id="add-source" title="Start another pipeline">+ tab</button>
+  <form id="new-source" hidden>
+    <input type="text" id="ns-id" placeholder="id" spellcheck="false" size="8"
+           pattern="[A-Za-z0-9._-]+" required
+           title="Letters, digits, dot, dash and underscore">
+    <input type="text" id="ns-url" placeholder="https://..." spellcheck="false">
+    <input type="text" id="ns-format" placeholder="1080p50" spellcheck="false" size="9">
+    <button type="submit" class="primary">Start</button>
+    <button type="button" id="ns-cancel">Cancel</button>
+  </form>
 </div>
 
 <main id="view-control">
@@ -624,7 +643,9 @@ const OUTPUT_FIELDS = {
   ndi: ['alpha'],
   omt: ['alpha'],
   decklink: ['device', 'keying'],
-  aja: ['device', 'keying'],
+  // No 'keying': aja_output.cpp implements none, so offering the control would
+  // let an operator set a mode that is silently discarded.
+  aja: ['device'],
   preview: ['factor'],
 };
 
@@ -648,9 +669,10 @@ function outputEditor(output, isNew) {
       '<div class="field" data-when="device"><label>Device index</label>' +
         '<input type="number" min="0" data-f="device_index" value="' +
         (output.device_index || 0) + '"></div>' +
-      '<div class="field" data-when="keying"><label>Keying</label><select data-f="keying">' +
-        '<option value="">off</option><option value="external">external</option>' +
-        '<option value="internal">internal</option></select></div>' +
+      '<div class="field" data-when="keying"><label>Mode</label><select data-f="keying">' +
+        '<option value="">Fill only</option>' +
+        '<option value="external">Key + fill</option>' +
+        '<option value="internal">Overlay</option></select></div>' +
       '<div class="field" data-when="keying"><label>Key level</label>' +
         '<input type="number" min="0" max="255" data-f="key_level" value="' +
         (options.key_level ?? 255) + '"></div>' +
@@ -658,6 +680,11 @@ function outputEditor(output, isNew) {
         '<input type="number" min="1" max="16" data-f="factor" value="' +
         (options.factor ?? 4) + '"></div>' +
     '</div>' +
+    '<p class="hint" data-when="keying">' +
+      'Fill only sends the picture with no key. Key + fill puts fill and key on ' +
+      'separate SDI connectors. Overlay composites over the input the card is ' +
+      'already receiving, using its internal keyer. Never run against hardware ' +
+      '&mdash; see docs/04-verification.md.</p>' +
     '<label class="check" data-when="alpha">' +
       '<input type="checkbox" data-f="alpha"' + (options.alpha ? ' checked' : '') + '>' +
       'Carry alpha (BGRA, straight)</label>' +
@@ -1259,7 +1286,8 @@ async function pullSources() {
   }
   if (!currentSource && data.primary) currentSource = data.primary;
 
-  document.getElementById('source-strip').hidden = knownSources.length < 2;
+  // Removing the last tab would leave the process with nothing to render, so
+  // that one stays hidden; the strip itself never does.
   document.getElementById('remove-source').hidden = knownSources.length < 2;
   renderSourceChips();
 
@@ -1295,21 +1323,51 @@ document.getElementById('remove-source').addEventListener('click', async () => {
   }
 });
 
-document.getElementById('add-source').addEventListener('click', async () => {
-  const id = prompt('An id for the new source (letters, digits, - _ .)');
+const newSourceForm = document.getElementById('new-source');
+
+function showNewSource(show) {
+  newSourceForm.hidden = !show;
+  document.getElementById('add-source').hidden = show;
+  if (show) {
+    // Pre-filled from what is already running: a second tab is nearly always
+    // the same raster as the first, and typing it again is a chance to get it
+    // wrong.
+    document.getElementById('ns-format').value =
+      document.getElementById('format').value || '1080p50';
+    document.getElementById('ns-url').value = '';
+    document.getElementById('ns-id').value = '';
+    document.getElementById('ns-id').focus();
+  }
+}
+
+document.getElementById('add-source').addEventListener('click', () => showNewSource(true));
+document.getElementById('ns-cancel').addEventListener('click', () => showNewSource(false));
+newSourceForm.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') showNewSource(false);
+});
+
+newSourceForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const id = document.getElementById('ns-id').value.trim();
   if (!id) return;
-  const url = prompt('URL to render', 'about:blank');
-  if (url === null) return;
-  const format = prompt('Format', document.getElementById('format').value || '1080p50');
-  if (format === null) return;
-  const created = await post('/api/sources/add', {
-    source: { id: id, url: url, format: format },
-  });
+  if (knownSources.some((s) => s.id === id)) {
+    toast("a tab called '" + id + "' already exists", true);
+    return;
+  }
+  const source = { id: id, format: document.getElementById('ns-format').value.trim() };
+  // Omitted rather than sent empty, so the server applies its own default.
+  const url = document.getElementById('ns-url').value.trim();
+  if (url) source.url = url;
+
+  const created = await post('/api/sources/add', { source: source });
   if (created) {
-    toast("source '" + id + "' started");
+    toast("tab '" + id + "' started");
+    showNewSource(false);
     await pullSources();
     selectSource(id);
   }
+  // On failure the form stays open with the values still in it, so a rejected
+  // raster can be corrected rather than retyped.
 });
 
 // Coming back to the page should show a live picture straight away rather than

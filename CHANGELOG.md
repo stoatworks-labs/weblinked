@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.6.0 — 2026-07-31
+
+The operator window is gone, tabs are reachable, and the tray launcher ships.
+
+### Changed
+
+- **WebLinked no longer opens a window.** It is a render host and a control
+  server; the control page it already serves is the whole UI. The window it used
+  to open never worked in a released build — it came up correctly sized, titled
+  `WebLinked - Chromium`, and completely empty, with the GPU process segfaulting
+  on startup every time. Every source browser here is windowless, windowless
+  rendering always uses Alloy runtime style, and a windowed browser defaults to
+  Chrome style, so the process ran two runtime styles at once. Measured rather
+  than assumed: a headless run crashes the GPU process zero times, a windowed run
+  crashes it every time. It also never had a menu bar, so it could not be quit
+  from one. `--headless` is accepted and ignored.
+- **Keying is described in the operator's terms**, not the SDK's: **Fill only**,
+  **Key + fill** and **Overlay** rather than off/external/internal. Same wire
+  values, so existing settings files and `--key` are unaffected.
+
+### Added
+
+- **The tray launcher is now a released artefact** (`WebLinked Launcher_*`), for
+  macOS, Windows and Linux. It starts and stops WebLinked, picks which interface
+  the control page binds to, and opens it. It expects WebLinked already
+  installed, and each platform ships the config for its own install path.
+
+### Fixed
+
+- **A second tab could not be created from the UI at all.** The source strip hid
+  itself below two sources — and the `+` button lived inside it, so a fresh
+  launch with one source had no way to reach a second. Running several pipelines
+  has worked in the API and in `--config` since v0.4.0; it was simply unreachable
+  from the page. The strip is now always visible and is the tab bar.
+- **Adding a source no longer walks through three `prompt()` boxes**, which could
+  not be corrected once past, could not report why the server refused, and are
+  blocked outright by some kiosk shells. It is an inline form that stays open
+  with your values in it when something is rejected, and refuses a duplicate id
+  before sending anything.
+- **AJA advertised a keyer it does not implement.** `aja_output.cpp` contains no
+  keying code, so the control wrote an option nothing read. Removed from the UI
+  until the backend exists.
+- **The launcher no longer installs as `WebLinked.app`**, which collided with
+  WebLinked itself in `/Applications`. It is `WebLinked Launcher.app`,
+  `works.stoat.weblinked.launcher`.
+
 ## v0.5.2 — 2026-07-31
 
 The launch failure that made a second instance impossible.

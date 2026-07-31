@@ -23,7 +23,7 @@ CEF is downloaded on first configure into `third_party/cef/current` (gitignored)
 ## Test
 
 ```bash
-./build/tests/weblinked_tests          # all (73 tests)
+./build/tests/weblinked_tests          # all (74 tests)
 ./build/tests/weblinked_tests uyvy     # substring filter
 ```
 
@@ -89,8 +89,11 @@ AV_LAUNCHER_CONFIG=launchers/dev.toml npm run tauri dev   # against ./build
 7. **`FramePool` is always held by `shared_ptr`** (`FramePool::create`).
 8. **macOS bundles are signed inside-out, ad-hoc without hardened runtime.** See
    `cmake/SignMacBundle.cmake` before changing anything there.
-9. **Popups are never allowed to become windows.** A windowless browser cannot
-   own one; `OnBeforePopup` always cancels. See the trap in `AGENTS.md`.
+9. **Popups are never allowed to become windows, and neither is anything else.**
+   A windowless browser cannot own one; `OnBeforePopup` always cancels. This
+   process opens **no** window at all — every browser in it is windowless, which
+   forces Alloy runtime style, and a windowed browser would default to Chrome
+   style and segfault the GPU process. See `docs/04-verification.md` section 9.
 10. **Anything the clock thread reads outside `Engine::mutex_` is atomic** —
     `matrix_`, `pacing_`. The settings page can write both at run time.
 11. **Build clean (`rm -rf build`) before tagging a release.** An incremental

@@ -217,6 +217,78 @@ jobs:
             *.pkg
           if-no-files-found: error
 
+  launcher:
+    name: Launcher (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macos-arm64,    os: macos-14,       config: macos }
+          - { name: windows-x86_64, os: windows-latest, config: windows }
+          - { name: linux-x86_64,   os: ubuntu-22.04,   config: linux }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        # libayatana-appindicator3 is the tray icon; without it the app builds
+        # and then has nowhere to live, which is the entire point of it.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev patchelf build-essential libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            launcher/src-tauri/target
+          key: launcher-${{ matrix.name }}-${{ hashFiles('launcher/src-tauri/Cargo.lock') }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Select the platform launcher config
+        shell: bash
+        # `command` is the one field that cannot be platform-neutral, and
+        # av-launcher's schema is shared with the rest of the fleet, so the
+        # choice is made here rather than by adding per-OS keys to it. A test
+        # (every_platform_variant_parses_and_launches) pins all three.
+        run: cp "launcher/launchers/${{ matrix.config }}.toml" launcher/src-tauri/launcher.toml
+
+      - name: Test
+        working-directory: launcher
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build
+        working-directory: launcher
+        run: |
+          npm install
+          npm run tauri build
+
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir -p launcher-out
+          b=launcher/src-tauri/target/release/bundle
+          # Only the installable artefacts. The raw target/release tree also
+          # holds the unbundled binary, which is useless without its resources.
+          find "$b" -maxdepth 3 \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' \
+            -o -name '*-setup.exe' -o -name '*.msi' \) -exec cp {} launcher-out/ \;
+          ls -l launcher-out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: weblinked-launcher-${{ matrix.name }}
+          path: launcher-out/*
+          if-no-files-found: error
+
   windows-installer:
     name: Windows installer
     needs: build
@@ -260,7 +332,7 @@ jobs:
 
   release:
     name: Publish release
-    needs: [build, windows-installer]
+    needs: [build, launcher, windows-installer]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -278,6 +350,13 @@ jobs:
             **Windows** — `-setup.exe` installs with shortcuts; `.zip` is portable. x86_64.
 
             **Linux** — portable `.tar.gz`, x86_64.
+
+            **WebLinked Launcher** — optional tray app (`WebLinked Launcher_*`). It starts and
+            stops WebLinked, lets you pick which network interface the control page binds to,
+            and opens it in your browser. WebLinked itself has no window: it is a render host
+            and a control server, and the control page is the whole UI. The launcher expects
+            WebLinked already installed — macOS `/Applications`, Windows `C:\Program Files\
+            WebLinked`, Linux on `PATH`.
 
             **Output backends in these builds:** NDI, OMT and the preview. The NDI SDK headers
             are vendored and the runtime is bundled into the artefact, so NDI works on a machine

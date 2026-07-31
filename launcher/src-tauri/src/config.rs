@@ -491,6 +491,38 @@ mod tests {
         assert!(!launch.args.iter().any(|a| a == "--no-settings"));
     }
 
+    /// Every platform variant CI can ship must parse and produce the right argv.
+    ///
+    /// The Windows one is the reason this exists: a Windows path in a TOML
+    /// *basic* string makes `C:\\Program Files\\...` an invalid escape and the
+    /// whole file fails to load — which is not a compile error, not caught by
+    /// the macOS-only test above, and presents as a launcher that starts and
+    /// then cannot find its own configuration. It has to be a literal string.
+    #[test]
+    fn every_platform_variant_parses_and_launches() {
+        for (name, text) in [
+            ("macos", include_str!("../../launchers/macos.toml")),
+            ("windows", include_str!("../../launchers/windows.toml")),
+            ("linux", include_str!("../../launchers/linux.toml")),
+        ] {
+            let cfg: LauncherConfig = toml::from_str(text)
+                .unwrap_or_else(|e| panic!("{name}.toml does not parse: {e}"));
+            assert_eq!(cfg.app.name, "WebLinked", "{name}");
+            assert_eq!(cfg.inject.mode, "args", "{name}");
+            assert_eq!(cfg.app.default_port, 7654, "{name}");
+            assert!(!cfg.app.command.is_empty(), "{name} has no command");
+
+            let tmp = std::env::temp_dir().join(format!("weblinked-launcher-{name}"));
+            let launch = build_launch(&cfg, "10.0.0.7", 7654, &tmp, None)
+                .unwrap_or_else(|e| panic!("{name}: build_launch failed: {e}"));
+            assert_eq!(
+                launch.args,
+                vec!["--headless", "--bind", "10.0.0.7", "--port", "7654"],
+                "{name} argv"
+            );
+        }
+    }
+
     /// args mode: {host}/{port} substituted directly into argv.
     #[test]
     fn args_injection() {

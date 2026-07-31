@@ -1,11 +1,12 @@
-# WebLinked launcher definition - macos.
+# WebLinked launcher definition - windows.
 #
 # CI copies the right one of launchers/{macos,windows,linux}.toml over
 # src-tauri/launcher.toml before `tauri build`, because `command` is the one
 # field that cannot be platform-neutral and av-launcher's schema is shared with
 # the rest of the fleet - adding per-OS keys to it would change every repo.
 #
-# Where the .pkg and .dmg put it.
+# Where the NSIS installer puts it. The portable .zip has no fixed
+# home, so point this at wherever you unpacked it.
 #
 # --headless is a no-op in current WebLinked and is passed only so this config
 # also drives an older build, which did have a window to suppress.
@@ -21,7 +22,7 @@
 
 [app]
 name = "WebLinked"
-command = "/Applications/WebLinked.app/Contents/MacOS/WebLinked"
+command = 'C:\Program Files\WebLinked\WebLinked.exe'
 args = ["--headless", "--bind", "{host}", "--port", "{port}"]
 url = "http://{host}:{port}/"
 default_port = 7654

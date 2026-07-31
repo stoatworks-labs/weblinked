@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "WebLinked",
-  "version": "0.3.0",
-  "identifier": "com.allansargeant.weblinked",
+  "productName": "WebLinked Launcher",
+  "version": "0.6.0",
+  "identifier": "works.stoat.weblinked.launcher",
   "build": {
     "frontendDist": "../src"
   },
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "WebLinked",
+        "title": "WebLinked Launcher",
         "width": 460,
         "height": 500,
         "resizable": false,

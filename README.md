@@ -138,11 +138,14 @@ All builds, checksums and release notes: [github.com/stoatworks-labs/weblinked/r
 - **Live control**: change the URL, reload, run JavaScript in the page, change
   raster, or stop and start an output mid-show, from the control page, HTTP, or
   OSC.
-- **Several sources in one process.** `--config show.json` starts any number of
-  independent pipelines — each its own browser, clock, raster and outputs — and
-  they share nothing but Chromium's process. A page that hangs, a card that will
-  not open or a raster change on one source cannot touch the others. The control
-  page grows a strip along the top with a live thumbnail per source; HTTP verbs
+- **Several sources in one process, as tabs.** Each is an independent pipeline —
+  its own browser, clock, raster and outputs — and they share nothing but
+  Chromium's process. A page that hangs, a card that will not open or a raster
+  change on one source cannot touch the others. Add one with `+ tab` on the
+  control page, or start a whole show at once with `--config show.json`. Every
+  tab routes to its own outputs, so one can be going to SDI as **key + fill**
+  while another goes out over NDI. The tab bar carries a live thumbnail per
+  source; HTTP verbs
   take `?source=<id>` and OSC takes `/weblinked/source/<id>/<verb>`. Leave the id
   off and the request goes to the first source, so everything that drove a
   single-source WebLinked still does.

@@ -500,6 +500,73 @@ card has ever been connected.
 
 ---
 
+## 17. Tabs, and per-tab output routing — verified
+
+Driven in a real browser against a running instance, through the page's own
+handlers rather than by calling the API behind it.
+
+Starting from a default launch (one source), clicking `+ tab`, filling the inline
+form and submitting it:
+
+```
+sources: main   1920x1080p50  running=True
+         lower3 1280x720p50   running=True
+```
+
+Then an NDI output added to `lower3` alone:
+
+```
+[main]   preview  preview                 running=True
+[lower3] preview  preview                 running=True
+         ndi      Lower3-NDI              running=True
+```
+
+That is the property that matters: the outputs belong to the tab, not to the
+process. Also verified in the same session — the new tab is auto-selected, the
+form closes on success, a duplicate id is refused client-side with the form left
+open (`a tab called 'lower3' already exists`) and no request sent, and the
+console is free of errors throughout.
+
+**The bug this found is the feature itself.** Several sources have worked in the
+API and in `--config` since v0.4.0, and section 15 verified three at once. None
+of that was reachable from the page: the source strip hid itself below two
+sources, and the `+` button lived inside the strip — so a default launch could
+never get to a second one. Verifying the engine is not the same as verifying the
+route an operator takes to it.
+
+The three output modes — **Fill only**, **Key + fill**, **Overlay** — were
+checked in the DOM against a DeckLink output on a build with the DeckLink SDK
+present, confirming the labels map to `""`, `"external"` and `"internal"` and
+that they appear only for backends that have a keyer. **Nothing here has been
+near a card**: the modes are a renaming of options `decklink_output.cpp` already
+read, and the keying path remains unverified against hardware exactly as before.
+AJA no longer offers the control at all, because `aja_output.cpp` implements no
+keying.
+
+---
+
+## 18. The tray launcher — built, not yet driven
+
+Improved from section 14 but still not end-to-end.
+
+- Builds on this Mac into `WebLinked Launcher.app` and
+  `WebLinked Launcher_0.6.0_aarch64.dmg`, with `works.stoat.weblinked.launcher`
+  as its identifier — so it no longer collides with WebLinked's own
+  `/Applications/WebLinked.app`, which the previous `productName` did.
+- The bundled `launcher.toml` is confirmed present inside the built `.app` and
+  points at the installed WebLinked.
+- `cargo test` passes 8 tests. The new one parses all three platform configs and
+  asserts the argv each produces — which is how the Windows one was caught being
+  **unparseable**: a Windows path in a TOML basic string makes `C:\Program
+  Files\...` an invalid escape, so the whole file failed to load. That would
+  have shipped a launcher that starts and cannot find its own configuration.
+
+**Not verified:** Start / Stop / Launch GUI clicked against a live WebLinked; the
+Windows and Linux bundles, which only CI builds; and the `.app` on a machine that
+has never seen the source.
+
+---
+
 ## Bugs this verification actually found
 
 Recorded because they are the argument for doing it at all. Every one was found

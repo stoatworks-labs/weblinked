@@ -90,6 +90,17 @@ nothing. Both `installSignalHandlers()` and `diag::installCrashHandler()` are
 called *after* `CefInitialize` for exactly this reason — the first symptom was a
 crash that produced no crash report.
 
+**This process opens no window, and must not.** Every browser in it is
+windowless; windowless rendering *always* uses Alloy runtime style, and a
+windowed browser defaults to Chrome style. Hosting both means two runtime styles
+in one process, and the GPU process segfaults on startup — leaving a correctly
+sized, completely empty window. That is exactly what shipped as the "operator
+window" up to v0.5.2, and it survived because every test run was headless, where
+the GPU process never crashes. The UI is the control page, in a browser; the tray
+launcher in `launcher/` is what puts it on a desktop. If you ever add a window
+back, `CefWindowInfo::runtime_style = CEF_RUNTIME_STYLE_ALLOY` is the thing you
+will need, and a menu bar, because CEF sets neither for you.
+
 **`root_cache_path` is not optional.** Left unset, CEF picks a default profile
 directory shared by *every* CEF application on the machine, and Chromium allows
 exactly one browser process per profile directory. The second one to start finds
