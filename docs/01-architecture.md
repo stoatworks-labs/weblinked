@@ -122,6 +122,37 @@ path as SDI and NDI. If the preview is wrong, the outputs are wrong. That is the
 property you want from a confidence monitor, and it is why the preview is not
 simply tapped off the browser.
 
+The same page carries the settings and diagnostics views, as tabs rather than
+separate pages: switching must not cost the preview stream or the state poll,
+and the operator window loads the page exactly once.
+
+For a machine where WebLinked should come up at login and sit in the menu bar
+instead of a terminal, [`launcher/`](../launcher/) wraps it in the fleet's
+av-launcher tray shell, running it `--headless` so there is only ever one UI.
+
+## A windowless browser cannot own a popup
+
+Chromium's answer to `target="_blank"` and `window.open` is to create a second
+browser parented to the first. There is no window here to parent it to: the
+source browser is windowless, painting into a frame slot.
+
+Left to CEF's default this took the whole application down, and the route was
+worse than a crash on the way there. The popup arrived at the same client, whose
+render handler answers for the offscreen raster; `OnAfterCreated` rebound the
+client's browser reference to it, so the engine's frame requests, navigation and
+input all went to a browser nothing was reading; and when that popup closed,
+`OnBeforeClose` cleared the reference and left the programme output pointed at
+nothing.
+
+So `OnBeforePopup` always cancels, and the URL the popup wanted is handled
+instead — loaded in the same browser (`--popups navigate`, the default) or
+dropped (`--popups block`). There is deliberately no third option. The operator
+window's client, which *is* windowed and may legitimately open one, counts its
+browsers instead and only quits the message loop when the last has gone; before
+that, closing a popup quit the application and took the outputs with it.
+
+Found by clicking an ordinary link in the interactive preview.
+
 ## Why three of the four SDKs are loaded at run time
 
 - **NDI** may not be redistributed. Resolving `NDIlib_send_create` and friends by

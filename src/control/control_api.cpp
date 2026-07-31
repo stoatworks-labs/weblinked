@@ -1,11 +1,18 @@
 #include "control/control_api.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 
 #include "control/web_assets.h"
 #include "core/json.h"
+#include "core/settings_store.h"
 #include "diag/diag.h"
 #include "engine/engine.h"
+#include "outputs/output.h"
 #include "outputs/preview_output.h"
 
 namespace weblinked {
@@ -29,6 +36,45 @@ bool parseBody(const HttpServer::Request& request, json::Value& out,
 }
 
 void ok(HttpServer::Response& response) { response.json("{\"ok\":true}"); }
+
+/// The level as the API spells it: lower case, no padding.
+///
+/// diag pads its names to five characters so log columns line up, which is
+/// right for a log file and wrong for JSON — "INFO " would never match the
+/// control page's <option value="info">, so the selector would sit on the wrong
+/// entry and the first change would look like it had done nothing.
+std::string levelName(diag::Level level) {
+  std::string text = diag::levelToString(level);
+  while (!text.empty() && text.back() == ' ') {
+    text.pop_back();
+  }
+  std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return text;
+}
+
+/// Parses and validates a source configuration from a request body, reporting
+/// the reason to the client if it will not do.
+std::optional<SourceConfig> readSourceConfig(const json::Value& value,
+                                             HttpServer::Response& response) {
+  std::string error;
+  auto config = SourceConfig::fromJson(value, &error);
+  if (!config) {
+    response.error(400, error);
+    return std::nullopt;
+  }
+  if (config->id.empty()) {
+    // The page has no reason to invent one, and there is only ever one source
+    // in this process.
+    config->id = "main";
+  }
+  if (!config->validate(&error)) {
+    response.error(400, error);
+    return std::nullopt;
+  }
+  return config;
+}
 
 /// Builds an InputEvent from the control page's JSON.
 ///
@@ -98,6 +144,8 @@ ControlApi::~ControlApi() { stop(); }
 
 bool ControlApi::start(const Config& config, std::string& error) {
   config_ = config;
+  settingsPath_ = config.settingsPath.empty() ? settings::defaultPath()
+                                              : config.settingsPath;
 
   if (!http_.start(config.httpBind, config.httpPort, config.httpToken,
                    [this](const HttpServer::Request& request,
@@ -183,6 +231,52 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
     json::Value value = json::Value::object();
     value.set("bundle", json::Value(bundle));
     value.set("log", json::Value(diag::logFilePath()));
+    value.set("log_directory", json::Value(diag::logDirectory()));
+    response.json(value.serialize());
+    return;
+  }
+
+  if (path == "/api/diagnostics/bundle") {
+    // The same bundle, but as the file itself rather than a path to it. The
+    // path is no use when the operator is on a laptop and the machine that has
+    // the fault is in a rack two floors down.
+    const std::string bundle = diag::collectBundle();
+    std::ifstream file(bundle, std::ios::binary);
+    if (!file) {
+      response.error(500, "the diagnostics bundle could not be written to " + bundle);
+      return;
+    }
+    std::ostringstream text;
+    text << file.rdbuf();
+    response.contentType = "application/json";
+    response.body = text.str();
+    response.extraHeaders["Content-Disposition"] =
+        "attachment; filename=\"" + std::filesystem::path(bundle).filename().string() + "\"";
+    return;
+  }
+
+  if (path == "/api/log") {
+    const int requested = std::atoi(request.param("lines", "200").c_str());
+    const size_t lines = requested <= 0 ? 200 : static_cast<size_t>(requested);
+    json::Value value = json::Value::object();
+    value.set("level", json::Value(levelName(diag::level())));
+    value.set("path", json::Value(diag::logFilePath()));
+    value.set("directory", json::Value(diag::logDirectory()));
+    json::Value list = json::Value::array();
+    for (const auto& line : diag::tail(lines)) {
+      list.push(json::Value(line));
+    }
+    value.set("lines", list);
+    response.json(value.serialize());
+    return;
+  }
+
+  if (path == "/api/settings") {
+    json::Value value = json::Value::object();
+    value.set("path", json::Value(settingsPath_));
+    value.set("saved",
+              json::Value(std::filesystem::exists(std::filesystem::path(settingsPath_))));
+    value.set("source", engine_->configuration().toJson());
     response.json(value.serialize());
     return;
   }
@@ -324,6 +418,128 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
       return;
     }
     ok(response);
+    return;
+  }
+
+  if (path == "/api/output/update") {
+    const std::string name = body["name"].asString();
+    if (name.empty()) {
+      response.error(400, "expected {\"name\": \"...\", \"output\": { ... }}");
+      return;
+    }
+    std::string parseError;
+    const auto config = OutputConfig::fromJson(body["output"], &parseError);
+    if (!config) {
+      response.error(400, parseError);
+      return;
+    }
+    OutputSpec spec = outputSpecFromConfig(*config);
+    if (spec.name.empty()) {
+      spec.name = name;
+    }
+    std::string error;
+    if (!engine_->updateOutput(name, spec, error)) {
+      response.error(409, error);
+      return;
+    }
+    ok(response);
+    return;
+  }
+
+  if (path == "/api/pacing") {
+    const std::string mode = body["pacing"].asString("external");
+    if (mode != "external" && mode != "internal") {
+      response.error(400, "pacing must be \"external\" or \"internal\"");
+      return;
+    }
+    engine_->setPacing(mode == "internal"
+                           ? BrowserSource::Pacing::kInternalTimer
+                           : BrowserSource::Pacing::kExternalBeginFrame);
+    ok(response);
+    return;
+  }
+
+  if (path == "/api/settings/apply") {
+    const auto config = readSourceConfig(body["source"], response);
+    if (!config) {
+      return;
+    }
+    std::string error;
+    if (!engine_->applyConfiguration(*config, error)) {
+      // 409, not 500: the settings were valid and most of them are now live.
+      // The page shows the message against the output that refused.
+      response.error(409, "settings applied, except: " + error);
+      return;
+    }
+    ok(response);
+    return;
+  }
+
+  if (path == "/api/settings/save") {
+    // Saving what the engine is actually doing, not what the request says, so
+    // the file can never claim an output that failed to open.
+    AppConfig file;
+    file.sources.push_back(engine_->configuration());
+    file.httpBind = config_.httpBind;
+    file.httpPort = config_.httpPort;
+    file.httpToken = config_.httpToken;
+    file.oscEnabled = config_.oscEnabled;
+    file.oscBind = config_.oscBind;
+    file.oscPort = config_.oscPort;
+
+    std::string error;
+    if (!settings::save(file, settingsPath_, &error)) {
+      response.error(500, error);
+      return;
+    }
+    diag::info("settings saved to %s", settingsPath_.c_str());
+    json::Value value = json::Value::object();
+    value.set("ok", json::Value(true));
+    value.set("path", json::Value(settingsPath_));
+    response.json(value.serialize());
+    return;
+  }
+
+  if (path == "/api/settings/reload") {
+    std::string error;
+    const auto file = settings::load(settingsPath_, &error);
+    if (!file || file->sources.empty()) {
+      response.error(404, file ? "the settings file has no sources" : error);
+      return;
+    }
+    std::string applyError;
+    if (!engine_->applyConfiguration(file->sources.front(), applyError)) {
+      response.error(409, "settings loaded, except: " + applyError);
+      return;
+    }
+    ok(response);
+    return;
+  }
+
+  if (path == "/api/log/level") {
+    const std::string text = body["level"].asString();
+    if (text.empty()) {
+      response.error(400, "expected {\"level\": \"debug\"}");
+      return;
+    }
+    diag::setLevel(diag::levelFromString(text));
+    json::Value value = json::Value::object();
+    value.set("ok", json::Value(true));
+    // Echoed back because levelFromString falls back rather than failing: a
+    // typo would otherwise look like it worked.
+    value.set("level", json::Value(levelName(diag::level())));
+    response.json(value.serialize());
+    return;
+  }
+
+  if (path == "/api/diagnostics/report") {
+    const std::string reason =
+        body["reason"].asString("requested from the control page");
+    const std::string report = diag::writeReport(reason);
+    json::Value value = json::Value::object();
+    value.set("ok", json::Value(true));
+    value.set("report", json::Value(report));
+    response.json(value.serialize());
     return;
   }
 

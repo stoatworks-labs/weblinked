@@ -33,6 +33,11 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
     --bad: #ff5f56;
   }
   * { box-sizing: border-box; }
+  /* The browser's own [hidden] rule is display:none at UA specificity, so any
+     class here that sets a display — .check is flex — silently outranks it and
+     the element stays visible. That showed up as an alpha checkbox on the
+     preview output, which has no alpha to carry. */
+  [hidden] { display: none !important; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
     font: 13px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -115,18 +120,76 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
   }
   #toast.show { opacity: 1; }
   #toast.bad { border-color: var(--bad); color: #ffd9d6; }
+
+  /* --- tabs ---------------------------------------------------------------
+     Three views on one page rather than three pages: the operator window loads
+     this once and must not lose the preview stream to a navigation. */
+  nav { display: flex; gap: 2px; }
+  nav button {
+    background: none; border: 1px solid transparent; border-radius: 5px;
+    color: var(--dim); padding: 4px 10px; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .06em;
+  }
+  nav button.on { background: var(--panel-2); border-color: var(--line); color: var(--text); }
+  main[hidden] { display: none; }
+
+  /* --- settings ----------------------------------------------------------- */
+  input[type=number] {
+    width: 100%; padding: 7px 9px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 5px; color: var(--text);
+    font: inherit;
+  }
+  .field { margin-bottom: 10px; }
+  .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+  .check {
+    display: flex; align-items: center; gap: 6px; color: var(--text);
+    font-size: 12px; margin-bottom: 10px;
+  }
+  .check input { accent-color: var(--accent); margin: 0; }
+  .output-editor {
+    border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px;
+    margin-bottom: 10px; background: var(--panel-2);
+  }
+  .output-editor header {
+    background: none; border: none; padding: 0 0 8px; gap: 8px;
+  }
+  .output-editor header .name { font-size: 12px; font-weight: 600; }
+  .buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+  button.danger { border-color: #6a2c2a; color: #ffb3ae; }
+  button.danger:hover { border-color: var(--bad); }
+  .note { font-size: 11px; color: var(--dim); margin: 8px 0 0; }
+  .path {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+    color: var(--dim); word-break: break-all;
+  }
+
+  /* --- diagnostics -------------------------------------------------------- */
+  #log {
+    background: #0e1114; border: 1px solid var(--line); border-radius: 5px;
+    padding: 8px 10px; height: 420px; overflow: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; line-height: 1.45; white-space: pre-wrap; word-break: break-word;
+  }
+  #log div.warn { color: #ffc76b; }
+  #log div.error, #log div.fatal { color: #ff9b93; }
+  #log div.debug, #log div.trace { color: var(--dim); }
 </style>
 </head>
 <body>
 <header>
   <h1>WEBLINKED</h1>
   <span class="version" id="version"></span>
+  <nav>
+    <button data-view="control" class="on">Control</button>
+    <button data-view="settings">Settings</button>
+    <button data-view="diagnostics">Diagnostics</button>
+  </nav>
   <span class="spacer"></span>
   <span class="pill"><span class="dot" id="engine-dot"></span><span id="engine-text">connecting</span></span>
   <span class="pill" id="format-pill">&mdash;</span>
 </header>
 
-<main>
+<main id="view-control">
   <div style="display:flex;flex-direction:column;gap:14px">
     <section>
       <h2>Source</h2>
@@ -152,7 +215,8 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
       <canvas id="preview" width="480" height="270" tabindex="0"></canvas>
       <p id="interactive-hint" class="hint" hidden>
         Clicks, scrolling and typing go to the live page — enough to dismiss a
-        cookie banner or close a popup. <strong>This is the on-air output.</strong>
+        cookie banner or sign in. A link that asks for a new tab loads here
+        instead of opening a window. <strong>This is the on-air output.</strong>
       </p>
     </section>
 
@@ -184,6 +248,135 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
     <section>
       <h2>Source detail</h2>
       <dl id="source"></dl>
+    </section>
+  </div>
+</main>
+
+<main id="view-settings" hidden>
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <section>
+      <h2>Outputs</h2>
+      <div id="output-editors"></div>
+      <div class="buttons">
+        <button id="add-output">Add an output</button>
+      </div>
+      <p class="note">
+        Changes apply immediately. An output that cannot open keeps its previous
+        settings and shows why &mdash; nothing is silently dropped.
+      </p>
+    </section>
+
+    <section>
+      <h2>Saved settings</h2>
+      <p class="path" id="settings-path">&mdash;</p>
+      <div class="buttons" style="margin-top:10px">
+        <button class="primary" id="save-settings">Save</button>
+        <button id="reload-settings">Reload from file</button>
+      </div>
+      <p class="note">
+        Saving records what is actually running, so a card that failed to open
+        is never written down as working. Anything given on the command line
+        wins over the file at the next launch.
+      </p>
+    </section>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <section>
+      <h2>Source</h2>
+      <div class="field">
+        <label for="set-url">URL</label>
+        <input type="text" id="set-url" spellcheck="false">
+      </div>
+      <div class="fields">
+        <div class="field">
+          <label for="set-format-2">Format</label>
+          <input type="text" id="set-format-2" spellcheck="false" placeholder="1080p50">
+        </div>
+        <div class="field">
+          <label for="set-matrix">Colour matrix</label>
+          <select id="set-matrix">
+            <option value="auto">auto (709 at 720+ lines)</option>
+            <option value="709">BT.709</option>
+            <option value="601">BT.601</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="set-pacing">Pacing</label>
+          <select id="set-pacing">
+            <option value="external">external &mdash; we drive frames</option>
+            <option value="internal">internal &mdash; Chromium's timer</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="set-popups">New tabs and windows</label>
+          <select id="set-popups">
+            <option value="navigate">load here instead</option>
+            <option value="block">block</option>
+          </select>
+        </div>
+      </div>
+      <label class="check">
+        <input type="checkbox" id="set-interactive">
+        Arm the preview for input when the page loads
+      </label>
+      <div class="buttons">
+        <button class="primary" id="apply-settings">Apply</button>
+      </div>
+      <p class="note">
+        Changing the format or the pacing restarts things: every output reopens
+        at the new raster, and a pacing change rebuilds the browser at the same
+        URL. Neither is a mid-show operation.
+      </p>
+    </section>
+  </div>
+</main>
+
+<main id="view-diagnostics" hidden>
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <section>
+      <h2>Log
+        <label class="toggle">
+          <input type="checkbox" id="log-follow" checked> follow
+        </label>
+      </h2>
+      <div id="log"></div>
+      <div class="buttons" style="margin-top:10px">
+        <select id="log-level" style="width:auto">
+          <option value="trace">trace</option>
+          <option value="debug">debug</option>
+          <option value="info">info</option>
+          <option value="warn">warn</option>
+          <option value="error">error</option>
+        </select>
+        <button id="log-refresh">Refresh</button>
+      </div>
+    </section>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <section>
+      <h2>Collect</h2>
+      <div class="buttons">
+        <button class="primary" id="download-bundle">Download a bundle</button>
+        <button id="write-report">Write a report</button>
+      </div>
+      <p class="note">
+        A bundle is one JSON file carrying the build identity, the platform, the
+        redacted configuration, the recent log and any crash reports sitting
+        beside it. It downloads here rather than only naming a path, because the
+        machine with the fault is usually not the one you are sitting at.
+      </p>
+    </section>
+
+    <section>
+      <h2>Where things are</h2>
+      <dl id="diag-paths"></dl>
+    </section>
+
+    <section>
+      <h2>Browser</h2>
+      <dl id="diag-browser"></dl>
     </section>
   </div>
 </main>
@@ -222,6 +415,48 @@ async function post(path, payload) {
     return null;
   }
 }
+
+async function get(path) {
+  const response = await fetch(api(path));
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status));
+  return data;
+}
+
+// --- views ------------------------------------------------------------------
+//
+// Switching hides a <main> rather than navigating, so the preview stream and
+// the state poll survive a trip to the settings and back.
+
+let view = 'control';
+let lastState = {};
+
+function showView(name) {
+  view = name;
+  for (const button of document.querySelectorAll('nav button')) {
+    button.classList.toggle('on', button.dataset.view === name);
+  }
+  for (const id of ['control', 'settings', 'diagnostics']) {
+    document.getElementById('view-' + id).hidden = id !== name;
+  }
+  // Populated on arrival, not on every poll: a form that rewrites itself while
+  // somebody is typing in it is worse than a stale one.
+  if (name === 'settings') renderSettings(lastState);
+  if (name === 'diagnostics') pullLog();
+}
+
+for (const button of document.querySelectorAll('nav button')) {
+  button.onclick = () => showView(button.dataset.view);
+}
+
+// ?view=settings — so a view is linkable, and so the screenshot script can
+// capture each one without driving a window server. Applied after the first
+// state arrives rather than now: the settings editors are built from state, and
+// switching to them before there is any would render an empty page.
+const requestedView = qs.get('view');
+let pendingView = ['control', 'settings', 'diagnostics'].includes(requestedView)
+  ? requestedView
+  : null;
 
 // --- controls ---------------------------------------------------------------
 
@@ -308,6 +543,245 @@ function renderOutputs(outputs) {
   }
 }
 
+// --- settings ---------------------------------------------------------------
+//
+// The engine is the single source of truth: every editor is built from
+// /api/state and every change is a request. Nothing is kept client-side, so two
+// browsers open on the same instance cannot disagree about what is configured.
+
+// Which extra fields each backend actually has. Showing an NDI alpha checkbox
+// against a DeckLink would only invite an operator to set something that is
+// silently ignored.
+const OUTPUT_FIELDS = {
+  ndi: ['alpha'],
+  omt: ['alpha'],
+  decklink: ['device', 'keying'],
+  aja: ['device', 'keying'],
+  preview: ['factor'],
+};
+
+function outputEditor(output, isNew) {
+  const kinds = lastState.compiled_backends || ['preview'];
+  const options = output.options || {};
+  const node = document.createElement('div');
+  node.className = 'output-editor';
+
+  const kind = isNew ? (kinds.includes('ndi') ? 'ndi' : kinds[0]) : output.kind;
+  node.innerHTML =
+    '<header><span class="name">' + (isNew ? 'New output' : output.name) + '</span></header>' +
+    '<div class="fields">' +
+      '<div class="field"><label>Kind</label><select data-f="kind">' +
+        kinds.map((k) => '<option value="' + k + '"' + (k === kind ? ' selected' : '') +
+                         '>' + k + '</option>').join('') +
+      '</select></div>' +
+      '<div class="field"><label>Name</label>' +
+        '<input type="text" data-f="name" spellcheck="false" value="' +
+        (output.name || '').replace(/"/g, '&quot;') + '"></div>' +
+      '<div class="field" data-when="device"><label>Device index</label>' +
+        '<input type="number" min="0" data-f="device_index" value="' +
+        (output.device_index || 0) + '"></div>' +
+      '<div class="field" data-when="keying"><label>Keying</label><select data-f="keying">' +
+        '<option value="">off</option><option value="external">external</option>' +
+        '<option value="internal">internal</option></select></div>' +
+      '<div class="field" data-when="keying"><label>Key level</label>' +
+        '<input type="number" min="0" max="255" data-f="key_level" value="' +
+        (options.key_level ?? 255) + '"></div>' +
+      '<div class="field" data-when="factor"><label>Preview scale (1/n)</label>' +
+        '<input type="number" min="1" max="16" data-f="factor" value="' +
+        (options.factor ?? 4) + '"></div>' +
+    '</div>' +
+    '<label class="check" data-when="alpha">' +
+      '<input type="checkbox" data-f="alpha"' + (options.alpha ? ' checked' : '') + '>' +
+      'Carry alpha (BGRA, straight)</label>' +
+    '<div class="buttons">' +
+      '<button class="primary" data-a="save">' + (isNew ? 'Add' : 'Apply') + '</button>' +
+      (isNew ? '<button data-a="cancel">Cancel</button>'
+             : '<button class="danger" data-a="remove">Remove</button>') +
+    '</div>' +
+    (output.error ? '<p class="err">' + output.error + '</p>' : '');
+
+  const field = (name) => node.querySelector('[data-f="' + name + '"]');
+  field('keying').value = options.keying || '';
+
+  const applyVisibility = () => {
+    const shown = OUTPUT_FIELDS[field('kind').value] || [];
+    for (const element of node.querySelectorAll('[data-when]')) {
+      element.hidden = !shown.includes(element.dataset.when);
+    }
+  };
+  field('kind').onchange = applyVisibility;
+  applyVisibility();
+
+  const collect = () => {
+    const kindValue = field('kind').value;
+    const shown = OUTPUT_FIELDS[kindValue] || [];
+    const body = {
+      kind: kindValue,
+      name: field('name').value.trim() || kindValue,
+      device_index: shown.includes('device') ? Number(field('device_index').value) : 0,
+      options: {},
+    };
+    if (shown.includes('alpha') && field('alpha').checked) body.options.alpha = true;
+    if (shown.includes('keying') && field('keying').value) {
+      body.options.keying = field('keying').value;
+      body.options.key_level = Number(field('key_level').value);
+    }
+    if (shown.includes('factor')) body.options.factor = Number(field('factor').value);
+    return body;
+  };
+
+  node.querySelector('[data-a="save"]').onclick = async () => {
+    const body = collect();
+    const result = isNew
+      ? await post('/api/output/add', body)
+      : await post('/api/output/update', { name: output.name, output: body });
+    if (result) {
+      toast(isNew ? 'added ' + body.name : 'updated ' + body.name);
+      await refresh();
+      renderSettings(lastState);
+    }
+  };
+  if (isNew) {
+    node.querySelector('[data-a="cancel"]').onclick = () => renderSettings(lastState);
+  } else {
+    node.querySelector('[data-a="remove"]').onclick = async () => {
+      if (await post('/api/output/remove', { name: output.name })) {
+        toast('removed ' + output.name);
+        await refresh();
+        renderSettings(lastState);
+      }
+    };
+  }
+  return node;
+}
+
+function renderSettings(state) {
+  const host = document.getElementById('output-editors');
+  host.innerHTML = '';
+  for (const output of state.outputs || []) {
+    host.appendChild(outputEditor(output, false));
+  }
+  if (!(state.outputs || []).length) {
+    host.innerHTML = '<p class="note">No outputs. The control page needs a preview to show anything.</p>';
+  }
+
+  const settings = state.settings || {};
+  const source = state.source || {};
+  document.getElementById('set-url').value = source.url || '';
+  document.getElementById('set-format-2').value = state.format || '';
+  document.getElementById('set-matrix').value = settings.matrix || 'auto';
+  document.getElementById('set-pacing').value = source.pacing || 'external';
+  document.getElementById('set-popups').value = source.popup_policy || 'navigate';
+  document.getElementById('set-interactive').checked = !!settings.interactive_by_default;
+}
+
+document.getElementById('add-output').onclick = () => {
+  document.getElementById('output-editors').appendChild(outputEditor({}, true));
+};
+
+document.getElementById('apply-settings').onclick = async () => {
+  // One request rather than five, so the engine reconciles the whole thing and
+  // leaves alone anything that has not actually changed.
+  const source = {
+    id: 'main',
+    url: document.getElementById('set-url').value.trim() || 'about:blank',
+    format: document.getElementById('set-format-2').value.trim(),
+    matrix: document.getElementById('set-matrix').value,
+    pacing: document.getElementById('set-pacing').value,
+    popups: document.getElementById('set-popups').value,
+    interactive: document.getElementById('set-interactive').checked,
+    outputs: (lastState.outputs || []).map((output) => ({
+      kind: output.kind,
+      name: output.name,
+      device_index: output.device_index || 0,
+      options: output.options || {},
+    })),
+  };
+  if (await post('/api/settings/apply', { source })) {
+    toast('settings applied');
+    await refresh();
+    renderSettings(lastState);
+  }
+};
+
+document.getElementById('save-settings').onclick = async () => {
+  const result = await post('/api/settings/save', {});
+  if (result) toast('saved to ' + result.path);
+};
+
+document.getElementById('reload-settings').onclick = async () => {
+  if (await post('/api/settings/reload', {})) {
+    toast('reloaded from file');
+    await refresh();
+    renderSettings(lastState);
+  }
+};
+
+// --- diagnostics -------------------------------------------------------------
+
+const logView = document.getElementById('log');
+let logLevelKnown = false;
+let settingsFilePath = '';
+
+async function pullLog() {
+  if (view !== 'diagnostics') return;
+  try {
+    const data = await get('/api/log?lines=400');
+    if (!logLevelKnown) {
+      document.getElementById('log-level').value = data.level || 'info';
+      logLevelKnown = true;
+    }
+    const follow = document.getElementById('log-follow').checked;
+    const atBottom = logView.scrollTop + logView.clientHeight >= logView.scrollHeight - 8;
+    logView.innerHTML = (data.lines || [])
+      .map((line) => {
+        // "2026-07-31T09:14:02.113Z WARN message" — the level is the second
+        // field, and colouring by it is the whole point of reading a log.
+        const level = (line.split(' ')[1] || '').toLowerCase();
+        return '<div class="' + level + '">' +
+          line.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</div>';
+      })
+      .join('');
+    if (follow && atBottom) logView.scrollTop = logView.scrollHeight;
+
+    definitions(document.getElementById('diag-paths'), [
+      ['log file', '<span class="path">' + (data.path || '—') + '</span>'],
+      ['directory', '<span class="path">' + (data.directory || '—') + '</span>'],
+      ['settings', '<span class="path">' + (settingsFilePath || '—') + '</span>'],
+    ]);
+  } catch (err) {
+    toast(String(err), true);
+  }
+}
+
+document.getElementById('log-refresh').onclick = pullLog;
+document.getElementById('log-level').onchange = async (e) => {
+  const result = await post('/api/log/level', { level: e.target.value });
+  if (result) { toast('log level ' + result.level); pullLog(); }
+};
+
+document.getElementById('write-report').onclick = async () => {
+  const result = await post('/api/diagnostics/report', { reason: 'requested from the control page' });
+  if (result) toast('written to ' + result.report);
+};
+
+document.getElementById('download-bundle').onclick = () => {
+  // A plain navigation, so the browser's own download machinery handles it and
+  // the Content-Disposition filename is honoured.
+  window.location.href = api('/api/diagnostics/bundle');
+};
+
+async function pullSettingsPath() {
+  try {
+    const data = await get('/api/settings');
+    settingsFilePath = data.path || '';
+    document.getElementById('settings-path').textContent =
+      settingsFilePath + (data.saved ? '' : '  (not saved yet)');
+  } catch (err) {
+    /* the path is a nicety; the page works without it */
+  }
+}
+
 async function refresh() {
   let state;
   try {
@@ -356,10 +830,42 @@ async function refresh() {
     ['last error', source.last_error || '—'],
   ]);
 
+  definitions(document.getElementById('diag-browser'), [
+    ['popups intercepted', source.popups ?? 0],
+    ['popup policy', source.popup_policy || '—'],
+    ['last popup', source.last_popup_url ? source.last_popup_url.slice(0, 60) : '—'],
+    ['console errors', source.console_errors ?? 0],
+    ['last console error', source.last_console_error || '—'],
+    ['paints', source.paints ?? '—'],
+    ['version', state.version || '—'],
+  ]);
+
   const preview = (state.outputs || []).find((o) => o.kind === 'preview');
   if (preview && preview.audio_peak !== undefined) {
     document.getElementById('audio-meter').style.width =
       Math.min(100, preview.audio_peak * 100) + '%';
+  }
+
+  lastState = state;
+
+  if (pendingView) {
+    const wanted = pendingView;
+    pendingView = null;
+    showView(wanted);
+  }
+
+  // The preview arms itself on the first state that says it should. Done here
+  // rather than in the markup because the answer belongs to the engine — one
+  // instance can be launched with --no-interactive and another without, and
+  // every browser opened on the same instance should agree.
+  if (!interactiveResolved) {
+    interactiveResolved = true;
+    interactiveToggle.checked =
+      !!(state.settings && state.settings.interactive_by_default);
+    // Unconditionally, even when the checkbox already agrees: onchange is what
+    // sends the focus event, and without it the page would look armed and
+    // swallow every keystroke.
+    interactiveToggle.onchange();
   }
 }
 
@@ -378,8 +884,12 @@ const context = canvas.getContext('2d');
 // which is the only practical way to dismiss a cookie banner, close a modal or
 // sign in on a machine whose browser you cannot otherwise reach.
 //
-// Off by default and visibly outlined when on, because this is the on-air
-// output: a stray click lands on the programme feed.
+// On by default — the engine decides, and says so in /api/state — because the
+// preview is the only way to reach a page that wants a click before it shows
+// anything, and an operator who has to find a toggle first usually concludes
+// the preview is broken. Still visibly outlined whenever it is armed, because
+// this is the on-air output: a stray click lands on the programme feed.
+// `--no-interactive` restores the old behaviour.
 //
 // Positions are sent normalised. The canvas is a downscaled preview whose CSS
 // size depends on the window, so pixel coordinates here mean nothing to the
@@ -388,6 +898,8 @@ const context = canvas.getContext('2d');
 const interactiveToggle = document.getElementById('interactive');
 const interactiveHint = document.getElementById('interactive-hint');
 let interactive = false;
+/// Set once the engine has told us whether the preview should start armed.
+let interactiveResolved = false;
 
 interactiveToggle.onchange = () => {
   interactive = interactiveToggle.checked;
@@ -566,8 +1078,12 @@ document.addEventListener('visibilitychange', () => {
 
 refresh();
 pullPreview();
+pullSettingsPath();
 setInterval(refresh, 1000);
 setInterval(pullPreview, 125);
+// pullLog returns immediately unless the diagnostics view is showing, so this
+// costs nothing while somebody is watching the preview.
+setInterval(pullLog, 2000);
 </script>
 </body>
 </html>

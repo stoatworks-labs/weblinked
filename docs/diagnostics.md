@@ -119,3 +119,24 @@ always stop it with SIGTERM or the control page rather than SIGKILL.
 **"A card will not open."** `outputs[].error` carries the reason verbatim,
 including the case where the card lists your raster but not at your rate — the
 message names the rates it does offer.
+
+**"The page keeps jumping somewhere else."** `source.popups` counts how many
+times the page has asked for a new tab or window, and `source.last_popup_url`
+names the last one. Under the default policy those load in place, which is
+usually what an operator clicking a link wants and occasionally not what a page
+full of tracking links should be allowed to do. `--popups block`, or the
+setting on the Settings page, stops it.
+
+## Without a shell on the machine
+
+Everything above is on the **Diagnostics** page of the control page, which is
+the point: a rack machine on a show network usually has an HTTP port reachable
+and nothing else.
+
+- The live log, coloured by level, following as it arrives.
+- The level itself, changeable **while the fault is happening** — the usual
+  alternative is restarting the show to reproduce it at debug.
+- **Write a report** — a crash report without a crash, for the case where the
+  process is misbehaving rather than dying.
+- **Download a bundle** — the bundle as a file, not a path. A path is no use
+  when the machine with the fault is two floors down.

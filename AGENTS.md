@@ -58,9 +58,14 @@ src/engine/   the clock loop and everything it owns
 src/outputs/  IOutput + preview | ndi | omt | decklink | aja
 src/control/  HTTP server, OSC receiver, embedded control page
 src/app/      entry points, Info.plists, entitlements
+launcher/     the av-launcher tray shell, configured for WebLinked (Rust/Tauri)
 tools/        ndi_probe — an independent receiver, for verification
 tests/        unit tests; link core only
 ```
+
+`launcher/` is a separate Cargo project on purpose — it is the fleet's
+av-launcher shell with a `launcher.toml` and an icon, not code that belongs to
+this pipeline. It does not build with the rest.
 
 **`weblinked_core` must not depend on CEF.** That split is what keeps the test
 suite building in seconds instead of linking 200 MB of Chromium. If you need
@@ -142,6 +147,35 @@ the CEF header rather than the macro.
 receivers keep trying to connect to, and the next run can be undiscoverable for
 minutes. The SIGTERM handler exists because of this, not for tidiness.
 
+**A windowless browser cannot own a popup, and CEF's default tries.** Left
+alone, `target="_blank"` and `window.open` create a second browser parented to
+the offscreen one. That killed the application — and on the way there it rebound
+`RenderClient::browser_` to the popup, so the engine drove a browser nothing was
+reading. `OnBeforePopup` now always returns true; the URL is loaded in place or
+dropped. `OnAfterCreated` and `OnBeforeClose` also check which browser they were
+given. Never make popups "work" — there is no window to put one in.
+
+**Anything the clock thread reads outside `mutex_` must be atomic.** `matrix_`
+and `pacing_` were plain members, which was fine while only `start()` wrote
+them. The settings page made them writable at run time, and a torn read on the
+clock thread is the failure mode described two traps up.
+
+**Pacing cannot be switched on a live browser.** `external_begin_frame_enabled`
+is part of `CefWindowInfo` and read only at creation. Setting the field alone
+looks like it works and produces no frames at all: `requestFrame()` stops asking
+and the browser does not paint on its own. `BrowserSource::setPacing` rebuilds
+the browser at the same URL.
+
+**A CSS class with a `display` beats `[hidden]`.** The browser's own rule is at
+UA specificity, so `.check { display: flex }` silently outranks it. The settings
+page has an explicit `[hidden] { display: none !important }` because of a
+checkbox that would not hide. Assert visibility from the DOM, not from a
+screenshot.
+
+**Never let the settings page rewrite itself under someone's fingers.** The
+state poll runs every second; the editors are built only on arriving at the view
+and after a successful mutation.
+
 ## 5. Verified vs assumed — read this before claiming anything works
 
 `docs/04-verification.md` is the authority and is kept honest deliberately.
@@ -149,13 +183,21 @@ minutes. The SIGTERM handler exists because of this, not for tidiness.
 **Verified:** the NDI path end to end, against a real receiver, including colour
 correctness against an independent BT.709 reference, audio cadence at 59.94, and
 pacing over a three-minute soak with zero dropped ticks. The unit tests. The
-control surface, OSC included. Clean shutdown.
+control surface, OSC included. Clean shutdown. The settings page and its file,
+including that command-line flags override it across a restart. The diagnostics
+endpoints. The popup fix, against both `target="_blank"` and `window.open`, and
+both policies.
 
 **Compiles against a real SDK but has never touched hardware:** DeckLink (SDK
 12.2), AJA (libajantv2 18.1), OMT (libomt 1.0.0.16 — never consumed by a
 receiver).
 
 **Never built or run:** Windows and Linux.
+
+**Builds and is unit-tested, but not driven end to end:** the tray launcher in
+`launcher/` — Start / Stop / Launch GUI have not been clicked against a live
+WebLinked. Also `/api/pacing`, whose browser rebuild compiles and has not been
+exercised on air.
 
 Do not upgrade an "it compiles" claim to "it works" anywhere in this repo. If you
 verify something new, add it to `04-verification.md` with the command and the

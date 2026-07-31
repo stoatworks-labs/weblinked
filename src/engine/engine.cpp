@@ -388,6 +388,12 @@ SourceConfig Engine::configuration() const {
   config.externalPacing =
       browser_ == nullptr ||
       browser_->pacing() == BrowserSource::Pacing::kExternalBeginFrame;
+  config.interactiveByDefault = interactiveByDefault_.load();
+  config.popupPolicy =
+      browser_ != nullptr &&
+              browser_->popupPolicy() == RenderClient::PopupPolicy::kBlock
+          ? "block"
+          : "navigate";
   {
     std::lock_guard<std::mutex> lock(mutex_);
     config.format = format_;
@@ -410,7 +416,7 @@ bool Engine::applyConfiguration(const SourceConfig& config, std::string& error) 
     }
   };
 
-  if (config.format != format()) {
+  if (!(config.format == format())) {
     std::string formatError;
     if (!setFormat(config.format, formatError)) {
       note(formatError);
@@ -420,6 +426,10 @@ bool Engine::applyConfiguration(const SourceConfig& config, std::string& error) 
   setMatrix(config.matrix);
   setPacing(config.externalPacing ? BrowserSource::Pacing::kExternalBeginFrame
                                   : BrowserSource::Pacing::kInternalTimer);
+  setInteractiveByDefault(config.interactiveByDefault);
+  setPopupPolicy(config.popupPolicy == "block"
+                     ? RenderClient::PopupPolicy::kBlock
+                     : RenderClient::PopupPolicy::kNavigateInPlace);
 
   // Outputs the configuration does not mention go first, so a card being handed
   // from one output to another is released before the new one claims it.
@@ -465,7 +475,10 @@ bool Engine::applyConfiguration(const SourceConfig& config, std::string& error) 
     setUrl(config.url);
   }
 
-  setAudioMuted(!config.audioEnabled);
+  // `audioEnabled` is deliberately not applied here. It decides whether audio is
+  // captured and prepared at all, which the clock thread reads on every tick,
+  // and it is not the same thing as the runtime mute the control page offers.
+  // A saved configuration changes it for the next launch.
 
   error = firstError;
   return firstError.empty();

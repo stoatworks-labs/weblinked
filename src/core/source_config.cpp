@@ -78,6 +78,8 @@ json::Value SourceConfig::toJson() const {
   value.set("audio", json::Value(audioEnabled));
   value.set("matrix", json::Value(colourMatrixToString(matrix)));
   value.set("pacing", json::Value(externalPacing ? "external" : "internal"));
+  value.set("interactive", json::Value(interactiveByDefault));
+  value.set("popups", json::Value(popupPolicy));
 
   json::Value list = json::Value::array();
   for (const auto& output : outputs) {
@@ -119,6 +121,12 @@ std::optional<SourceConfig> SourceConfig::fromJson(const json::Value& value,
   }
   if (value.has("pacing")) {
     out.externalPacing = value["pacing"].asString("external") != "internal";
+  }
+  if (value.has("interactive")) {
+    out.interactiveByDefault = value["interactive"].asBool(true);
+  }
+  if (value.has("popups")) {
+    out.popupPolicy = value["popups"].asString("navigate");
   }
   if (value.has("preview")) {
     out.wantPreview = value["preview"].asBool(true);
@@ -174,6 +182,11 @@ bool SourceConfig::validate(std::string* error) const {
   }
   if (format.rate.numerator <= 0 || format.rate.denominator <= 0) {
     return fail("source '" + id + "' has an invalid frame rate");
+  }
+
+  if (popupPolicy != "navigate" && popupPolicy != "block") {
+    return fail("source '" + id + "' has an unknown popup policy '" +
+                popupPolicy + "' — expected \"navigate\" or \"block\"");
   }
 
   std::set<std::string> names;

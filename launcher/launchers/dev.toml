@@ -1,0 +1,29 @@
+# WebLinked against a local build tree, for development.
+#
+#   AV_LAUNCHER_CONFIG=launchers/dev.toml npm run tauri dev
+#
+# The relative command resolves against src-tauri/ under `tauri dev`, which is
+# the working directory the Tauri CLI uses. Adjust if your build directory is
+# not ./build.
+
+[app]
+name = "WebLinked (dev)"
+command = "../../build/Release/WebLinked.app/Contents/MacOS/WebLinked"
+args = ["--headless", "--bind", "{host}", "--port", "{port}"]
+url = "http://{host}:{port}/"
+default_port = 7654
+
+[inject]
+mode = "args"
+
+[app.theme]
+bg = "#14171a"
+panel = "#1d2126"
+"panel-2" = "#23282e"
+border = "#31383f"
+text = "#e6eaee"
+muted = "#8e9aa6"
+dim = "#5a646e"
+accent = "#4da3ff"
+"accent-soft" = "#16283c"
+good = "#35c46a"

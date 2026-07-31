@@ -16,7 +16,7 @@ CEF 150.0.17 / Chromium 150.0.7871.187.
 
 ```bash
 cmake --build build && ./build/tests/weblinked_tests
-# 49 tests, 24902 checks, 0 failures
+# 66 tests, 24999 checks, 0 failures
 ```
 
 The two that carry real weight:
@@ -221,11 +221,135 @@ The window opens, shows the control page, and its preview updates live. Verified
 by the window server reporting a top-level window owned by the process, and by
 capturing the page.
 
+## 10. Popups and new tabs — verified
+
+The bug this fixes was reported from testing as "clicking a link that opened a
+new tab crashed the application". Reproduced and measured against a test page
+carrying both routes: an `<a target="_blank">` and an `onclick` calling
+`window.open`.
+
+The click was delivered through `/api/input` at normalised coordinates, so the
+test drives exactly the path an operator uses.
+
+**Default policy (`--popups navigate`)**, clicking the `target="_blank"` link:
+
+```
+before:  loaded_url  file:///.../popup.html      popups 0
+after:   loaded_url  https://example.com/        popups 1
+         last_popup  https://example.com/
+log:     browser: popup to https://example.com/ redirected into the main frame
+process: alive
+```
+
+And the source was still the source afterwards, which is the part that matters —
+the old failure left the engine driving a browser nothing was reading:
+
+```
+preview frames: 1095 -> 1197 over ~2s   (~51/s at 1080p50)
+```
+
+**`--popups block`**, both routes on the same page:
+
+```
+window.open      -> popups 1, last_popup https://example.org/, url unchanged
+target=_blank    -> popups 2,                                  url unchanged
+log:  browser: blocked a popup to https://example.org/
+      browser: blocked a popup to https://example.com/
+process: alive
+```
+
+## 11. Settings — verified
+
+Round-tripped through a real file and a real restart.
+
+```
+POST /api/output/add     {"kind":"ndi","name":"SettingsTest","options":{"alpha":true}}
+POST /api/output/update  rename to RenamedTest, drop alpha
+  -> preview (preview) running, RenamedTest (ndi) running
+POST /api/settings/save  -> settings.json written
+```
+
+Killed and restarted **with no `--url` and no `--ndi`**:
+
+```
+url      https://example.com          <- from the file
+outputs  [preview, RenamedTest]       <- from the file
+```
+
+Restarted again **with** `--url https://iana.org --no-interactive`:
+
+```
+url                     https://iana.org   <- command line wins
+outputs                 [preview, RenamedTest]  <- file still fills in the rest
+interactive_by_default  false               <- command line wins
+```
+
+`/api/settings/apply` applied a 720p59.94 / BT.601 / block-popups configuration
+and both outputs stayed running through it; `/api/settings/reload` put all three
+back from the file. Rejections are rejections: an unparseable format answers 400
+naming the format, a duplicate output name answers with the clash.
+
+Six unit tests cover the store itself, including that the atomic write leaves no
+`.tmp` behind and that a corrupt file is reported as such rather than silently
+ignored.
+
+## 12. Diagnostics in the app — verified
+
+```
+GET  /api/log?lines=3        level, path, and the last three lines
+POST /api/log/level          {"ok":true,"level":"debug"}, and /api/log agrees
+POST /api/diagnostics/report -> WebLinked-crash-20260731-043449.json
+GET  /api/diagnostics/bundle -> 200, application/json,
+     Content-Disposition: attachment; filename="WebLinked-diagnostics-...json"
+     schema stoatworks.diagnostics/1, 16 log lines, config present
+```
+
+The level is served lower case and unpadded — `diag` pads its names to five
+characters for the log file, and `"INFO "` would never have matched the control
+page's selector.
+
+## 13. The control page's three views — verified
+
+Loaded in a browser against a running instance. **No console errors.** The
+preview showed the live page; the interactive toggle came up **armed**, with the
+canvas outlined, from `settings.interactive_by_default`.
+
+Per-backend field visibility was asserted from the live DOM rather than by
+looking at it:
+
+```
+preview      -> factor
+ndi          -> alpha
+decklink     -> device, keying
+```
+
+That check found a real bug: `.check { display: flex }` outranks the browser's
+own `[hidden] { display: none }`, so the alpha checkbox was showing on the
+preview output — an option that does nothing there. Fixed with an explicit
+`[hidden]` rule and re-asserted.
+
+The diagnostics view showed the log with levels coloured, the log paths, the
+settings path, and the popup counters.
+
+## 14. The tray launcher — partially verified
+
+- Builds; `cargo test` passes 7 tests, one of which parses the `launcher.toml`
+  this repo actually ships and asserts the argv it produces, `--headless`
+  included.
+- The release binary starts and logs to its own directory
+  (`~/Library/Logs/WebLinked Launcher`), confirming it is a separate diagnostics
+  identity rather than av-launcher's.
+- The panel renders in WebLinked's palette, from the real HTML and CSS.
+
+**Not verified:** Start / Stop / Launch GUI driven against a live WebLinked, and
+the built `.app` on a machine that has never seen the source. See
+[../launcher/README.md](../launcher/README.md).
+
 ---
 
 ## Bugs this verification actually found
 
-Recorded because they are the argument for doing it at all. All four were found
+Recorded because they are the argument for doing it at all. Every one was found
 by running the thing, not by reading it.
 
 **A heap overflow on runtime format change.** After changing raster the engine
@@ -295,6 +419,33 @@ confidence monitor showed black. It now polls slowly rather than not at all.
 
 ---
 
+**A popup took the whole application down.** Reported from testing as "clicking
+a link that opened a new tab crashed the application". CEF's default answer to
+`target="_blank"` is a second browser parented to the first — and the source
+browser here is windowless, so there is nothing to parent it to. The route there
+was worse than the crash: the popup arrived at the same client, rebound its
+browser reference, and pointed the engine's frame requests, navigation and input
+at a browser nothing was reading. Section 10.
+
+**Closing a popup quit the application.** The same class of bug on the operator
+window's side. Its client called `CefQuitMessageLoop()` from `OnBeforeClose`
+without checking which browser had closed, so a popup opened from the control
+page took the outputs with it when dismissed. It now counts browsers and quits
+on the last.
+
+**A hidden option was not hidden.** `.check { display: flex }` outranks the
+browser's own `[hidden] { display: none }` — class specificity beats the UA
+stylesheet — so the settings page offered an alpha checkbox on the preview
+output, where it does nothing. Found by asserting field visibility from the live
+DOM rather than looking at a screenshot. Section 13.
+
+**Changing pacing silently stopped the output.** `setPacing` set a flag that
+only `requestFrame()` read, but `external_begin_frame_enabled` is part of
+`CefWindowInfo` and fixed when the browser is created. Switching to the internal
+timer therefore stopped us asking for frames from a browser that does not paint
+on its own: no frames at all, and nothing in any log. It now rebuilds the
+browser at the same URL.
+
 ## Not verified
 
 Everything in this section is written against a real SDK header set and compiles,
@@ -338,3 +489,11 @@ checked against a downstream keyer.
 
 **Anything at 4K over a sustained period.** 2160p25 was exercised only as part of
 the format-change sequence, for a few seconds.
+
+**A runtime pacing change.** `/api/pacing` rebuilds the browser at the same URL,
+because `external_begin_frame_enabled` is fixed when a browser is created and
+merely flipping the flag produced no frames at all. The rebuild is implemented
+and compiles; it has not been exercised on air, and it is not a mid-show
+operation.
+
+**The tray launcher end to end.** See section 14.

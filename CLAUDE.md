@@ -56,6 +56,19 @@ clang++ -std=c++20 -I"/Library/NDI SDK for Apple/include" tools/ndi_probe.cpp \
 
 `--bars` checks the rendered colour bars against an independent BT.709 reference.
 
+## Settings and the launcher
+
+```bash
+# Settings file (macOS). --settings <file> or $WEBLINKED_SETTINGS overrides it;
+# --no-settings ignores it. The command line always beats the file.
+~/Library/Application Support/WebLinked/settings.json
+
+# The tray launcher is a separate Cargo project and does NOT build with the rest
+cd launcher && cargo test --manifest-path src-tauri/Cargo.toml
+cd launcher && npm install && npm run tauri dev     # needs the Tauri CLI
+AV_LAUNCHER_CONFIG=launchers/dev.toml npm run tauri dev   # against ./build
+```
+
 ## Rules
 
 1. **Never claim a backend works because it compiles.** Only NDI and preview are
@@ -76,10 +89,14 @@ clang++ -std=c++20 -I"/Library/NDI SDK for Apple/include" tools/ndi_probe.cpp \
 7. **`FramePool` is always held by `shared_ptr`** (`FramePool::create`).
 8. **macOS bundles are signed inside-out, ad-hoc without hardened runtime.** See
    `cmake/SignMacBundle.cmake` before changing anything there.
-9. **Build clean (`rm -rf build`) before tagging a release.** An incremental
+9. **Popups are never allowed to become windows.** A windowless browser cannot
+   own one; `OnBeforePopup` always cancels. See the trap in `AGENTS.md`.
+10. **Anything the clock thread reads outside `Engine::mutex_` is atomic** —
+    `matrix_`, `pacing_`. The settings page can write both at run time.
+11. **Build clean (`rm -rf build`) before tagging a release.** An incremental
    build reuses the CEF wrapper's objects, so anything that breaks CEF's own
    compilation passes locally and fails on CI.
-10. Commit means commit **and push**.
+12. Commit means commit **and push**.
 
 ## Layout
 
@@ -92,4 +109,5 @@ clang++ -std=c++20 -I"/Library/NDI SDK for Apple/include" tools/ndi_probe.cpp \
 | `src/outputs/` | IOutput + preview, ndi, omt, decklink, aja |
 | `src/control/` | HTTP server, OSC receiver, embedded control page |
 | `src/app/` | entry points, Info.plists, entitlements |
+| `launcher/` | av-launcher tray shell (Rust/Tauri); separate build |
 | `tools/` | `ndi_probe` — independent receiver for verification |

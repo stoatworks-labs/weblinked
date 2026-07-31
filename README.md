@@ -28,6 +28,11 @@ opens this same page in its own window, and any browser on the network can reach
 it. The preview is fed by the same frame pipeline as the SDI and NDI outputs, so
 if the preview is right, the outputs are right.*
 
+| Settings | Diagnostics |
+|---|---|
+| [![The settings page](docs/images/settings-page.png)](docs/images/settings-page.png) | [![The diagnostics page](docs/images/diagnostics-page.png)](docs/images/diagnostics-page.png) |
+| Outputs, with only the fields each backend has. Saved to a file the next launch reads back. | The live log at a level you can change while the fault is happening, and a bundle that downloads. |
+
 Both images below are **real 1920×1080 frames received over NDI** by a separate
 receiver (`tools/ndi_probe`), converted back to RGB — not screenshots of a
 browser. They are what a vision mixer would have seen.
@@ -41,7 +46,7 @@ browser. They are what a vision mixer would have seen.
 a clock is the quickest way to see at a glance whether a signal is live, and its
 sub-second progress bar makes dropped frames visible to the naked eye.
 
-Regenerate all three with [`tools/screenshots.sh`](tools/screenshots.sh).
+Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 ---
 
@@ -62,14 +67,26 @@ Regenerate all three with [`tools/screenshots.sh`](tools/screenshots.sh).
   its own input). Chromium composites premultiplied and every destination here
   expects straight alpha, so WebLinked un-premultiplies — without that, soft
   edges, drop shadows and fades all render too dark on a keyer.
-- **An interactive preview.** The control page's preview can forward clicks,
+- **An interactive preview.** The control page's preview forwards clicks,
   scrolling and typing to the live page, which is the only practical way to
   dismiss a cookie banner, close a modal or sign in on a machine whose browser
-  you cannot otherwise reach. Off by default, and outlined when armed, because
-  it is the on-air output.
+  you cannot otherwise reach. **On by default** (`--no-interactive` turns it
+  off), and always outlined when armed, because it is the on-air output. A link
+  that asks for a new tab loads in place rather than opening a window — a
+  windowless browser cannot own one.
+- **A settings page.** Add, edit, remove, start and stop outputs from the
+  browser, with only the fields each backend actually has; change raster,
+  colour matrix and pacing; and save the lot to a file the next launch reads
+  back. Anything given on the command line still wins over the file.
+- **Diagnostics in the app.** The live log with the level changeable while the
+  fault is happening, a crash report on demand, and a one-file diagnostics
+  bundle that **downloads** rather than naming a path on a machine you are not
+  sitting at.
 - **Live control**: change the URL, reload, run JavaScript in the page, change
   raster, or stop and start an output mid-show, from the control page, HTTP, or
   OSC.
+- **A tray launcher** ([`launcher/`](launcher/)) for a machine where WebLinked
+  should come up at login and live in the menu bar rather than in a terminal.
 
 ## What it does not do
 
@@ -89,6 +106,8 @@ Regenerate all three with [`tools/screenshots.sh`](tools/screenshots.sh).
 |---|---|
 | **NDI** | **Verified end to end**, including alpha. A real receiver confirms raster, rate, pixel format, colour and audio. |
 | **Preview** | Verified, and interactive — it is the control page's confidence monitor. |
+| **Settings + diagnostics pages** | Verified against a running instance: outputs added, renamed and removed, settings saved and read back after a restart, the log and bundle served. |
+| **Tray launcher** | Builds; its config is unit-tested against the file it ships. **Not clicked through against a live WebLinked** — see [launcher/README.md](launcher/README.md). |
 | **OMT** | Compiles against `libomt.h` 1.0.0.16. **Never tested against an OMT receiver.** |
 | **DeckLink** | Compiles against DeckLink SDK 12.2, key + fill included. **Never run against a card.** |
 | **AJA** | Compiles against libajantv2 18.1. **Never run against a card.** Off by default. |
@@ -124,8 +143,10 @@ Then:
   --ndi=Graphic
 ```
 
-The operator window opens on the control page. Add `--headless` to run it as a
-service and drive it over HTTP or OSC instead.
+The operator window opens on the control page — the same page the HTTP server
+serves, which is why there is no GUI toolkit anywhere in this project. Add
+`--headless` to run it as a service and drive it over HTTP or OSC instead, or
+use the [tray launcher](launcher/) to do that with a menu-bar icon.
 
 `--help` lists every option and reports which backends this build contains.
 
@@ -185,6 +206,9 @@ who can reach the port can change what is on air.
 - [docs/04-verification.md](docs/04-verification.md) — what has actually been
   proven, and how to reproduce it
 - [docs/diagnostics.md](docs/diagnostics.md) — logs, crash reports, bundles
+- [docs/05-settings.md](docs/05-settings.md) — the settings page and the file it
+  writes
+- [launcher/README.md](launcher/README.md) — the menu-bar tray launcher
 - [AGENTS.md](AGENTS.md) — orientation for an AI assistant or a new contributor
 
 ## Licence

@@ -44,6 +44,7 @@ Everything, as one JSON object. The shape:
                      "interlaced": false },
   "outputs": [
     { "kind": "ndi", "name": "Graphic", "running": true, "enabled": true,
+      "device_index": 0, "options": { "alpha": true },
       "pixel_format": "UYVY", "frames": 10464, "audio_frames": 10460,
       "receivers": 1, "library": "/Library/NDI SDK for Apple/lib/macOS/libndi.dylib",
       "sdk_version": "NDI SDK APPLE ... 6.3.2.0" }
@@ -51,7 +52,10 @@ Everything, as one JSON object. The shape:
   "compiled_backends": ["preview", "ndi", "omt", "decklink"],
   "source": { "url": "...", "loaded_url": "...", "loading": false,
               "paints": 10440, "audio_packets": 20880, "console_errors": 0,
-              "audio_muted": false, "pacing": "external" },
+              "audio_muted": false, "pacing": "external",
+              "popups": 0, "popup_policy": "navigate" },
+  "settings": { "matrix": "auto", "interactive_by_default": true,
+                "audio_enabled": true },
   "pacing": { "ticks": 10463, "repeated_frames": 23, "dropped_ticks": 0,
               "frames_published": 10440, "last_lateness_us": 3566 },
   "audio": { "channels": 2, "sample_rate": 48000, "buffered_frames": 480,
@@ -72,6 +76,11 @@ Object key order is stable, so two responses can be diffed by eye mid-show.
 | `outputs[].buffered_frames` | DeckLink only. **Steady = our clock and the card's agree.** Drifting either way ends in a glitch. |
 | `outputs[].buffer_level` | The AJA equivalent. |
 | `outputs[].receivers` | How many receivers are connected (NDI/OMT). |
+| `source.popups` | How many times the page has tried to open a new tab or window. A page doing this repeatedly is usually about to behave oddly on air. |
+
+`outputs[].device_index` and `outputs[].options` are the spec **as configured**,
+not what the backend is doing — that is the rest of the object. The settings
+page populates its editors from them.
 
 ### GET `/api/preview`
 
@@ -95,8 +104,49 @@ link and send me the file it names"* is one instruction, and works from a phone.
 
 ```json
 { "bundle": "~/Library/Logs/WebLinked/WebLinked-diagnostics-20260730-131440.json",
-  "log": "~/Library/Logs/WebLinked/WebLinked.log" }
+  "log": "~/Library/Logs/WebLinked/WebLinked.log",
+  "log_directory": "~/Library/Logs/WebLinked" }
 ```
+
+### GET `/api/diagnostics/bundle`
+
+The same bundle, but as the file rather than a path to it, with a
+`Content-Disposition` so a browser downloads it. This is the one to use when the
+machine with the fault is in a rack and you are not sitting at it.
+
+### GET `/api/log`
+
+The recent log, from the in-memory ring rather than the file — so it survives a
+rotation, and nothing races the logging thread.
+
+```
+GET /api/log?lines=400
+```
+
+```json
+{ "level": "info",
+  "path": "~/Library/Logs/WebLinked/WebLinked.log",
+  "directory": "~/Library/Logs/WebLinked",
+  "lines": ["2026-07-31T04:36:18Z INFO  control: HTTP listening on 127.0.0.1:7654"] }
+```
+
+`level` is lower case and unpadded here, unlike in the log file itself.
+
+### GET `/api/settings`
+
+What would be saved, and where.
+
+```json
+{ "path": "~/Library/Application Support/WebLinked/settings.json",
+  "saved": true,
+  "source": { "id": "main", "url": "...", "format": "1920x1080p50",
+              "audio": true, "matrix": "auto", "pacing": "external",
+              "interactive": true, "popups": "navigate",
+              "outputs": [ { "kind": "ndi", "name": "Graphic" } ] } }
+```
+
+`source` is the same shape a settings file holds, so what the API returns can be
+pasted into one.
 
 ### POST endpoints
 
@@ -112,7 +162,33 @@ All take a JSON body and return `{"ok":true}` or `{"error":"..."}`.
 | `/api/output` | `{"name": "Graphic", "enabled": false}` | Disabling stops the device and frees it for another application |
 | `/api/output/add` | `{"kind":"ndi","name":"Second","options":{"alpha":true}}` | |
 | `/api/output/remove` | `{"name": "Second"}` | |
+| `/api/output/update` | `{"name":"Second","output":{"kind":"ndi","name":"Renamed"}}` | Replaces an output in place, keeping its position. On failure the previous one is restarted — see below |
+| `/api/pacing` | `{"pacing": "internal"}` | Rebuilds the browser at the same URL |
+| `/api/settings/apply` | `{"source": { ... }}` | Applies a whole source configuration; see below |
+| `/api/settings/save` | `{}` | Writes the live configuration to the settings file. Returns `{"ok":true,"path":"..."}` |
+| `/api/settings/reload` | `{}` | Reads the settings file and applies it |
+| `/api/log/level` | `{"level": "debug"}` | Returns the level actually in force |
+| `/api/diagnostics/report` | `{"reason": "..."}` | Writes a crash report without a crash. Returns its path |
 | `/api/input` | see below | Pointer and keyboard input to the page |
+
+### `/api/output/update` and `/api/settings/apply`
+
+Both exist so the settings page never has to remove something before it can
+change it.
+
+`/api/output/update` stops the old output, opens the new one, and — if that
+fails — restarts the old. Without it, renaming an output whose card is already
+claimed would leave an operator with no output at all, having asked only to
+change a label. A rejected update answers 409 with the reason.
+
+`/api/settings/apply` **reconciles**: an output whose settings have not actually
+changed is left running, so saving a change to the NDI name does not interrupt
+the SDI feed beside it. Everything that can be applied is, and the first thing
+that could not is reported as 409 — a settings file that half-applies and says
+so honestly beats one that refuses wholesale because a card is missing.
+
+The `source` body is validated before anything is touched: an unparseable
+format or a duplicate output name is a 400 and changes nothing.
 
 ### `/api/input`
 

@@ -11,6 +11,7 @@ add_executable(weblinked_tests
   test_frame_clock.cpp
   test_json.cpp
   test_source_config.cpp
+  test_settings_store.cpp
 )
 
 set_target_properties(weblinked_tests PROPERTIES

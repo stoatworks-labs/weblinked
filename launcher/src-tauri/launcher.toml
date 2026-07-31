@@ -1,0 +1,54 @@
+# WebLinked launcher definition.
+#
+# `args` injection: WebLinked already takes --bind and --port directly, so there
+# is no config file to patch and no environment to set. That is the simplest of
+# av-launcher's three modes and the one this app fits.
+#
+# --headless is deliberate. WebLinked opens its own operator window — the same
+# control page the launcher's "Launch GUI" button opens — and under the tray
+# that window would be a second, unmanaged copy of the UI with its own
+# lifecycle. The tray owns the process; the browser owns the view.
+#
+# --no-settings is deliberately NOT passed: the settings file is how an
+# operator's outputs survive a restart, and the launcher supplies only the bind
+# address and port, both of which take precedence over the file anyway.
+#
+# `command` points at an INSTALLED WebLinked rather than a copy bundled inside
+# this app, which is where the rest of the fleet embeds its server. Two reasons,
+# both found the hard way:
+#
+#   * Tauri's resource collector walks the tree it is asked to bundle, and the
+#     Chromium Embedded Framework is a macOS framework — Versions/Current and
+#     Resources are symlinks. The walk follows them and fails on a path that
+#     does not exist.
+#   * Even past that, WebLinked is ad-hoc signed without a hardened runtime and
+#     carries five name-matched helper .apps. Nesting that inside another
+#     ad-hoc signed bundle is the arrangement where Gatekeeper approves the
+#     outer app and then kills the inner helpers with nothing in any log.
+#
+# To run against a build tree instead, use launchers/dev.toml:
+#   AV_LAUNCHER_CONFIG=launchers/dev.toml npm run tauri dev
+
+[app]
+name = "WebLinked"
+command = "/Applications/WebLinked.app/Contents/MacOS/WebLinked"
+args = ["--headless", "--bind", "{host}", "--port", "{port}"]
+url = "http://{host}:{port}/"
+default_port = 7654
+
+[inject]
+mode = "args"
+
+# Mirrored from the control page's own palette in src/control/web_assets.h, so
+# the panel and the UI it launches look like one application.
+[app.theme]
+bg = "#14171a"
+panel = "#1d2126"
+"panel-2" = "#23282e"
+border = "#31383f"
+text = "#e6eaee"
+muted = "#8e9aa6"
+dim = "#5a646e"
+accent = "#4da3ff"
+"accent-soft" = "#16283c"
+good = "#35c46a"

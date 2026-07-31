@@ -54,10 +54,14 @@ trap 'kill -TERM $APP_PID 2>/dev/null || true; rm -rf "$WORK"' EXIT
 # Give Chromium time to load the page and paint it.
 sleep 16
 
-capture_gui() {   # capture_gui <output.png>
+capture_gui() {   # capture_gui <output.png> [view]
+  # ?view= exists so each tab is capturable without driving a window server;
+  # the page applies it once the first state has arrived, which is why the
+  # virtual time budget is generous.
+  local view="${2:-control}"
   "$CHROME" --headless --disable-gpu --hide-scrollbars \
     --screenshot="$1" --window-size=1360,940 --virtual-time-budget=6000 \
-    "http://127.0.0.1:$PORT/" >/dev/null 2>&1
+    "http://127.0.0.1:$PORT/?view=$view" >/dev/null 2>&1
 }
 
 capture_frame() { # capture_frame <output.png>
@@ -67,8 +71,10 @@ capture_frame() { # capture_frame <output.png>
   sips -s format png "$WORK/frame.ppm" --out "$1" >/dev/null
 }
 
-echo "==> capturing control page and github.com output"
-capture_gui "$OUT/control-page.png"
+echo "==> capturing the three views and the github.com output"
+capture_gui "$OUT/control-page.png"     control
+capture_gui "$OUT/settings-page.png"    settings
+capture_gui "$OUT/diagnostics-page.png" diagnostics
 capture_frame "$OUT/output-github.png"
 
 echo "==> switching to the clock page"

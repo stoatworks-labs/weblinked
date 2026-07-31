@@ -31,6 +31,9 @@ class ControlApi {
     int oscPort = 7655;
     /// Address prefix, so several instances can share a network.
     std::string oscPrefix = "/weblinked";
+    /// Where the settings page saves to and reloads from. Empty means the
+    /// platform default — see settings::defaultPath().
+    std::string settingsPath;
   };
 
   explicit ControlApi(Engine* engine);
@@ -53,6 +56,8 @@ class ControlApi {
   HttpServer http_;
   OscServer osc_;
   Config config_;
+  /// Resolved once at start(), so every endpoint agrees on which file it means.
+  std::string settingsPath_;
 };
 
 }  // namespace weblinked

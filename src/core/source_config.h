@@ -42,6 +42,12 @@ struct SourceConfig {
   ColourMatrix matrix = ColourMatrix::kAuto;
   /// True for clock-driven frames (the default), false for Chromium's own timer.
   bool externalPacing = true;
+  /// Whether the control page arms its preview for input as soon as it loads.
+  bool interactiveByDefault = true;
+  /// "navigate" — a link that asks for a new tab loads here instead — or
+  /// "block". There is no third option: a windowless browser cannot own a
+  /// popup window, which is what used to take the application down.
+  std::string popupPolicy = "navigate";
   /// Adds a preview output automatically if the list has none. The control page
   /// needs one to show anything.
   bool wantPreview = true;

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AV Launcher</title>
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div class="mark" id="mark" aria-hidden="true">◆</div>
+        <div class="titles">
+          <div class="name" id="app-name">AV</div>
+          <div class="sub" id="app-sub">local server</div>
+        </div>
+        <button id="gear" class="icon-btn" title="Config folder" aria-label="Settings">⚙</button>
+      </header>
+
+      <section class="card" id="server-card">
+        <div class="status-line">
+          <span class="dot" id="dot"></span>
+          <span class="state" id="state">Stopped</span>
+        </div>
+        <a class="url" id="url" href="#" target="_blank" rel="noreferrer">not running</a>
+      </section>
+
+      <section class="controls">
+        <div class="field">
+          <label for="iface">Network interface</label>
+          <div class="select-wrap">
+            <select id="iface"></select>
+          </div>
+        </div>
+
+        <div class="field port-field">
+          <label for="port">Port</label>
+          <input id="port" type="number" min="1" max="65535" inputmode="numeric" />
+        </div>
+
+        <button id="toggle" class="btn btn-primary">Start server</button>
+
+        <div class="actions">
+          <button id="launch" class="btn btn-quiet">Open</button>
+          <button id="hide" class="btn btn-quiet">Hide</button>
+          <button id="quit" class="btn btn-quiet">Quit</button>
+        </div>
+
+        <div class="msg" id="msg"></div>
+      </section>
+    </main>
+
+    <script src="main.js" type="module"></script>
+  </body>
+</html>
