@@ -33,6 +33,15 @@ void BrowserApp::OnBeforeCommandLineProcessing(
   // Keep the media stack's audio inside the process so CefAudioHandler sees it
   // rather than it going straight to the system output device.
   commandLine->AppendSwitchWithValue("disable-features", "AudioServiceOutOfProcess");
+
+  // Chromium's password manager asks the OS keyring for a key to encrypt its
+  // login database, and on macOS that raises a Keychain authorisation dialog on
+  // every single launch. A render host that never signs in to anything has no
+  // use for a password store, and a modal dialog appearing on a machine that is
+  // live to air is not acceptable. These two switches keep it away from the
+  // keyring entirely.
+  commandLine->AppendSwitchWithValue("password-store", "basic");
+  commandLine->AppendSwitch("use-mock-keychain");
 }
 
 void BrowserApp::OnContextInitialized() {

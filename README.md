@@ -18,6 +18,30 @@ weblinked --url https://example.com/scoreboard --format 1080p50 --ndi=Scoreboard
 
 ---
 
+![The WebLinked control page, rendering github.com to NDI at 1080p50](docs/images/control-page.png)
+
+*The control page. It is both the operator window and a remote panel — the app
+opens this same page in its own window, and any browser on the network can reach
+it. The preview is fed by the same frame pipeline as the SDI and NDI outputs, so
+if the preview is right, the outputs are right.*
+
+Both images below are **real 1920×1080 frames received over NDI** by a separate
+receiver (`tools/ndi_probe`), converted back to RGB — not screenshots of a
+browser. They are what a vision mixer would have seen.
+
+| A live page | A time-of-day clock |
+|---|---|
+| ![github.com rendered to 1080p50 and received over NDI](docs/images/output-github.png) | ![A clock page rendered to 1080p50 and received over NDI](docs/images/output-clock.png) |
+| `--url https://github.com` | `--url file://tools/clock.html` |
+
+`tools/clock.html` ships with the repo. It is a useful thing to point at a feed:
+a clock is the quickest way to see at a glance whether a signal is live, and its
+sub-second progress bar makes dropped frames visible to the naked eye.
+
+Regenerate all three with [`tools/screenshots.sh`](tools/screenshots.sh).
+
+---
+
 ## What it does
 
 - **Renders any URL** through Chromium (CEF), offscreen, at the exact raster and

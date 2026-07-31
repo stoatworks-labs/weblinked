@@ -351,9 +351,20 @@ async function refresh() {
 const canvas = document.getElementById('preview');
 const context = canvas.getContext('2d');
 let previewBusy = false;
+let lastPull = 0;
 
 async function pullPreview() {
-  if (previewBusy || document.hidden) return;
+  if (previewBusy) return;
+  // A hidden document still gets a picture, just a slow one. Skipping it
+  // entirely is tempting for CPU, but "hidden" covers more than a backgrounded
+  // tab — a kiosk shell, an embedded webview or a screenshot tool can all report
+  // hidden while somebody is looking straight at it, and a confidence monitor
+  // that shows black is worse than useless.
+  const minimumInterval = document.hidden ? 2000 : 0;
+  const now = Date.now();
+  if (now - lastPull < minimumInterval) return;
+  lastPull = now;
+
   previewBusy = true;
   try {
     const response = await fetch(api('/api/preview'));
@@ -385,7 +396,14 @@ async function pullPreview() {
   }
 }
 
+// Coming back to the page should show a live picture straight away rather than
+// whatever was on screen when it was hidden.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) { lastPull = 0; pullPreview(); refresh(); }
+});
+
 refresh();
+pullPreview();
 setInterval(refresh, 1000);
 setInterval(pullPreview, 125);
 </script>

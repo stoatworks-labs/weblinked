@@ -49,6 +49,52 @@ Ycbcr referenceBt709(int r, int g, int b) {
           static_cast<int>(std::lround(128.0 + 224.0 * ((rn - yn) / (2.0 * (1.0 - 0.2126)))))};
 }
 
+/// Inverse of the sender's conversion: studio-swing BT.709 Y'CbCr back to RGB.
+/// Written independently here rather than shared with the application, so a
+/// saved frame is a check on the round trip and not a restatement of it.
+void ycbcrToRgb(int y, int cb, int cr, uint8_t* out) {
+  const double yn = (y - 16) / 219.0;
+  const double cbn = (cb - 128) / 224.0;
+  const double crn = (cr - 128) / 224.0;
+  const double r = yn + 2.0 * (1.0 - 0.2126) * crn;
+  const double b = yn + 2.0 * (1.0 - 0.0722) * cbn;
+  const double g = (yn - 0.2126 * r - 0.0722 * b) / 0.7152;
+  const auto clamp8 = [](double v) {
+    return static_cast<uint8_t>(std::lround(std::min(1.0, std::max(0.0, v)) * 255.0));
+  };
+  out[0] = clamp8(r);
+  out[1] = clamp8(g);
+  out[2] = clamp8(b);
+}
+
+/// Writes the received frame as a binary PPM — no encoder, no dependency.
+/// Convert with `sips -s format png frame.ppm --out frame.png` on macOS.
+bool saveFramePpm(const NDIlib_video_frame_v2_t& frame, const std::string& path) {
+  if (frame.FourCC != NDIlib_FourCC_video_type_UYVY) {
+    std::fprintf(stderr, "--save currently handles UYVY only\n");
+    return false;
+  }
+  std::FILE* file = std::fopen(path.c_str(), "wb");
+  if (file == nullptr) {
+    std::fprintf(stderr, "cannot write %s\n", path.c_str());
+    return false;
+  }
+  std::fprintf(file, "P6\n%d %d\n255\n", frame.xres, frame.yres);
+
+  std::vector<uint8_t> row(static_cast<size_t>(frame.xres) * 3);
+  const auto* data = static_cast<const uint8_t*>(frame.p_data);
+  for (int y = 0; y < frame.yres; ++y) {
+    for (int x = 0; x < frame.xres; ++x) {
+      const Ycbcr pixel = sampleUyvy(data, frame.line_stride_in_bytes, x, y);
+      ycbcrToRgb(pixel.y, pixel.cb, pixel.cr, row.data() + static_cast<size_t>(x) * 3);
+    }
+    std::fwrite(row.data(), 1, row.size(), file);
+  }
+  std::fclose(file);
+  std::printf("saved %dx%d frame to %s\n", frame.xres, frame.yres, path.c_str());
+  return true;
+}
+
 int checkColourBars(const NDIlib_video_frame_v2_t& frame) {
   // The eight bars of tools/testcard.html, in order.
   struct Bar {
@@ -96,6 +142,8 @@ int main(int argc, char** argv) {
   int wantFrames = 50;
   bool checkBars = false;
   int timeoutSeconds = 15;
+  std::string savePath;
+  int saveAfterFrames = 1;
 
   for (int i = 1; i < argc; ++i) {
     const std::string argument = argv[i];
@@ -105,11 +153,17 @@ int main(int argc, char** argv) {
       wantFrames = std::atoi(argv[++i]);
     } else if (argument == "--timeout" && i + 1 < argc) {
       timeoutSeconds = std::atoi(argv[++i]);
+    } else if (argument == "--save" && i + 1 < argc) {
+      savePath = argv[++i];
+    } else if (argument == "--save-after" && i + 1 < argc) {
+      saveAfterFrames = std::atoi(argv[++i]);
     } else if (argument == "--bars") {
       checkBars = true;
     } else {
-      std::fprintf(stderr, "usage: ndi_probe [--source <substring>] "
-                           "[--frames <n>] [--bars] [--timeout <s>]\n");
+      std::fprintf(stderr,
+                   "usage: ndi_probe [--source <substring>] [--frames <n>] "
+                   "[--bars] [--timeout <s>] [--save <file.ppm>] "
+                   "[--save-after <n>]\n");
       return 2;
     }
   }
@@ -201,6 +255,9 @@ int main(int argc, char** argv) {
     switch (NDIlib_recv_capture_v3(receiver, &video, &audio, nullptr, 1000)) {
       case NDIlib_frame_type_video: {
         ++videoFrames;
+        if (!savePath.empty() && videoFrames == saveAfterFrames) {
+          saveFramePpm(video, savePath);
+        }
         if (!reported) {
           reported = true;
           char fourcc[5] = {};

@@ -106,6 +106,25 @@ still alive. The deleter holds a `weak_ptr` and frees the buffer if the pool has
 gone. A raw pointer here is a use-after-free that only appears when someone
 changes format mid-show.
 
+**macOS needs an NSApplication subclass, and only a window reveals it.**
+`src/app/mac_application.mm` implements `CefAppProtocol`. Without it the process
+dies with "unrecognized selector -[NSApplication isHandlingSendEvent]" the moment
+a real window pumps events. Every `--headless` test passes regardless, which is
+exactly why it survived so long — test the window too.
+
+**Shutdown ordering is fragile in two directions.** The window must be closed
+before `CefQuitMessageLoop()` (the loop will not return otherwise), but the
+*offscreen* browser must NOT be closed before the loop quits (its destruction
+then never gets pumped and `CefShutdown()` hangs). And every `CefRefPtr` must be
+released before `CefShutdown()` — a global holding the window's client hung it
+silently. All three present identically: a process that logs a clean exit and
+never exits.
+
+**Never let Chromium reach the OS keyring.** `--password-store=basic` and
+`--use-mock-keychain` are in `cef_app.cpp` because without them macOS raises a
+Keychain dialog on every launch. A modal dialog on a machine that is live to air
+is not acceptable, and it is startling during development too.
+
 **Killing the process without a clean shutdown leaves a stale NDI source** that
 receivers keep trying to connect to, and the next run can be undiscoverable for
 minutes. The SIGTERM handler exists because of this, not for tidiness.

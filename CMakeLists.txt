@@ -20,6 +20,11 @@ endif()
 
 project(weblinked VERSION 0.1.0 LANGUAGES C CXX)
 
+if(APPLE)
+  # mac_application.mm: CEF requires an NSApplication subclass.
+  enable_language(OBJCXX)
+endif()
+
 set(WEBLINKED_VERSION "${PROJECT_VERSION}")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)

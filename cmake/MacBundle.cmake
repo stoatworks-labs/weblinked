@@ -68,7 +68,9 @@ function(weblinked_add_mac_app)
 
   # ---- browser process -----------------------------------------------------
 
-  add_executable(weblinked MACOSX_BUNDLE "${CMAKE_CURRENT_SOURCE_DIR}/src/app/main.cpp")
+  add_executable(weblinked MACOSX_BUNDLE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/main.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/mac_application.mm")
   set_target_properties(weblinked PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON

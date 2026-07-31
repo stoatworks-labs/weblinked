@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WebLinked clock</title>
+<style>
+  /* A time-of-day clock, sized in vh so it fills whatever raster WebLinked
+     renders it at. Useful as a demo target and genuinely useful on site: a
+     clock is the fastest way to see at a glance whether a feed is live, and
+     the seconds ring makes dropped frames visible to the naked eye. */
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: #0d1014; color: #f2f5f8;
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-variant-numeric: tabular-nums;
+  }
+  .stage {
+    height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 2vh;
+    background: radial-gradient(ellipse at 50% 35%, #16202b 0%, #0d1014 70%);
+  }
+  #time {
+    font-size: 22vh; font-weight: 200; letter-spacing: -0.02em;
+    line-height: 1; display: flex; align-items: baseline;
+  }
+  #seconds { font-size: 11vh; font-weight: 300; color: #4da3ff; margin-left: 1.5vh; }
+  #date { font-size: 4vh; font-weight: 400; color: #8e9aa6; letter-spacing: .18em;
+          text-transform: uppercase; }
+  .ring { width: 62vh; height: 1.1vh; background: #1e2630; border-radius: 1vh;
+          overflow: hidden; margin-top: 1vh; }
+  .ring > div { height: 100%; background: #4da3ff; width: 0%; }
+  .tag { position: absolute; bottom: 4vh; font-size: 2.2vh; color: #56626d;
+         letter-spacing: .3em; text-transform: uppercase; }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div id="time">--:--<span id="seconds">--</span></div>
+    <div id="date">&nbsp;</div>
+    <div class="ring"><div id="ring"></div></div>
+    <div class="tag">WebLinked</div>
+  </div>
+<script>
+  const pad = (n) => String(n).padStart(2, '0');
+  const timeEl = document.getElementById('time');
+  const secEl = document.getElementById('seconds');
+  const dateEl = document.getElementById('date');
+  const ringEl = document.getElementById('ring');
+
+  function tick() {
+    const now = new Date();
+    timeEl.firstChild.nodeValue = pad(now.getHours()) + ':' + pad(now.getMinutes());
+    secEl.textContent = pad(now.getSeconds());
+    dateEl.textContent = now.toLocaleDateString(undefined,
+      { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    // Sub-second progress, so the bar moves every frame rather than every
+    // second — which is what makes stutter visible.
+    ringEl.style.width = ((now.getSeconds() + now.getMilliseconds() / 1000) / 60 * 100) + '%';
+    requestAnimationFrame(tick);
+  }
+  tick();
+</script>
+</body>
+</html>

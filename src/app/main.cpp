@@ -27,6 +27,7 @@
 #include "include/cef_task.h"
 #include "include/wrapper/cef_closure_task.h"
 #if defined(__APPLE__)
+#include "app/mac_application.h"
 #include "include/wrapper/cef_library_loader.h"
 #endif
 
@@ -233,7 +234,68 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
   return true;
 }
 
+/// The operator window's client.
+///
+/// It exists for one reason: shutdown. CefQuitMessageLoop() does *not* end
+/// CefRunMessageLoop() while a real browser window is still open — the loop
+/// simply carries on, so the process survives a SIGTERM having logged that it
+/// was shutting down. That was missed during verification because every test
+/// run used --headless, where there is no window and quitting works directly.
+///
+/// The CEF-idiomatic sequence is to close the browsers and quit the loop when
+/// the last one has gone, which is what OnBeforeClose does here. It also makes
+/// closing the window with the red button quit the application, instead of
+/// leaving an invisible process holding the control port and the NDI name.
+class ControlWindowClient : public CefClient, public CefLifeSpanHandler {
+ public:
+  CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
+
+  void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
+    browser_ = browser;
+  }
+
+  void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
+    (void)browser;
+    browser_ = nullptr;
+    CefQuitMessageLoop();
+  }
+
+  /// UI thread only.
+  void closeWindow() {
+    if (browser_ != nullptr) {
+      // force_close: a beforeunload dialog would wait for a click nobody is
+      // going to give it.
+      browser_->GetHost()->CloseBrowser(true);
+    } else {
+      CefQuitMessageLoop();
+    }
+  }
+
+ private:
+  CefRefPtr<CefBrowser> browser_;
+  IMPLEMENT_REFCOUNTING(ControlWindowClient);
+};
+
+CefRefPtr<ControlWindowClient> g_controlWindow;
+
 std::atomic<bool> g_quitRequested{false};
+
+/// UI thread. Ends the message loop, whether or not a window is open.
+/// UI thread. Begins an orderly shutdown.
+///
+/// Only the *window* is closed here. CefRunMessageLoop() will not return while a
+/// real browser window is open, so quitting the loop directly does nothing —
+/// but closing the offscreen browser this early is equally wrong: its
+/// destruction then never gets pumped, and CefShutdown() waits for it forever.
+/// The offscreen browser is closed after the loop returns, in engine.stop(),
+/// which is where it was already being done and which works.
+void beginShutdown() {
+  if (g_controlWindow != nullptr) {
+    g_controlWindow->closeWindow();
+  } else {
+    CefQuitMessageLoop();
+  }
+}
 
 void requestQuit(int) {
   // Only a flag: the watchdog below does the real work, because CefPostTask is
@@ -264,8 +326,9 @@ void installSignalHandlers() {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     weblinked::diag::info("shutdown requested by signal");
-    // CefQuitMessageLoop must run on the UI thread.
-    CefPostTask(TID_UI, base::BindOnce(&CefQuitMessageLoop));
+    // Must run on the UI thread, and must close the window rather than just
+    // quitting the loop — see ControlWindowClient.
+    CefPostTask(TID_UI, base::BindOnce(&beginShutdown));
   }).detach();
 }
 
@@ -303,6 +366,11 @@ int main(int argc, char** argv) {
                  "The app bundle is incomplete — see docs/02-building.md.\n");
     return 1;
   }
+#endif
+
+#if defined(__APPLE__)
+  // Before anything else touches NSApp. See mac_application.mm.
+  weblinked::installMacApplication();
 #endif
 
   CefMainArgs mainArgs(argc, argv);
@@ -403,17 +471,22 @@ int main(int argc, char** argv) {
     windowInfo.bounds = bounds;
 #endif
     CefBrowserSettings browserSettings;
-    CefRefPtr<CefClient> nullClient;  // default handling is all the UI needs
-    CefBrowserHost::CreateBrowser(windowInfo, nullClient, control.controlUrl(),
-                                  browserSettings, nullptr, nullptr);
+    g_controlWindow = new ControlWindowClient();
+    CefBrowserHost::CreateBrowser(windowInfo, g_controlWindow,
+                                  control.controlUrl(), browserSettings, nullptr,
+                                  nullptr);
   }
 
   // Blocks until the last browser closes. Everything else runs on its own
   // thread: the engine's clock, the HTTP connections, the OSC receiver.
   CefRunMessageLoop();
-
   control.stop();
   engine.stop();
+  // Every CefRefPtr must be released before CefShutdown(). This one is a global
+  // holding the operator window's client; leaving it alive hangs CefShutdown()
+  // silently, which presents as a process that logs a clean exit and then never
+  // exits.
+  g_controlWindow = nullptr;
   CefShutdown();
   weblinked::diag::info("WebLinked exiting cleanly");
   weblinked::diag::shutdown();

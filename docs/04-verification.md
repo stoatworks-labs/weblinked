@@ -134,14 +134,25 @@ deliver, and what Chromium's own timer does not.
 - Runtime format changes verified across 720p25, 1080p50, 720p59.94, 1080i25,
   1920x1080p30 and 2160p25, returning to 1080p50 with colour bars still exact.
 
-## 6. Clean shutdown — verified
+## 6. Clean shutdown — verified, in both modes
 
 `SIGTERM` produces `shutdown requested by signal` → `audio stream stopped` →
-`WebLinked exiting cleanly`, with the NDI sender destroyed rather than abandoned.
+`WebLinked exiting cleanly`, with the NDI sender destroyed rather than abandoned,
+**with and without the operator window**.
+
+Both modes matter, and that is the point: for a long time only `--headless` was
+ever tested, and the windowed path was badly broken in a way headless could not
+show. See the bugs below.
 
 This is not cosmetic. Killing an earlier build without a handler left a stale
 source advertised on the network, and the next run was undiscoverable for
 several minutes — which looked exactly like a broken sender.
+
+## 7. The operator window — verified
+
+The window opens, shows the control page, and its preview updates live. Verified
+by the window server reporting a top-level window owned by the process, and by
+capturing the page.
 
 ---
 
@@ -177,6 +188,43 @@ hardened runtime plus the library-validation exemption every Chromium app needs.
 **The minimal CEF distribution has no sandbox library.** CEF's CMake defaults to
 `USE_SANDBOX=ON`, which links a `cef_sandbox.a` the minimal distribution does not
 contain.
+
+**macOS needs a custom NSApplication subclass, and nothing says so until a
+window exists.** Chromium's message pump calls `-[NSApplication
+isHandlingSendEvent]`, a `CrAppProtocol` selector stock `NSApplication` does not
+implement, so the process died with
+
+```
+*** Terminating app due to uncaught exception 'NSInvalidArgumentException',
+reason: '-[NSApplication isHandlingSendEvent]: unrecognized selector sent to
+instance ...'
+```
+
+This went unnoticed for a long time because every test run used `--headless`,
+where no window ever drives `NSApp` — so the application worked perfectly right
+up until somebody opened its window, and then failed on the way *out*, which
+reads like a shutdown bug rather than a missing application class.
+`src/app/mac_application.mm` provides it now.
+
+**Shutdown ordering, twice over.** With the window open, `CefQuitMessageLoop()`
+does not end `CefRunMessageLoop()` — the window has to be closed first. And
+`CefShutdown()` blocks forever if any `CefRefPtr` is still held, which the
+operator window's client was, as a global. Both produced the same symptom: a
+process that logged a clean shutdown and then sat there holding the control port
+and the NDI source name. An attempted fix that closed the offscreen browser
+*before* quitting the loop made it worse, hanging headless too, because the
+browser's destruction then never got pumped.
+
+**Chromium asks macOS Keychain for a password-store key on every launch**, which
+raises an authorisation dialog — on a machine that may be live to air.
+`--password-store=basic` and `--use-mock-keychain` keep it away from the keyring;
+a render host has no use for a password store.
+
+**A hidden document must not stop the preview.** The control page skipped its
+preview poll entirely when `document.hidden` was true. That covers more than a
+backgrounded tab: a kiosk shell, an embedded webview or a screenshot tool can all
+report hidden while somebody is looking straight at the screen, and the
+confidence monitor showed black. It now polls slowly rather than not at all.
 
 ---
 
