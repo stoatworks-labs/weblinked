@@ -78,6 +78,19 @@ set(USE_SANDBOX OFF CACHE BOOL "Link the CEF sandbox library" FORCE)
 find_package(CEF REQUIRED)
 add_subdirectory("${CEF_ROOT}/libcef_dll" libcef_dll_wrapper)
 
+# Windows and Linux link libcef directly; macOS does not, and must not.
+#
+# On macOS the CEF framework is loaded at run time by CefScopedLibraryLoader —
+# that is the pattern the binary distribution is built for, and it is why the
+# bundle works with the framework inside Contents/Frameworks. Everywhere else
+# the loader has no equivalent and the symbols have to come from libcef at link
+# time; without this, Linux fails with a wall of "undefined reference to
+# cef_string_utf16_clear" and friends, which reads like a broken CEF build
+# rather than a missing library.
+if(NOT OS_MAC)
+  ADD_LOGICAL_TARGET("libcef_lib" "${CEF_LIB_DEBUG}" "${CEF_LIB_RELEASE}")
+endif()
+
 PRINT_CEF_CONFIG()
 
 # ----------------------------------------------------------------------------
@@ -287,7 +300,7 @@ if(OS_MAC)
 else()
   add_executable(weblinked WIN32 src/app/main.cpp)
   set_target_properties(weblinked PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
-  target_link_libraries(weblinked PRIVATE weblinked_engine)
+  target_link_libraries(weblinked PRIVATE weblinked_engine libcef_lib)
   target_compile_options(weblinked PRIVATE ${CEF_COMPILER_FLAGS} ${CEF_CXX_COMPILER_FLAGS})
   target_link_options(weblinked PRIVATE ${CEF_LINKER_FLAGS} ${CEF_EXE_LINKER_FLAGS})
 

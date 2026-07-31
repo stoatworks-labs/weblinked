@@ -12,6 +12,11 @@
 //          so CefExecuteProcess must come first and return immediately for any
 //          invocation that is not the browser.
 
+#if defined(_WIN32)
+// For GetModuleHandle below. NOMINMAX comes from CMakeLists.
+#include <windows.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -34,6 +39,7 @@
 #include "browser/cef_app.h"
 #include "control/control_api.h"
 #include "core/json.h"
+#include "core/settings_store.h"
 #include "core/video_format.h"
 #include "diag/diag.h"
 #include "engine/engine.h"
@@ -54,6 +60,30 @@ struct Options {
   ColourMatrix matrix = ColourMatrix::kAuto;
   BrowserSource::Pacing pacing = BrowserSource::Pacing::kExternalBeginFrame;
   std::string cachePath;
+  bool interactive = true;
+  RenderClient::PopupPolicy popupPolicy =
+      RenderClient::PopupPolicy::kNavigateInPlace;
+  /// Empty means the platform default. See settings::defaultPath().
+  std::string settingsPath;
+  /// Whether a saved settings file is read at startup. Anything given on the
+  /// command line still wins — see applySavedSettings().
+  bool useSavedSettings = true;
+  bool wantPreview = true;
+
+  /// Which of the above the operator actually typed.
+  ///
+  /// The settings file only fills in what the command line left alone. Without
+  /// this, a saved file would quietly override an explicit `--url` — and the
+  /// operator would be looking at the wrong page with no clue why.
+  struct Given {
+    bool url = false;
+    bool format = false;
+    bool matrix = false;
+    bool pacing = false;
+    bool interactive = false;
+    bool popups = false;
+    bool outputs = false;
+  } given;
 };
 
 void printUsage() {
@@ -69,6 +99,10 @@ Source
                            Who drives frames. Default: external (we do)
   --no-audio               Ignore the page's audio entirely
   --cache <dir>            Persist cookies and storage here. Default: none
+  --popups <navigate|block>
+                           What a link that wants a new tab does. navigate
+                           (default) loads it here; block drops it. A real
+                           popup window is never opened — see docs/01.
 
 Outputs (repeatable; without any, only the preview runs)
   --ndi[=name]             NDI sender. Default name: WebLinked
@@ -89,8 +123,14 @@ Control
   --osc-port <n>           OSC listen port. Default: 7655
   --no-osc                 Do not listen for OSC
   --headless               Do not open the operator window
+  --no-interactive         Do not arm the preview for input on load
   --verbose                Verbose logging
   --help                   This text
+
+Settings
+  --settings <file>        Settings file to load and save. Default: the
+                           platform's config directory
+  --no-settings            Ignore any saved settings file
 
 Backends compiled into this build: )", WEBLINKED_VERSION);
   for (const auto& kind : compiledOutputKinds()) {
@@ -109,7 +149,6 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
   bool nextAlpha = false;
   std::string nextKeying;
   int keyLevel = 255;
-  bool wantPreview = true;
 
   for (int i = 1; i < argc; ++i) {
     const std::string argument = argv[i];
@@ -134,6 +173,7 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
     }
     if (argument.rfind("--url", 0) == 0) {
       if (!needsValue(options.url)) return false;
+      options.given.url = true;
       continue;
     }
     if (argument.rfind("--format", 0) == 0) {
@@ -145,6 +185,7 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
         return false;
       }
       options.format = *parsed;
+      options.given.format = true;
       continue;
     }
     if (argument.rfind("--matrix", 0) == 0) {
@@ -153,6 +194,7 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
       if (text == "601") options.matrix = ColourMatrix::kBt601;
       else if (text == "709") options.matrix = ColourMatrix::kBt709;
       else options.matrix = ColourMatrix::kAuto;
+      options.given.matrix = true;
       continue;
     }
     if (argument.rfind("--pacing", 0) == 0) {
@@ -160,6 +202,7 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
       if (!needsValue(text)) return false;
       options.pacing = text == "internal" ? BrowserSource::Pacing::kInternalTimer
                                           : BrowserSource::Pacing::kExternalBeginFrame;
+      options.given.pacing = true;
       continue;
     }
     if (argument.rfind("--cache", 0) == 0) {
@@ -169,7 +212,7 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
     if (argument == "--no-audio") { options.audio = false; continue; }
     if (argument == "--headless") { options.openWindow = false; continue; }
     if (argument == "--verbose") { options.verbose = true; continue; }
-    if (argument == "--no-preview") { wantPreview = false; continue; }
+    if (argument == "--no-preview") { options.wantPreview = false; continue; }
     if (argument == "--alpha") { nextAlpha = true; continue; }
     if (argument.rfind("--key-level", 0) == 0) {
       std::string text;
@@ -188,6 +231,31 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
       continue;
     }
     if (argument == "--no-osc") { options.control.oscEnabled = false; continue; }
+    if (argument == "--no-interactive") {
+      options.interactive = false;
+      options.given.interactive = true;
+      continue;
+    }
+    if (argument == "--no-settings") { options.useSavedSettings = false; continue; }
+    if (argument.rfind("--settings", 0) == 0) {
+      if (!needsValue(options.settingsPath)) return false;
+      continue;
+    }
+    if (argument.rfind("--popups", 0) == 0) {
+      std::string text;
+      if (!needsValue(text)) return false;
+      if (text == "block") {
+        options.popupPolicy = RenderClient::PopupPolicy::kBlock;
+      } else if (text == "navigate") {
+        options.popupPolicy = RenderClient::PopupPolicy::kNavigateInPlace;
+      } else {
+        std::fprintf(stderr, "--popups must be navigate or block, not '%s'\n",
+                     text.c_str());
+        return false;
+      }
+      options.given.popups = true;
+      continue;
+    }
 
     if (argument.rfind("--ndi", 0) == 0 || argument.rfind("--omt", 0) == 0) {
       OutputSpec spec;
@@ -201,6 +269,7 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
         nextAlpha = false;
       }
       options.outputs.push_back(spec);
+      options.given.outputs = true;
       continue;
     }
 
@@ -216,6 +285,7 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
         nextKeying.clear();
       }
       options.outputs.push_back(spec);
+      options.given.outputs = true;
       continue;
     }
 
@@ -250,15 +320,83 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
     return false;
   }
 
-  if (wantPreview) {
-    OutputSpec preview;
-    preview.kind = "preview";
-    preview.name = "preview";
-    // 1/4 scale: enough to see a graphic is present and framed, cheap to move.
-    preview.options.set("factor", json::Value(4));
-    options.outputs.insert(options.outputs.begin(), preview);
-  }
   return true;
+}
+
+/// Puts the preview output at the front of the list if it is wanted and not
+/// already there.
+///
+/// Called after the settings file has been merged rather than during parsing: a
+/// saved configuration carries its own outputs, and inserting a second preview
+/// would leave two of them fighting over one name.
+void ensurePreview(Options& options) {
+  if (!options.wantPreview) {
+    return;
+  }
+  const bool present =
+      std::any_of(options.outputs.begin(), options.outputs.end(),
+                  [](const OutputSpec& spec) { return spec.kind == "preview"; });
+  if (present) {
+    return;
+  }
+  OutputSpec preview;
+  preview.kind = "preview";
+  preview.name = "preview";
+  // 1/4 scale: enough to see a graphic is present and framed, cheap to move.
+  preview.options.set("factor", json::Value(4));
+  options.outputs.insert(options.outputs.begin(), preview);
+}
+
+/// Fills in whatever the command line left alone from a saved settings file.
+///
+/// Deliberately one-directional: the file never overrides an explicit flag. A
+/// launcher passing --port and --headless must not have those undone by
+/// whatever the last operator happened to save.
+void applySavedSettings(Options& options) {
+  if (!options.useSavedSettings) {
+    return;
+  }
+  const std::string path = options.settingsPath.empty()
+                               ? settings::defaultPath()
+                               : options.settingsPath;
+  std::string error;
+  const auto file = settings::load(path, &error);
+  if (!file) {
+    // Absent is the normal case on a first run, so this is not a warning.
+    diag::debug("settings: not loading %s: %s", path.c_str(), error.c_str());
+    return;
+  }
+  if (file->sources.empty()) {
+    diag::warn("settings: %s has no sources", path.c_str());
+    return;
+  }
+
+  const SourceConfig& saved = file->sources.front();
+  if (!options.given.url) options.url = saved.url;
+  if (!options.given.format) options.format = saved.format;
+  if (!options.given.matrix) options.matrix = saved.matrix;
+  if (!options.given.pacing) {
+    options.pacing = saved.externalPacing
+                         ? BrowserSource::Pacing::kExternalBeginFrame
+                         : BrowserSource::Pacing::kInternalTimer;
+  }
+  if (!options.given.interactive) {
+    options.interactive = saved.interactiveByDefault;
+  }
+  if (!options.given.popups) {
+    options.popupPolicy = saved.popupPolicy == "block"
+                              ? RenderClient::PopupPolicy::kBlock
+                              : RenderClient::PopupPolicy::kNavigateInPlace;
+  }
+  if (!options.given.outputs) {
+    options.outputs.clear();
+    for (const auto& output : saved.outputs) {
+      options.outputs.push_back(outputSpecFromConfig(output));
+    }
+  }
+  // --no-audio is a refusal, so it wins either way round.
+  options.audio = options.audio && saved.audioEnabled;
+  diag::info("settings: loaded %s", path.c_str());
 }
 
 /// The operator window's client.
@@ -391,6 +529,11 @@ json::Value describeOptions(const Options& options) {
   // Named so the diag module's redaction catches it.
   value.set("http_token", json::Value(options.control.httpToken));
   value.set("osc_port", json::Value(options.control.oscPort));
+  value.set("interactive", json::Value(options.interactive));
+  value.set("popups",
+            json::Value(options.popupPolicy == RenderClient::PopupPolicy::kBlock
+                            ? "block"
+                            : "navigate"));
   json::Value outputs = json::Value::array();
   for (const auto& spec : options.outputs) {
     json::Value entry = json::Value::object();
@@ -422,7 +565,14 @@ int main(int argc, char** argv) {
   weblinked::installMacApplication();
 #endif
 
+  // CefMainArgs is one of the few genuinely different shapes across platforms:
+  // POSIX takes the command line, Windows takes the module handle and reads its
+  // own command line from the OS.
+#if defined(_WIN32)
+  CefMainArgs mainArgs(::GetModuleHandle(nullptr));
+#else
   CefMainArgs mainArgs(argc, argv);
+#endif
 
 #if !defined(__APPLE__)
   // On Windows and Linux this binary is also every subprocess. A non-negative
@@ -456,6 +606,12 @@ int main(int argc, char** argv) {
   // installSignalHandlers() below for the same trap.
   diagOptions.installCrashHandler = false;
   weblinked::diag::init(diagOptions);
+
+  // After logging is up, so a settings file that will not parse says so
+  // somewhere an operator can find it; before the config is recorded, so a
+  // crash report describes what is actually running.
+  applySavedSettings(options);
+  ensurePreview(options);
   weblinked::diag::setConfig(describeOptions(options));
 
   CefSettings settings;
@@ -485,6 +641,8 @@ int main(int argc, char** argv) {
   engineConfig.matrix = options.matrix;
   engineConfig.pacing = options.pacing;
   engineConfig.cachePath = options.cachePath;
+  engineConfig.popupPolicy = options.popupPolicy;
+  engineConfig.interactiveByDefault = options.interactive;
 
   std::string error;
   if (!engine.start(engineConfig, error)) {
@@ -495,6 +653,7 @@ int main(int argc, char** argv) {
   }
 
   weblinked::ControlApi control(&engine);
+  options.control.settingsPath = options.settingsPath;
   if (!control.start(options.control, error)) {
     weblinked::diag::error("control surface failed to start: %s", error.c_str());
     std::fprintf(stderr, "%s\n", error.c_str());
