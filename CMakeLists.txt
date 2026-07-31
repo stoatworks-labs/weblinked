@@ -241,7 +241,9 @@ set_target_properties(weblinked_core PROPERTIES
 )
 
 if(WIN32)
-  target_link_libraries(weblinked_core PUBLIC ws2_32)
+  # ws2_32 for the sockets; dbghelp for SymInitialize/SymFromAddr, which is how
+  # diag.cpp turns a crash backtrace into names rather than bare addresses.
+  target_link_libraries(weblinked_core PUBLIC ws2_32 dbghelp)
 endif()
 if(UNIX)
   target_link_libraries(weblinked_core PUBLIC ${CMAKE_DL_LIBS})
@@ -308,7 +310,13 @@ if(OS_MAC)
   include(MacBundle)
   weblinked_add_mac_app()
 else()
-  add_executable(weblinked WIN32 src/app/main.cpp)
+  # Console subsystem, deliberately, rather than add_executable(... WIN32 ...).
+  # WIN32 makes MSVC demand WinMain, and the fix people reach for — /ENTRY or a
+  # WinMain shim — buys a windowless process at the cost of --help, the version
+  # banner and the startup errors having nowhere to go. WebLinked is driven from
+  # a command line often enough that losing its output is the worse trade; the
+  # tray launcher covers the case where nobody wants a terminal.
+  add_executable(weblinked src/app/main.cpp)
   set_target_properties(weblinked PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
   target_link_libraries(weblinked PRIVATE weblinked_engine libcef_lib)
 
