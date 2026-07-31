@@ -27,8 +27,9 @@ weblinked --config show.json
 [![Watch it running — 63 seconds](docs/video-thumb.png)](https://www.youtube.com/watch?v=3qG3wPPjUjY)
 
 *A 63-second tour of the real app, driven over its own HTTP control API. The output is
-NDI, picked up by a separate receiver (`tools/ndi_probe`) — no DeckLink or AJA card
-appears, because none has ever been connected. See
+NDI, picked up by a separate receiver (`tools/ndi_probe`). Filmed before a DeckLink was
+available, so no SDI card appears — the SDI path has since been measured against a real
+DeckLink Duo 2. See
 [docs/04-verification.md](docs/04-verification.md) for what is verified and what is not.*
 
 ![The WebLinked control page, rendering github.com to NDI at 1080p50](docs/images/control-page.png)
@@ -68,15 +69,16 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 ## Download
 
-**[v0.5.2](https://github.com/stoatworks-labs/weblinked/releases/tag/v0.5.2)** — prebuilt for macOS, Windows and Linux. Pick your platform:
+**[v0.6.0](https://github.com/stoatworks-labs/weblinked/releases/tag/v0.6.0)** — prebuilt for macOS, Windows and Linux. Pick your platform:
 
 <details>
 <summary><b>macOS</b> — Apple Silicon</summary>
 
 | Build | Download | Size |
 | --- | --- | --- |
-| Apple Silicon · .dmg disk image | [`weblinked-0.5.2-macos-arm64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.5.2/weblinked-0.5.2-macos-arm64.dmg) | 159 MB |
-| Apple Silicon · .pkg installer | [`weblinked-0.5.2-macos-arm64.pkg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.5.2/weblinked-0.5.2-macos-arm64.pkg) | 142 MB |
+| Apple Silicon · .dmg disk image | [`weblinked-0.6.0-macos-arm64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/weblinked-0.6.0-macos-arm64.dmg) | 159 MB |
+| Apple Silicon · .dmg disk image | [`WebLinked.Launcher_0.6.0_aarch64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/WebLinked.Launcher_0.6.0_aarch64.dmg) | 3.8 MB |
+| Apple Silicon · .pkg installer | [`weblinked-0.6.0-macos-arm64.pkg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/weblinked-0.6.0-macos-arm64.pkg) | 142 MB |
 
 </details>
 
@@ -85,8 +87,9 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 | Build | Download | Size |
 | --- | --- | --- |
-| x64 · .exe installer | [`weblinked-0.5.2-windows-x86_64-setup.exe`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.5.2/weblinked-0.5.2-windows-x86_64-setup.exe) | 133 MB |
-| x64 · .zip archive | [`weblinked-0.5.2-windows-x86_64.zip`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.5.2/weblinked-0.5.2-windows-x86_64.zip) | 178 MB |
+| x64 · .exe installer | [`weblinked-0.6.0-windows-x86_64-setup.exe`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/weblinked-0.6.0-windows-x86_64-setup.exe) | 133 MB |
+| x64 · .exe installer | [`WebLinked.Launcher_0.6.0_x64-setup.exe`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/WebLinked.Launcher_0.6.0_x64-setup.exe) | 2.5 MB |
+| x64 · .zip archive | [`weblinked-0.6.0-windows-x86_64.zip`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/weblinked-0.6.0-windows-x86_64.zip) | 178 MB |
 
 </details>
 
@@ -95,7 +98,9 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 | Build | Download | Size |
 | --- | --- | --- |
-| x64 · .tar.gz archive | [`weblinked-0.5.2-linux-x86_64.tar.gz`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.5.2/weblinked-0.5.2-linux-x86_64.tar.gz) | 356 MB |
+| x64 · .deb package (Debian/Ubuntu) | [`WebLinked.Launcher_0.6.0_amd64.deb`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/WebLinked.Launcher_0.6.0_amd64.deb) | 5.1 MB |
+| x64 · .rpm package (Fedora/RHEL) | [`WebLinked.Launcher-0.6.0-1.x86_64.rpm`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/WebLinked.Launcher-0.6.0-1.x86_64.rpm) | 5.1 MB |
+| x64 · .tar.gz archive | [`weblinked-0.6.0-linux-x86_64.tar.gz`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/weblinked-0.6.0-linux-x86_64.tar.gz) | 356 MB |
 
 </details>
 
@@ -115,7 +120,7 @@ All builds, checksums and release notes: [github.com/stoatworks-labs/weblinked/r
 - **Frame-accurate pacing.** The engine's clock drives Chromium one frame at a
   time (`SendExternalBeginFrame`) rather than letting the browser paint on its
   own timer, so 50 ticks a second means 50 paints a second.
-- **Alpha, properly.** NDI and OMT carry the page's transparency, and a DeckLink
+- **Alpha, properly**, and measured on the wire in both directions. NDI and OMT carry the page's transparency, and a DeckLink
   can output **key + fill** on separate SDI connectors (or key internally over
   its own input). Chromium composites premultiplied and every destination here
   expects straight alpha, so WebLinked un-premultiplies — without that, soft
@@ -180,7 +185,7 @@ All builds, checksums and release notes: [github.com/stoatworks-labs/weblinked/r
 | **Settings + diagnostics pages** | Verified against a running instance: outputs added, renamed and removed, settings saved and read back after a restart, the log and bundle served. |
 | **Tray launcher** | Builds; its config is unit-tested against the file it ships. **Not clicked through against a live WebLinked** — see [launcher/README.md](launcher/README.md). |
 | **OMT** | Compiles against `libomt.h` 1.0.0.16. **Never tested against an OMT receiver.** |
-| **DeckLink** | Compiles against DeckLink SDK 12.2, key + fill included. **Never run against a card.** |
+| **DeckLink** | **Verified against a real card** (DeckLink Duo 2): output, pre-roll and buffer level, colour confirmed by an SDI loopback capture, and key + fill measured — the fill carries straight alpha. The key channel itself and audio over SDI are still unmeasured. |
 | **AJA** | Compiles against libajantv2 18.1. **Never run against a card.** Off by default. |
 
 Read [docs/04-verification.md](docs/04-verification.md) before trusting any of

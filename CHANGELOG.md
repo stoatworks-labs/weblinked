@@ -1,5 +1,53 @@
 # Changelog
 
+## v0.6.1 — 2026-07-31
+
+The SDI path stops being an assumption. A DeckLink was connected for the first
+time in this project's life, and most of what `docs/04-verification.md` listed as
+unknown about DeckLink is now measured.
+
+### Fixed
+
+- **Keying now says what to do when the card refuses it.** A DeckLink Duo 2
+  accepts 8-bit BGRA at 1080p25, 1080i50 and 720p50 but **not** at 1080p50: alpha
+  needs an RGBA format, and RGBA costs roughly twice the link rate of the 4:2:2
+  that fits the same raster. Nothing in the code was wrong, but the message
+  stopped at "unsupported" — and the
+  `SupportsExternalKeying`/`SupportsInternalKeying` guard *passes* on such a card,
+  because it genuinely has a keyer, so the refusal lands one layer down at the
+  pixel format. Capability and bandwidth are different questions. The error now
+  asks the card which rates it would accept with alpha and names them.
+
+### Added
+
+- **`tools/sdi_probe.mm`** — an independent SDI receiver, the DeckLink twin of
+  `ndi_probe`. Captures on a DeckLink input and checks colour against a BT.709
+  reference written separately from the application's own maths, so it proves
+  what came back off the wire rather than restating what was sent.
+- **`tools/dl_scan.mm`** — answers "is anything arriving, and on which
+  sub-device". Counts `no-source` frames separately from good ones, which
+  distinguishes an unplugged input from a mispatched one from a sub-device that
+  is inactive in the card's current profile.
+- **`tools/alphabars.html`** — four bands of known alpha, for measuring a keyed
+  fill.
+
+### Verified (see docs/04-verification.md section 19)
+
+- **Colour on an SDI wire.** All eight bars exact against an independent BT.709
+  reference, at 1080p50 and 1080p25, captured off a real loopback.
+- **Pre-roll and buffer level**, which docs had listed as unknown since v0.1.0:
+  `buffered_frames` sat at 6 for a two-minute soak at 1080p50 with **zero**
+  dropped ticks.
+- **Key + fill carries straight alpha.** A 50%-alpha green measures Y=132 off the
+  wire; premultiplied it would be ~95 — the exact value the NDI path produced
+  before `unpremultiplyBgra` existed. The bug that was real on NDI is not present
+  on SDI. Invisible on opaque graphics, so only this settles it.
+- **Internal keying engages over a live incoming signal**, driven by two
+  WebLinked processes at once — the arrangement v0.5.2 made possible.
+
+Still unmeasured on DeckLink: the key channel itself, the internal-keying
+composite, audio over SDI, and genlock over hours. AJA is unchanged — no card.
+
 ## v0.6.0 — 2026-07-31
 
 The operator window is gone, tabs are reachable, and the tray launcher ships.

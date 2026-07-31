@@ -240,9 +240,22 @@ including that command-line flags override it across a restart. The diagnostics
 endpoints. The popup fix, against both `target="_blank"` and `window.open`, and
 both policies.
 
-**Compiles against a real SDK but has never touched hardware:** DeckLink (SDK
-12.2), AJA (libajantv2 18.1), OMT (libomt 1.0.0.16 — never consumed by a
-receiver).
+**Also verified, against real hardware since v0.6.1:** DeckLink. A Duo 2
+confirmed output, pre-roll and buffer level (6 frames, zero dropped ticks over a
+two-minute soak), colour via an SDI loopback captured by `tools/sdi_probe.mm`,
+and that a **keyed fill carries straight alpha** — 50%-alpha green measures 132
+off the wire where premultiplied would be ~95, the exact value NDI produced
+before `unpremultiplyBgra`. Not measured on DeckLink: the key channel itself,
+the internal-keying composite, audio over SDI, genlock over hours.
+
+Keying has a ceiling worth knowing: alpha needs RGBA, RGBA costs about twice the
+link rate of the same raster in 4:2:2, and a Duo 2 therefore refuses a keyed
+1080p50 while accepting 1080p25. The `SupportsExternalKeying` attribute does not
+predict this — it passes on such a card. Capability and bandwidth are different
+questions.
+
+**Compiles against a real SDK but has never touched hardware:** AJA
+(libajantv2 18.1), OMT (libomt 1.0.0.16 — never consumed by a receiver).
 
 **Never built or run:** Windows and Linux.
 

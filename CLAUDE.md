@@ -71,10 +71,13 @@ AV_LAUNCHER_CONFIG=launchers/dev.toml npm run tauri dev   # against ./build
 
 ## Rules
 
-1. **Never claim a backend works because it compiles.** Only NDI and preview are
-   verified. DeckLink, AJA and OMT compile against real SDKs and have never
-   touched hardware. `docs/04-verification.md` is the authority — update it with
-   commands and output, not ticks.
+1. **Never claim a backend works because it compiles.** NDI, preview and now
+   DeckLink are verified against real receivers or hardware. AJA and OMT compile
+   against real SDKs and have never touched either. `docs/04-verification.md` is
+   the authority — update it with commands and output, not ticks. There are two
+   independent receivers for exactly this: `tools/ndi_probe.cpp` and
+   `tools/sdi_probe.mm`, both carrying their own BT.709 reference so a check is
+   not a restatement of the code under test.
 2. **Frame rates stay exact rationals.** No `double` rates, no accumulated
    periods. 59.94 is `60000/1001`.
 3. **`weblinked_core` must not depend on CEF.** It is also compiled without CEF's
