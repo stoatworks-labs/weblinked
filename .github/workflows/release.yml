@@ -90,6 +90,52 @@ jobs:
         run: |
           grep -E "WEBLINKED_WITH_(NDI|OMT|DECKLINK|AJA)" build/CMakeCache.txt || true
 
+      - name: Fetch the NDI runtime
+        shell: bash
+        # Bundling the runtime is what makes NDI work on a machine that has
+        # never installed the SDK. Permitted: the SDK is royalty-free and may be
+        # shipped inside an application folder, provided the licence presented
+        # forbids modifying and reverse-engineering it - which rl_eula adds to
+        # the installer EULA. The repository still carries no NDI binaries; only
+        # the released artefact does.
+        #
+        # Each platform packages its runtime differently, so each is unpacked
+        # its own way. All three recipes were verified by hand before being
+        # written here.
+        run: |
+          set -euo pipefail
+          rt="$RUNNER_TEMP/ndi-rt"; mkdir -p "$rt"
+          case "$RUNNER_OS" in
+            macOS)
+              curl -sL -o "$rt/r.pkg" "http://ndi.link/NDIRedistV6Apple"
+              pkgutil --expand "$rt/r.pkg" "$rt/exp"
+              tar xzf "$rt/exp/libNDIComponent.pkg/Payload" -C "$rt"
+              ;;
+            Linux)
+              curl -sL -o "$rt/sdk.tar.gz" \
+                "https://downloads.ndi.tv/SDK/NDI_SDK_Linux/Install_NDI_SDK_v6_Linux.tar.gz"
+              tar xzf "$rt/sdk.tar.gz" -C "$rt"
+              sh="$(find "$rt" -maxdepth 1 -name 'Install_NDI_SDK*_Linux.sh' | head -1)"
+              # Self-extracting: the tarball starts after this marker line.
+              begin="$(awk '/^__NDI_ARCHIVE_BEGIN__/ { print NR+1; exit 0 }' "$sh")"
+              tail -n+"$begin" "$sh" | tar xz -C "$rt"
+              lib="$(find "$rt" -path '*x86_64-linux-gnu*' -name 'libndi.so.6*' | head -1)"
+              cp "$lib" "$rt/"
+              cp "$(find "$rt" -name libndi_licenses.txt | head -1)" "$rt/" || true
+              ;;
+            Windows)
+              curl -sL -o "$rt/rt.exe" \
+                "https://downloads.ndi.tv/SDK/NDI_SDK/NDI%206%20Runtime.exe"
+              # windows-latest ships 7z, which reads Inno Setup archives.
+              7z e -y -o"$rt" "$rt/rt.exe" "app/Processing.NDI.Lib.x64.dll" \
+                 "app/Processing.NDI.Lib.Licenses.txt" >/dev/null
+              [ -f "$rt/Processing.NDI.Lib.Licenses.txt" ] \
+                && mv "$rt/Processing.NDI.Lib.Licenses.txt" "$rt/libndi_licenses.txt"
+              ;;
+          esac
+          echo "RL_NDI_DIR_$(echo '${{ matrix.name }}' | tr '[:lower:]-' '[:upper:]_')=$rt" >> "$GITHUB_ENV"
+          ls -la "$rt" | head
+
       - name: Installers (macOS)
         if: runner.os == 'macOS'
         shell: bash
@@ -110,6 +156,10 @@ jobs:
           rm -rf "$stage"; mkdir -p "$stage"
           cp -R "$app" "$stage/"
           cp README.md LICENSE "$stage/" 2>/dev/null || true
+          # Before signing: the bundle is signed inside-out, so anything added
+          # afterwards falls outside the signature.
+          rl_ndi_bundle "${{ matrix.name }}" "$stage" --app "WebLinked.app"
+          export RL_EULA="$(rl_eula "$PWD/LICENSE")"
           rl_adhoc_sign "$stage/WebLinked.app"
           rl_dmg "${{ matrix.name }}" "$stage" --app "WebLinked.app"
           rl_pkg "${{ matrix.name }}" "$stage" --app "WebLinked.app"
@@ -125,6 +175,10 @@ jobs:
             cp -R build/Release/* out/ 2>/dev/null || cp -R build/* out/
           fi
           cp README.md LICENSE out/ 2>/dev/null || true
+          source scripts/release-lib.sh
+          rl_init "WebLinked" weblinked "${{ steps.ver.outputs.version }}" \
+            com.stoatworks.weblinked "$RUNNER_TEMP"
+          rl_ndi_bundle "${{ matrix.name }}" "out"
           if [ "$RUNNER_OS" = "Windows" ]; then
             7z a "weblinked-${{ steps.ver.outputs.version }}-${{ matrix.name }}.zip" ./out/*
           else
