@@ -279,10 +279,11 @@ jobs:
 
             **Linux** — portable `.tar.gz`, x86_64.
 
-            **Output backends in these builds:** OMT only. NDI and DeckLink are located with
-            `find_package` and silently disabled when their SDKs are absent, which they are on
-            hosted runners. Build locally with the SDKs installed to get those backends — see
-            docs/02-building.md.
+            **Output backends in these builds:** NDI, OMT and the preview. The NDI SDK headers
+            are vendored and the runtime is bundled into the artefact, so NDI works on a machine
+            that has never installed it. DeckLink and AJA are located with `find_package` and
+            silently disabled when their SDKs are absent, which they are on hosted runners —
+            build locally with those SDKs installed to get SDI out. See docs/02-building.md.
 
             Verification status is in docs/04-verification.md: NDI has been confirmed
             end-to-end against a real receiver; DeckLink, AJA and OMT compile against the real

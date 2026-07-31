@@ -65,6 +65,45 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 ---
 
+<!-- downloads:start -->
+
+## Download
+
+**[v0.5.2](https://github.com/stoatworks-labs/weblinked/releases/tag/v0.5.2)** — prebuilt for macOS, Windows and Linux. Pick your platform:
+
+<details>
+<summary><b>macOS</b> — Apple Silicon</summary>
+
+| Build | Download | Size |
+| --- | --- | --- |
+| Apple Silicon · .dmg disk image | [`weblinked-0.5.2-macos-arm64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.5.2/weblinked-0.5.2-macos-arm64.dmg) | 159 MB |
+| Apple Silicon · .pkg installer | [`weblinked-0.5.2-macos-arm64.pkg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.5.2/weblinked-0.5.2-macos-arm64.pkg) | 142 MB |
+
+</details>
+
+<details>
+<summary><b>Windows</b> — x64</summary>
+
+| Build | Download | Size |
+| --- | --- | --- |
+| x64 · .exe installer | [`weblinked-0.5.2-windows-x86_64-setup.exe`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.5.2/weblinked-0.5.2-windows-x86_64-setup.exe) | 133 MB |
+| x64 · .zip archive | [`weblinked-0.5.2-windows-x86_64.zip`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.5.2/weblinked-0.5.2-windows-x86_64.zip) | 178 MB |
+
+</details>
+
+<details>
+<summary><b>Linux</b> — x64</summary>
+
+| Build | Download | Size |
+| --- | --- | --- |
+| x64 · .tar.gz archive | [`weblinked-0.5.2-linux-x86_64.tar.gz`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.5.2/weblinked-0.5.2-linux-x86_64.tar.gz) | 356 MB |
+
+</details>
+
+All builds, checksums and release notes: [github.com/stoatworks-labs/weblinked/releases](https://github.com/stoatworks-labs/weblinked/releases).
+
+<!-- downloads:end -->
+
 ## What it does
 
 - **Renders any URL** through Chromium (CEF), offscreen, at the exact raster and
