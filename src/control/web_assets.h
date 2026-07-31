@@ -58,6 +58,32 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--off); }
   .dot.on { background: var(--live); }
   .dot.bad { background: var(--bad); }
+  /* The source strip. Each chip carries its own thumbnail, because the id and
+     the raster are not enough to tell two scoreboards apart at a glance — the
+     picture is. */
+  #source-strip {
+    display: flex; align-items: stretch; gap: 8px; overflow-x: auto;
+    padding: 8px 16px; background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  #source-chips { display: flex; gap: 8px; }
+  .schip {
+    display: flex; align-items: center; gap: 8px; flex: 0 0 auto;
+    padding: 6px 10px 6px 6px; border-radius: 8px; cursor: pointer;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
+    font-size: 11px; text-align: left;
+  }
+  .schip:hover { border-color: var(--accent); }
+  .schip.on { border-color: var(--accent); color: var(--text); }
+  .schip canvas {
+    width: 64px; height: 36px; border-radius: 4px; background: #000;
+    display: block; flex: 0 0 auto;
+  }
+  .schip .sname { font-weight: 600; color: var(--text); }
+  .schip .smeta { display: block; color: var(--dim); }
+  #add-source {
+    flex: 0 0 auto; align-self: center; margin-left: 4px;
+  }
   main {
     display: grid; grid-template-columns: minmax(320px, 1fr) minmax(280px, 420px);
     gap: 14px; padding: 14px; align-items: start;
@@ -188,6 +214,14 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
   <span class="pill"><span class="dot" id="engine-dot"></span><span id="engine-text">connecting</span></span>
   <span class="pill" id="format-pill">&mdash;</span>
 </header>
+
+<!-- The source strip. Hidden entirely when there is only one source, so a
+     command-line launch looks exactly as it did before this existed and an
+     operator with one feed is never asked to think about a collection. -->
+<div id="source-strip" hidden>
+  <div id="source-chips"></div>
+  <button id="add-source" title="Start another pipeline">+ source</button>
+</div>
 
 <main id="view-control">
   <div style="display:flex;flex-direction:column;gap:14px">
@@ -322,6 +356,10 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
       </label>
       <div class="buttons">
         <button class="primary" id="apply-settings">Apply</button>
+        <!-- Only shown when there is more than one source: removing the only
+             one would leave the process with nothing to control, which the
+             server refuses anyway. -->
+        <button id="remove-source" hidden>Remove this source</button>
       </div>
       <p class="note">
         Changing the format or the pacing restarts things: every output reopens
@@ -386,7 +424,25 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
 <script>
 const qs = new URLSearchParams(location.search);
 const token = qs.get('token');
-const api = (path) => token ? path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token) : path;
+
+// Which pipeline this page is driving. Empty means "whichever is primary",
+// which is what the server assumes for a request that names none — so before
+// the first /api/sources reply, and for a single-source launch, every call
+// behaves exactly as it did when there was only ever one engine.
+//
+// Threading it through api() rather than through each call site is deliberate:
+// every fetch on this page already goes through here for the token, so there is
+// no way to add a request later that forgets to say which source it meant. The
+// process-wide endpoints ignore the parameter.
+let currentSource = qs.get('source') || '';
+
+function api(path) {
+  const params = [];
+  if (token) params.push('token=' + encodeURIComponent(token));
+  if (currentSource) params.push('source=' + encodeURIComponent(currentSource));
+  if (!params.length) return path;
+  return path + (path.includes('?') ? '&' : '?') + params.join('&');
+}
 
 let toastTimer = null;
 function toast(message, bad) {
@@ -497,6 +553,19 @@ function definitions(target, pairs) {
     .join('');
 }
 
+// Output errors are built in C++ and can embed an operator-supplied device or
+// source name, so they are escaped before they ever reach innerHTML. Any http(s)
+// URL left in the text becomes a link — that is how the "NDI runtime not found"
+// message turns into a one-click route to the redistributable download.
+function errorHtml(text) {
+  const escaped = String(text).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[c]);
+  // Trailing punctuation is sentence structure, not part of the URL.
+  return escaped.replace(/https?:\/\/[^\s<]*[^\s<.,;:)]/g,
+    url => '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + '</a>');
+}
+
 function renderOutputs(outputs) {
   const body = document.querySelector('#outputs tbody');
   body.innerHTML = '';
@@ -510,7 +579,7 @@ function renderOutputs(outputs) {
       output.name + '<div class="kind">' + output.kind +
       (output.device ? ' &middot; ' + output.device : '') +
       (output.pixel_format ? ' &middot; ' + output.pixel_format : '') + '</div>' +
-      (output.error ? '<div class="err">' + output.error + '</div>' : '');
+      (output.error ? '<div class="err">' + errorHtml(output.error) + '</div>' : '');
     row.appendChild(nameCell);
 
     const statCell = document.createElement('td');
@@ -598,7 +667,7 @@ function outputEditor(output, isNew) {
       (isNew ? '<button data-a="cancel">Cancel</button>'
              : '<button class="danger" data-a="remove">Remove</button>') +
     '</div>' +
-    (output.error ? '<p class="err">' + output.error + '</p>' : '');
+    (output.error ? '<p class="err">' + errorHtml(output.error) + '</p>' : '');
 
   const field = (name) => node.querySelector('[data-f="' + name + '"]');
   field('keying').value = options.keying || '';
@@ -1070,17 +1139,195 @@ async function pullPreview() {
   }
 }
 
+// --- the source strip -------------------------------------------------------
+//
+// One chip per pipeline, each with its own small live picture. The strip only
+// appears once there is more than one source: a single-source launch — which is
+// every command-line launch — should look exactly as it did before any of this
+// existed.
+
+let knownSources = [];
+let lastChipPull = 0;
+const chipCanvases = new Map();   // id -> canvas, so a redraw does not lose them
+
+function selectSource(id) {
+  if (currentSource === id) return;
+  currentSource = id;
+  // Every field on the page belongs to the source that was showing, so let the
+  // next poll refill them rather than leaving one source's URL over another's.
+  urlDirty = false;
+  formatDirty = false;
+  renderSourceChips();
+  refresh();
+  pullPreview();
+  pullSettingsPath();
+}
+
+function renderSourceChips() {
+  const host = document.getElementById('source-chips');
+  const wanted = knownSources.map((s) => s.id).join(' ');
+  if (host.dataset.signature !== wanted) {
+    host.dataset.signature = wanted;
+    host.textContent = '';
+    chipCanvases.clear();
+    for (const source of knownSources) {
+      const chip = document.createElement('button');
+      chip.className = 'schip';
+      chip.dataset.id = source.id;
+
+      const thumb = document.createElement('canvas');
+      thumb.width = 64;
+      thumb.height = 36;
+      chipCanvases.set(source.id, thumb);
+      chip.appendChild(thumb);
+
+      const label = document.createElement('span');
+      const name = document.createElement('span');
+      name.className = 'sname';
+      name.textContent = source.id;
+      const meta = document.createElement('span');
+      meta.className = 'smeta';
+      meta.textContent = source.format || '';
+      label.appendChild(name);
+      label.appendChild(meta);
+      chip.appendChild(label);
+
+      chip.addEventListener('click', () => selectSource(source.id));
+      host.appendChild(chip);
+    }
+  }
+  for (const chip of host.children) {
+    chip.classList.toggle('on', chip.dataset.id === currentSource);
+  }
+}
+
+/// Paints one chip's thumbnail from that source's own preview output.
+async function pullChip(id) {
+  const thumb = chipCanvases.get(id);
+  if (!thumb) return;
+  try {
+    // Built by hand rather than through api(), because api() deliberately
+    // rewrites the source to the selected one — and the whole point of a chip
+    // is to show a source that is *not* selected.
+    let path = '/api/preview?source=' + encodeURIComponent(id);
+    if (token) path += '&token=' + encodeURIComponent(token);
+    const response = await fetch(path);
+    if (!response.ok) return;
+    const width = parseInt(response.headers.get('X-Frame-Width') || '0', 10);
+    const height = parseInt(response.headers.get('X-Frame-Height') || '0', 10);
+    if (!width || !height) return;
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length < width * height * 4) return;
+
+    // Decoded at full size into an offscreen buffer, then drawn down to the
+    // chip: putImageData ignores any transform, so it cannot scale by itself.
+    const buffer = document.createElement('canvas');
+    buffer.width = width;
+    buffer.height = height;
+    const image = buffer.getContext('2d').createImageData(width, height);
+    for (let i = 0; i < width * height * 4; i += 4) {
+      image.data[i] = bytes[i + 2];
+      image.data[i + 1] = bytes[i + 1];
+      image.data[i + 2] = bytes[i];
+      image.data[i + 3] = 255;
+    }
+    buffer.getContext('2d').putImageData(image, 0, 0);
+    thumb.getContext('2d').drawImage(buffer, 0, 0, thumb.width, thumb.height);
+  } catch (err) {
+    /* a dropped thumbnail is not worth reporting */
+  }
+}
+
+async function pullSources() {
+  let data;
+  try {
+    data = await get('/api/sources');
+  } catch (err) {
+    return;
+  }
+  knownSources = (data.sources || []).map((s) => ({
+    id: s.id,
+    format: s.format,
+    running: s.running,
+  }));
+
+  // Fall back to the primary if the source this page was driving has gone —
+  // otherwise every request 404s and the page looks broken rather than saying
+  // that somebody removed the feed.
+  if (currentSource && !knownSources.some((s) => s.id === currentSource)) {
+    toast("source '" + currentSource + "' is gone", true);
+    currentSource = '';
+  }
+  if (!currentSource && data.primary) currentSource = data.primary;
+
+  document.getElementById('source-strip').hidden = knownSources.length < 2;
+  document.getElementById('remove-source').hidden = knownSources.length < 2;
+  renderSourceChips();
+
+  // Throttled when hidden rather than skipped, for the same reason pullPreview
+  // is: "hidden" covers a kiosk shell, an embedded webview and a screenshot
+  // tool, all of which may have somebody looking straight at them. Skipping
+  // outright is how every chip came out black the first time this was tried.
+  const minimumInterval = document.hidden ? 2000 : 0;
+  const now = Date.now();
+  if (knownSources.length > 1 && now - lastChipPull >= minimumInterval) {
+    lastChipPull = now;
+    // Every source, the selected one included: its chip sits beside the others
+    // and a black square there reads as a fault, not as "you are already
+    // looking at this one".
+    for (const source of knownSources) {
+      pullChip(source.id);
+    }
+  }
+}
+
+document.getElementById('remove-source').addEventListener('click', async () => {
+  const id = currentSource;
+  if (!id) return;
+  // A confirm, because this stops a feed that may be on air and the button sits
+  // next to Apply.
+  if (!confirm("Stop and remove '" + id + "'? Its outputs go off air.")) return;
+  const removed = await post('/api/sources/remove', { id: id });
+  if (removed) {
+    toast("source '" + id + "' removed");
+    currentSource = '';
+    await pullSources();
+    refresh();
+  }
+});
+
+document.getElementById('add-source').addEventListener('click', async () => {
+  const id = prompt('An id for the new source (letters, digits, - _ .)');
+  if (!id) return;
+  const url = prompt('URL to render', 'about:blank');
+  if (url === null) return;
+  const format = prompt('Format', document.getElementById('format').value || '1080p50');
+  if (format === null) return;
+  const created = await post('/api/sources/add', {
+    source: { id: id, url: url, format: format },
+  });
+  if (created) {
+    toast("source '" + id + "' started");
+    await pullSources();
+    selectSource(id);
+  }
+});
+
 // Coming back to the page should show a live picture straight away rather than
 // whatever was on screen when it was hidden.
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { lastPull = 0; pullPreview(); refresh(); }
 });
 
+pullSources();
 refresh();
 pullPreview();
 pullSettingsPath();
 setInterval(refresh, 1000);
 setInterval(pullPreview, 125);
+// Slower than the main preview on purpose: a chip is for recognising a feed,
+// not for judging it, and N sources means N of these requests every tick.
+setInterval(pullSources, 1000);
 // pullLog returns immediately unless the diagnostics view is showing, so this
 // costs nothing while somebody is watching the preview.
 setInterval(pullLog, 2000);

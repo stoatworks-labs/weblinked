@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -9,15 +10,25 @@
 namespace weblinked {
 
 class Engine;
+class SourceManager;
 
 /// The control surface: an HTTP/JSON API, the embedded control page, and an OSC
-/// listener, all mapped onto one Engine.
+/// listener, mapped onto every source the manager holds.
 ///
 /// Two protocols for the same verbs, on purpose. HTTP is what the operator's
 /// page and any scripting uses; OSC is what a Companion button or a show-control
 /// cue sends. Neither is a superset of the other in practice, and a graphic that
 /// can only be changed by someone with a browser open is no use in a running
 /// show.
+///
+/// **Which source a request means.** Every per-source verb takes an optional
+/// `?source=<id>`; without it the request goes to the primary source, which for
+/// a command-line launch is the only one there is. That is what keeps every
+/// v0.3.0 client — the shipped control page, a Companion config, a curl in
+/// somebody's runbook — working unchanged against a multi-source build. The
+/// selector is a query parameter rather than a body field because `/api/state`
+/// and `/api/preview` are GETs with no body, and one mechanism that works
+/// everywhere beats two that each work half the time.
 class ControlApi {
  public:
   struct Config {
@@ -36,7 +47,7 @@ class ControlApi {
     std::string settingsPath;
   };
 
-  explicit ControlApi(Engine* engine);
+  explicit ControlApi(SourceManager* sources);
   ~ControlApi();
 
   bool start(const Config& config, std::string& error);
@@ -52,7 +63,20 @@ class ControlApi {
   void handleHttp(const HttpServer::Request& request, HttpServer::Response& response);
   void handleOsc(const OscServer::Message& message);
 
-  Engine* engine_;
+  /// The verbs themselves, once handleOsc has worked out which source the
+  /// address means and is holding it open.
+  void handleOscForSource(Engine& engine, const std::string& action,
+                          const OscServer::Message& message);
+
+  /// Runs `fn` against the source the request names, or the primary if it names
+  /// none. Answers 404 and returns false when there is no such source, so a
+  /// typo in an id is a clear error rather than a silent no-op on the wrong
+  /// feed — which on air is the more expensive of the two.
+  bool withRequestSource(const HttpServer::Request& request,
+                         HttpServer::Response& response,
+                         const std::function<void(Engine&)>& fn);
+
+  SourceManager* sources_;
   HttpServer http_;
   OscServer osc_;
   Config config_;

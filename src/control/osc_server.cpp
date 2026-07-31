@@ -27,8 +27,16 @@ using socket_t = int;
 namespace weblinked {
 namespace {
 
-/// OSC pads every element to a 4-byte boundary.
-size_t padded(size_t length) { return (length + 4) & ~static_cast<size_t>(3); }
+/// The wire size of an OSC string of `textLength` characters.
+///
+/// OSC strings are NUL-terminated and then padded to a multiple of four, and the
+/// terminator is not optional: a string whose length is already a multiple of
+/// four still gets four NULs after it. So this is the text, plus at least one
+/// NUL, rounded up — and the "+ 4" is what supplies that mandatory NUL, which is
+/// why the caller must pass the text length and *not* the length including it.
+size_t padded(size_t textLength) {
+  return (textLength + 4) & ~static_cast<size_t>(3);
+}
 
 /// Reads an OSC string: NUL-terminated, then padded to 4 bytes.
 bool readString(const uint8_t* data, size_t length, size_t& offset,
@@ -43,7 +51,13 @@ bool readString(const uint8_t* data, size_t length, size_t& offset,
     return false;  // unterminated
   }
   out.assign(start, textLength);
-  offset += padded(textLength + 1);
+  // padded() already counts the terminator. Passing textLength + 1 here counted
+  // it twice, which over-advanced by four bytes for any string whose length was
+  // 3 mod 4 — the offset then ran past the end, this returned false, and the
+  // whole message was dropped without a word. A quarter of all URLs and scripts
+  // are that length, so /weblinked/url worked for most addresses and silently
+  // did nothing for the rest.
+  offset += padded(textLength);
   return offset <= length;
 }
 

@@ -31,6 +31,10 @@ class PreviewOutput;
 class Engine {
  public:
   struct Config {
+    /// Stable handle the control API and OSC address this pipeline by. Defaults
+    /// to the name the single-source build has always reported, so a client that
+    /// predates the source manager still finds "main" where it left it.
+    std::string id = "main";
     std::string url = "about:blank";
     VideoFormat format;
     std::vector<OutputSpec> outputs;
@@ -50,6 +54,11 @@ class Engine {
 
   Engine();
   ~Engine();
+
+  /// This pipeline's handle. Fixed at start() and never changes: the manager
+  /// keys its map on it, and a rename underneath that map would strand the
+  /// engine. Renaming is done by the manager, not here.
+  const std::string& id() const { return id_; }
 
   /// Creates the browser and opens every configured output. An output that fails
   /// to open is reported but does not stop the others: on site, one missing card
@@ -177,6 +186,10 @@ class Engine {
     std::string lastError;
   };
 
+  /// Written once by start() before any other thread can see this engine, so it
+  /// needs no guarding.
+  std::string id_ = "main";
+
   mutable std::mutex mutex_;   ///< guards outputs_ and format_
   std::vector<Entry> outputs_;
   VideoFormat format_;
@@ -231,5 +244,19 @@ class Engine {
   std::atomic<int64_t> ticks_{0};
   std::atomic<int64_t> repeatedFrames_{0};
 };
+
+/// Turns the pure-data description of a pipeline into the engine's own config.
+///
+/// The inverse of Engine::configuration(). It lives here rather than in `core`
+/// because the result names CEF types; SourceConfig deliberately does not, so
+/// that a configuration file can still be parsed and validated in a build with
+/// no browser in it.
+///
+/// `cachePath` is passed in rather than carried in the file: every source in one
+/// process shares Chromium's cache directory, and letting a config file name a
+/// different one per source would mean several Chromium profiles in a single
+/// process, which CEF does not allow.
+Engine::Config engineConfigFromSource(const SourceConfig& config,
+                                      const std::string& cachePath);
 
 }  // namespace weblinked

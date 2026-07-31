@@ -21,6 +21,54 @@ It listens on `0.0.0.0:7655` by default; `--no-osc` disables it.
 
 ---
 
+## Which source a request means
+
+WebLinked can run several independent pipelines in one process — see `--config`
+in `--help` and section 15 of [04-verification.md](04-verification.md). Every
+per-source verb below therefore takes an optional selector:
+
+```
+?source=<id>
+```
+
+**Leave it off and the request goes to the primary source**, which is the first
+one configured and, for any command-line launch, the only one there is. That is
+what keeps every v0.3.0 client working unchanged: a Companion config, a curl in
+somebody's runbook, or the shipped control page never has to know this exists.
+
+An unknown id is a `404`, not a silent no-op. Naming the wrong feed and getting
+an error back is cheaper than naming the wrong feed and changing it.
+
+The selector is a query parameter rather than a body field because `/api/state`
+and `/api/preview` are GETs with no body, and one mechanism that works
+everywhere beats two that each work half the time.
+
+The process-wide endpoints — `/api/log`, `/api/diagnostics*`,
+`/api/settings/save` and `/api/sources*` — ignore it.
+
+### The collection
+
+| Endpoint | Does |
+|---|---|
+| `GET /api/sources` | `{"primary": "<id>", "sources": [ ...state... ]}` — every pipeline, each entry the same shape `/api/state` returns |
+| `POST /api/sources/add` | `{"source": { ...source config... }}`. `409` on a duplicate id, `400` on an invalid one. A preview output is added if the config has none |
+| `POST /api/sources/remove` | `{"id": "..."}`. `409` if it is the only source: a process with no sources has no primary, so removing the last one would make every later request answer 503. Stopping WebLinked is what closing the window is for |
+| `POST /api/sources/apply` | `{"sources": [ ... ]}` — reconciles the whole set at once. Sources that have gone are stopped, new ones started, and the rest updated in place so an unchanged output keeps running |
+
+```bash
+# What is running
+curl http://127.0.0.1:7654/api/sources
+
+# Retarget one feed without touching the others
+curl -X POST -d '{"url":"https://example.com/next"}' \
+  'http://127.0.0.1:7654/api/url?source=lower-third'
+
+# Start another pipeline mid-show
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"source":{"id":"clock","url":"file:///tmp/clock.html","format":"1080p50","outputs":[{"kind":"ndi","name":"Clock"}]}}' \
+  http://127.0.0.1:7654/api/sources/add
+```
+
 ## HTTP
 
 Base: `http://127.0.0.1:7654`
@@ -253,6 +301,23 @@ Default `0.0.0.0:7655`. Address prefix `/weblinked` (fixed at
 | `/weblinked/mute` | `i` | Non-zero mutes |
 | `/weblinked/format` | `s` | e.g. `1080p50` |
 | `/weblinked/output/<name>` | `i` | `1` starts, `0` stops |
+
+### Addressing one source
+
+Every verb above also exists under a per-source prefix:
+
+```
+/weblinked/source/<id>/url        "https://example.com/next"
+/weblinked/source/<id>/reload     1
+/weblinked/source/<id>/output/<name>  0
+```
+
+A bare `/weblinked/<verb>` goes to the primary source, exactly as it always did.
+An unknown id logs `no source called '<id>'` and changes nothing.
+
+The id lives in the address rather than in an argument on purpose: Companion
+sends a fixed address per button, so one button binds to one feed and *stays*
+bound — which is how an operator expects a physical button to behave.
 
 Implements what a control surface actually sends: address pattern, type tag
 string, `i`/`f`/`s`/`T`/`F` arguments, and `#bundle` unwrapping. Bundle timetags

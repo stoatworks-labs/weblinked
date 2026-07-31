@@ -43,6 +43,7 @@
 #include "core/video_format.h"
 #include "diag/diag.h"
 #include "engine/engine.h"
+#include "engine/source_manager.h"
 #include "outputs/output.h"
 
 namespace {
@@ -69,6 +70,13 @@ struct Options {
   /// command line still wins — see applySavedSettings().
   bool useSavedSettings = true;
   bool wantPreview = true;
+  /// A configuration file describing several sources. Mutually exclusive with
+  /// the per-source flags — see resolveSources().
+  std::string configPath;
+  /// What actually gets started: either the one source the flags describe, or
+  /// every source in --config. Filled in by resolveSources() once parsing and
+  /// the settings file have both had their say.
+  AppConfig sources;
 
   /// Which of the above the operator actually typed.
   ///
@@ -131,6 +139,15 @@ Settings
   --settings <file>        Settings file to load and save. Default: the
                            platform's config directory
   --no-settings            Ignore any saved settings file
+
+Several sources at once
+  --config <file>          Run every source the file describes, each with its
+                           own browser, clock and outputs. Cannot be combined
+                           with the source flags above — the file replaces
+                           them. --port, --token and --headless still apply.
+                           The file is the same shape the settings page saves,
+                           so the quickest way to write one is to configure a
+                           source, save, and copy the entry.
 
 Backends compiled into this build: )", WEBLINKED_VERSION);
   for (const auto& kind : compiledOutputKinds()) {
@@ -239,6 +256,10 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
     if (argument == "--no-settings") { options.useSavedSettings = false; continue; }
     if (argument.rfind("--settings", 0) == 0) {
       if (!needsValue(options.settingsPath)) return false;
+      continue;
+    }
+    if (argument.rfind("--config", 0) == 0) {
+      if (!needsValue(options.configPath)) return false;
       continue;
     }
     if (argument.rfind("--popups", 0) == 0) {
@@ -397,6 +418,96 @@ void applySavedSettings(Options& options) {
   // --no-audio is a refusal, so it wins either way round.
   options.audio = options.audio && saved.audioEnabled;
   diag::info("settings: loaded %s", path.c_str());
+}
+
+/// Decides what actually gets started: one source from the flags, or a whole set
+/// from --config.
+///
+/// The two are deliberately mutually exclusive rather than merged. Merging would
+/// mean answering "which source does a bare --url mean?" for a file that
+/// describes four of them, and every answer to that is a guess the operator
+/// cannot see. Refusing is one line in a terminal; guessing wrong is the wrong
+/// page on air.
+///
+/// Returns false with `error` set if the two were combined or the file will not
+/// load.
+bool resolveSources(Options& options, std::string& error) {
+  if (options.configPath.empty()) {
+    SourceConfig source;
+    source.id = "main";
+    source.url = options.url;
+    source.format = options.format;
+    source.audioEnabled = options.audio;
+    source.matrix = options.matrix;
+    source.externalPacing =
+        options.pacing == BrowserSource::Pacing::kExternalBeginFrame;
+    source.interactiveByDefault = options.interactive;
+    source.popupPolicy = options.popupPolicy == RenderClient::PopupPolicy::kBlock
+                             ? "block"
+                             : "navigate";
+    // ensurePreview() has already put one in options.outputs if it was wanted,
+    // so asking for a second here would duplicate it.
+    source.wantPreview = false;
+    for (const auto& spec : options.outputs) {
+      source.outputs.push_back(outputConfigFromSpec(spec));
+    }
+    options.sources.sources.push_back(source);
+    return true;
+  }
+
+  const bool sourceFlagsGiven = options.given.url || options.given.format ||
+                                options.given.matrix || options.given.pacing ||
+                                options.given.interactive ||
+                                options.given.popups || options.given.outputs;
+  if (sourceFlagsGiven) {
+    error =
+        "--config describes the sources, so it cannot be combined with --url, "
+        "--format, --matrix, --pacing, --interactive, --popups or an output "
+        "flag. Put those in the file instead.";
+    return false;
+  }
+
+  std::string loadError;
+  const auto file = settings::load(options.configPath, &loadError);
+  if (!file) {
+    error = "cannot read " + options.configPath + ": " + loadError;
+    return false;
+  }
+  if (file->sources.empty()) {
+    error = options.configPath + " describes no sources";
+    return false;
+  }
+
+  options.sources = *file;
+  for (auto& source : options.sources.sources) {
+    // The file may leave the preview out; the control page needs one to show
+    // anything, and an operator who cannot see a source cannot fix it.
+    if (options.wantPreview) {
+      source.ensurePreview();
+    }
+  }
+  // The control surface belongs to the process, not to a source, so a --port or
+  // --token on the command line still wins over the file — the same rule the
+  // settings file follows. Comparing against the defaults is how "not given" is
+  // detected here; the flags that have a `given` bit use that instead.
+  if (options.control.httpPort == 7654) {
+    options.control.httpPort = options.sources.httpPort;
+  }
+  if (options.control.httpBind == "127.0.0.1") {
+    options.control.httpBind = options.sources.httpBind;
+  }
+  if (options.control.httpToken.empty()) {
+    options.control.httpToken = options.sources.httpToken;
+  }
+  if (options.control.oscPort == 7655) {
+    options.control.oscPort = options.sources.oscPort;
+  }
+  if (options.control.oscBind == "0.0.0.0") {
+    options.control.oscBind = options.sources.oscBind;
+  }
+  // --no-osc is a refusal, so it wins either way round.
+  options.control.oscEnabled = options.control.oscEnabled && options.sources.oscEnabled;
+  return true;
 }
 
 /// The operator window's client.
@@ -610,8 +721,18 @@ int main(int argc, char** argv) {
   // After logging is up, so a settings file that will not parse says so
   // somewhere an operator can find it; before the config is recorded, so a
   // crash report describes what is actually running.
-  applySavedSettings(options);
-  ensurePreview(options);
+  // --config is more specific than the saved settings file, and reading both
+  // would mean a source from one and a raster from the other.
+  if (options.configPath.empty()) {
+    applySavedSettings(options);
+    ensurePreview(options);
+  }
+  std::string sourceError;
+  if (!resolveSources(options, sourceError)) {
+    weblinked::diag::error("%s", sourceError.c_str());
+    std::fprintf(stderr, "%s\n", sourceError.c_str());
+    return 1;
+  }
   weblinked::diag::setConfig(describeOptions(options));
 
   CefSettings settings;
@@ -632,38 +753,46 @@ int main(int argc, char** argv) {
   installSignalHandlers();
   weblinked::diag::installCrashHandler();
 
-  weblinked::Engine engine;
-  weblinked::Engine::Config engineConfig;
-  engineConfig.url = options.url;
-  engineConfig.format = options.format;
-  engineConfig.outputs = options.outputs;
-  engineConfig.audioEnabled = options.audio;
-  engineConfig.matrix = options.matrix;
-  engineConfig.pacing = options.pacing;
-  engineConfig.cachePath = options.cachePath;
-  engineConfig.popupPolicy = options.popupPolicy;
-  engineConfig.interactiveByDefault = options.interactive;
+  weblinked::SourceManager sources;
+  weblinked::SourceManager::Options managerOptions;
+  managerOptions.cachePath = options.cachePath;
 
   std::string error;
-  if (!engine.start(engineConfig, error)) {
-    weblinked::diag::error("engine failed to start: %s", error.c_str());
+  if (!sources.start(options.sources, managerOptions, error)) {
+    weblinked::diag::error("no source could be started: %s", error.c_str());
     std::fprintf(stderr, "%s\n", error.c_str());
     CefShutdown();
     return 1;
   }
+  if (!error.empty()) {
+    // Some sources came up and some did not. Worth saying out loud on the
+    // terminal as well as in the log: the operator is about to see fewer feeds
+    // than they asked for, and silence would make that look like a bug here.
+    std::fprintf(stderr, "warning: %s\n", error.c_str());
+  }
 
-  weblinked::ControlApi control(&engine);
+  weblinked::ControlApi control(&sources);
   options.control.settingsPath = options.settingsPath;
   if (!control.start(options.control, error)) {
     weblinked::diag::error("control surface failed to start: %s", error.c_str());
     std::fprintf(stderr, "%s\n", error.c_str());
-    engine.stop();
+    sources.stop();
     CefShutdown();
     return 1;
   }
 
-  std::printf("WebLinked %s — %s at %s\n", WEBLINKED_VERSION, options.url.c_str(),
-              options.format.toString().c_str());
+  if (options.sources.sources.size() == 1) {
+    std::printf("WebLinked %s — %s at %s\n", WEBLINKED_VERSION,
+                options.sources.sources.front().url.c_str(),
+                options.sources.sources.front().format.toString().c_str());
+  } else {
+    std::printf("WebLinked %s — %zu sources\n", WEBLINKED_VERSION,
+                sources.size());
+    for (const auto& source : options.sources.sources) {
+      std::printf("  %-12s %s at %s\n", source.id.c_str(), source.url.c_str(),
+                  source.format.toString().c_str());
+    }
+  }
   std::printf("Control: %s\n", control.controlUrl().c_str());
   std::printf("Log:     %s\n", weblinked::diag::logFilePath().c_str());
 
@@ -689,7 +818,7 @@ int main(int argc, char** argv) {
   // thread: the engine's clock, the HTTP connections, the OSC receiver.
   CefRunMessageLoop();
   control.stop();
-  engine.stop();
+  sources.stop();
   // Every CefRefPtr must be released before CefShutdown(). This one is a global
   // holding the operator window's client; leaving it alive hangs CefShutdown()
   // silently, which presents as a process that logs a clean exit and then never

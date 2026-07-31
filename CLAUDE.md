@@ -23,7 +23,7 @@ CEF is downloaded on first configure into `third_party/cef/current` (gitignored)
 ## Test
 
 ```bash
-./build/tests/weblinked_tests          # all
+./build/tests/weblinked_tests          # all (73 tests)
 ./build/tests/weblinked_tests uyvy     # substring filter
 ```
 
@@ -96,7 +96,16 @@ AV_LAUNCHER_CONFIG=launchers/dev.toml npm run tauri dev   # against ./build
 11. **Build clean (`rm -rf build`) before tagging a release.** An incremental
    build reuses the CEF wrapper's objects, so anything that breaks CEF's own
    compilation passes locally and fails on CI.
-12. Commit means commit **and push**.
+12. **An engine is only ever reached through `SourceManager::withSource`.** It
+    holds a shared lock for the call, which is what stops a removal destroying
+    an engine while an HTTP or OSC request is inside it. `Engine` reads
+    `browser_` without a lock, so a bare `Engine*` from a lookup is a
+    use-after-free waiting for an operator to remove a source mid-show.
+13. **The control page has no build step**, so a syntax error anywhere in
+    `web_assets.h` kills every line after it and the page just sits on
+    "connecting". If it looks dead, run its own script text through
+    `new Function()` in a browser — it names the line at once.
+14. Commit means commit **and push**.
 
 ## Layout
 

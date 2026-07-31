@@ -181,6 +181,14 @@ set(WEBLINKED_CORE_SOURCES
   src/core/source_config.h
   src/core/settings_store.cpp
   src/core/settings_store.h
+  # The OSC receiver is here rather than with the rest of the control surface
+  # because it needs no CEF — only sockets — and its packet decoder is pure
+  # parsing that the tests must be able to reach. It was in the engine target
+  # until a string-padding bug in that decoder silently dropped a quarter of all
+  # messages for a whole release, undetected precisely because nothing that
+  # cheap to test was linkable by a test.
+  src/control/osc_server.cpp
+  src/control/osc_server.h
   src/diag/diag.cpp
   src/diag/diag.h
 )
@@ -197,12 +205,12 @@ set(WEBLINKED_ENGINE_SOURCES
   src/outputs/preview_output.cpp
   src/engine/engine.cpp
   src/engine/engine.h
+  src/engine/source_manager.cpp
+  src/engine/source_manager.h
   src/control/http_server.cpp
   src/control/http_server.h
   src/control/control_api.cpp
   src/control/control_api.h
-  src/control/osc_server.cpp
-  src/control/osc_server.h
   src/control/web_assets.h
 )
 

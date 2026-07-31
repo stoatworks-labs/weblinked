@@ -347,10 +347,110 @@ the built `.app` on a machine that has never seen the source. See
 
 ---
 
+## 15. Several sources in one process — verified, with a capacity limit
+
+Three independent pipelines from one `--config` file, each with its own browser,
+clock, raster and NDI sender:
+
+```bash
+weblinked --config three.json --headless
+```
+
+| Source | Raster | NDI name |
+|---|---|---|
+| `clock-a` | 1920x1080p50 | WL-A |
+| `clock-b` | 1280x720p50 | WL-B |
+| `bars` | 1920x1080p25 | WL-C |
+
+All three came up, and `tools/ndi_probe` — a separate receiver — confirmed each
+one independently rather than trusting the app's own counters:
+
+```
+WL-A  received 60 video frames in 1.17 s — 51.27 fps   stride 3840 (1920 wide)
+WL-B  received 60 video frames in 1.16 s — 51.63 fps   stride 2560 (1280 wide)
+WL-C  received 60 video frames in 2.33 s — 25.78 fps   stride 3840 (1920 wide)
+```
+
+Three different rasters and two different rates, on the network at the same time.
+
+**Isolation is the claim worth testing, and it holds.** Retargeting `clock-b`
+over `POST /api/url?source=clock-b` left `clock-a` and `bars` untouched. Adding
+a fourth source at runtime and removing it again left the other three delivering
+— the receiver still passed on all three afterwards, and `WL-D` was gone from
+the network. A duplicate id is refused (`409`), and an unknown one is a `404`
+rather than a silent no-op on the wrong feed.
+
+**OSC is addressed the same way.** `/weblinked/source/clock-b/url` reached only
+`clock-b`; a bare `/weblinked/url` went to the primary; `/weblinked/source/ghost/url`
+logged `no source called 'ghost'` and changed nothing.
+
+### The capacity limit, measured rather than assumed
+
+Three sources at **1080p50 + 720p50 + 1080p25 do not run clean on this Mac.**
+Measured over 60 s, with an independent receiver confirming it from outside:
+
+| Source | Ticks / 60 s | Dropped | Receiver measured |
+|---|---|---|---|
+| clock-a (1080p50) | 3012 | 126 (4.2%) | **46.27 fps** against a nominal 50 |
+| clock-b (720p50) | 3012 | 98 (3.3%) | — |
+| bars (1080p25) | 1506 | 45 (3.0%) | — |
+
+`ticks − dropped == frames sent` exactly, so a dropped tick here means a frame
+that never went out, not a counter artefact.
+
+**This is the machine running out of work capacity, not the pacing breaking.**
+The same three sources at 720p25 drop **3 ticks in 1134 over 45 s (0.26%)**, and
+the receiver measures 25.15, 25.15 and 25.14 fps against a nominal 25 — three
+concurrent sources, clean. What changes between the two runs is only how much
+pixel work there is. During the 1080p run, WebLinked's eight processes were
+using ~900% CPU on a 16-core machine with a load average above 25.
+
+So: the number of sources one process can carry is a property of the machine and
+the rasters, and there is no configuration in WebLinked that will tell you what
+it is. **Measure it on the machine that will run the show**, with
+`tools/ndi_probe` or a real receiver, before trusting a count. The single-source
+soak in section 4 remains the reference for what clean looks like: 9001 ticks in
+180 s, zero dropped.
+
+### The control page
+
+Verified in a browser against the three-source instance: the strip shows one chip
+per source with its own live thumbnail, clicking one switches every panel to it,
+and the strip hides itself entirely when there is only one source, so a
+command-line launch is unchanged. Two bugs found doing it — see below.
+
+---
+
 ## Bugs this verification actually found
 
 Recorded because they are the argument for doing it at all. Every one was found
 by running the thing, not by reading it.
+
+**OSC silently dropped a quarter of all messages — and this one shipped in
+v0.3.0.** `readString` advanced its offset by `padded(textLength + 1)` when
+`padded()` already accounted for the mandatory NUL terminator. For any string
+whose length was 3 mod 4 the offset ran four bytes past the end of the packet,
+the read reported failure, and the *whole message* was discarded without a word
+in the log. `/weblinked/url` therefore worked for most URLs somebody tried and
+did nothing at all for the rest — including
+`file:///Users/…/tools/clock.html`, which is 63 characters. It survived a full
+release for three compounding reasons worth remembering: it affected only a
+quarter of possible strings, so casual testing hit it rarely; it failed silently,
+because ignoring a malformed packet is the correct response to a malformed
+packet; and the decoder lived in the target that links CEF, so nothing cheap
+could reach it. That last one is why `osc_server.cpp` is now part of
+`weblinked_core` and `tests/test_osc_server.cpp` exercises every length mod 4.
+
+**A NUL byte in the control page's source killed the entire script.** A
+`.join(' ')` in `web_assets.h` was written with a NUL where the space should
+have been. The C++ compiled without complaint, the page served with a 200, the
+HTML rendered — and every line of JavaScript after it was dead, so the page sat
+on "connecting" with a black preview. It also made `grep` treat the file as
+binary and silently return nothing, which sent the first ten minutes of the hunt
+in the wrong direction. Found by running the page's own script text through
+`new Function()` in the browser, which named the line immediately. The lesson is
+the same one the earlier TDZ bug taught: **this page has no build step, so a
+syntax error anywhere in it is invisible until something is asked to run.**
 
 **A heap overflow on runtime format change.** After changing raster the engine
 could still be holding a 1920×1080 frame while its UYVY pool had been rebuilt at

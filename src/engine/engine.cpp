@@ -18,6 +18,10 @@ bool Engine::start(const Config& config, std::string& error) {
     return false;
   }
 
+  if (!config.id.empty()) {
+    id_ = config.id;
+  }
+
   {
     std::lock_guard<std::mutex> lock(mutex_);
     format_ = config.format;
@@ -382,7 +386,7 @@ std::vector<OutputSpec> Engine::outputSpecs() const {
 
 SourceConfig Engine::configuration() const {
   SourceConfig config;
-  config.id = "main";
+  config.id = id_;
   config.url = browser_ != nullptr ? browser_->url() : std::string("about:blank");
   config.matrix = matrix_.load();
   config.externalPacing =
@@ -726,6 +730,7 @@ PreviewOutput* Engine::preview() const {
 
 json::Value Engine::state() const {
   json::Value root = json::Value::object();
+  root.set("id", json::Value(id_));
   root.set("version", json::Value(WEBLINKED_VERSION));
   root.set("running", json::Value(running_.load()));
 
@@ -834,6 +839,29 @@ json::Value Engine::state() const {
   root.set("audio", audio);
 
   return root;
+}
+
+Engine::Config engineConfigFromSource(const SourceConfig& config,
+                                      const std::string& cachePath) {
+  Engine::Config options;
+  options.id = config.id;
+  options.url = config.url;
+  options.format = config.format;
+  options.audioEnabled = config.audioEnabled;
+  options.matrix = config.matrix;
+  options.pacing = config.externalPacing
+                       ? BrowserSource::Pacing::kExternalBeginFrame
+                       : BrowserSource::Pacing::kInternalTimer;
+  options.cachePath = cachePath;
+  options.popupPolicy = config.popupPolicy == "block"
+                            ? RenderClient::PopupPolicy::kBlock
+                            : RenderClient::PopupPolicy::kNavigateInPlace;
+  options.interactiveByDefault = config.interactiveByDefault;
+  options.outputs.reserve(config.outputs.size());
+  for (const auto& output : config.outputs) {
+    options.outputs.push_back(outputSpecFromConfig(output));
+  }
+  return options;
 }
 
 }  // namespace weblinked

@@ -12,6 +12,7 @@
 #include "core/settings_store.h"
 #include "diag/diag.h"
 #include "engine/engine.h"
+#include "engine/source_manager.h"
 #include "outputs/output.h"
 #include "outputs/preview_output.h"
 
@@ -56,8 +57,15 @@ std::string levelName(diag::Level level) {
 
 /// Parses and validates a source configuration from a request body, reporting
 /// the reason to the client if it will not do.
+///
+/// `defaultId` fills in an absent id. The single-source settings page never
+/// sends one — it is editing the source it is already looking at — so the caller
+/// supplies which that is. The collection routes pass nothing, because an
+/// unnamed source in a set of them would silently overwrite whichever one
+/// happened to share the default.
 std::optional<SourceConfig> readSourceConfig(const json::Value& value,
-                                             HttpServer::Response& response) {
+                                             HttpServer::Response& response,
+                                             const std::string& defaultId = "") {
   std::string error;
   auto config = SourceConfig::fromJson(value, &error);
   if (!config) {
@@ -65,9 +73,7 @@ std::optional<SourceConfig> readSourceConfig(const json::Value& value,
     return std::nullopt;
   }
   if (config->id.empty()) {
-    // The page has no reason to invent one, and there is only ever one source
-    // in this process.
-    config->id = "main";
+    config->id = defaultId;
   }
   if (!config->validate(&error)) {
     response.error(400, error);
@@ -138,7 +144,23 @@ bool parseInputEvent(const json::Value& value, InputEvent& out,
 
 }  // namespace
 
-ControlApi::ControlApi(Engine* engine) : engine_(engine) {}
+ControlApi::ControlApi(SourceManager* sources) : sources_(sources) {}
+
+bool ControlApi::withRequestSource(const HttpServer::Request& request,
+                                   HttpServer::Response& response,
+                                   const std::function<void(Engine&)>& fn) {
+  const std::string requested = request.param("source", "");
+  const std::string id = requested.empty() ? sources_->primaryId() : requested;
+  if (id.empty()) {
+    response.error(503, "no sources are running");
+    return false;
+  }
+  if (!sources_->withSource(id, fn)) {
+    response.error(404, "no source called '" + id + "'");
+    return false;
+  }
+  return true;
+}
 
 ControlApi::~ControlApi() { stop(); }
 
@@ -199,28 +221,51 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
   }
 
   if (path == "/api/state") {
-    response.json(engine_->state().serialize());
+    // Deliberately still one source's state, not the collection: this is the
+    // endpoint every v0.3.0 client polls, and widening its shape would break
+    // each of them at once. /api/sources is where the collection lives.
+    withRequestSource(request, response, [&](Engine& engine) {
+      response.json(engine.state().serialize());
+    });
+    return;
+  }
+
+  if (path == "/api/sources") {
+    response.json(sources_->state().serialize());
     return;
   }
 
   if (path == "/api/preview") {
-    auto* preview = engine_->preview();
-    if (preview == nullptr) {
+    // Captured under withSource, because the snapshot has to be taken while the
+    // engine is guaranteed alive — a bare PreviewOutput* would outlive a source
+    // removed between the lookup and the copy.
+    bool configured = true;
+    bool empty = false;
+    withRequestSource(request, response, [&](Engine& engine) {
+      auto* preview = engine.preview();
+      if (preview == nullptr) {
+        configured = false;
+        return;
+      }
+      auto snapshot = preview->snapshot();
+      if (snapshot.pixels.empty()) {
+        empty = true;
+        return;
+      }
+      response.contentType = "application/octet-stream";
+      response.useBinary = true;
+      response.binaryBody = std::move(snapshot.pixels);
+      // Dimensions travel in headers so the body stays a bare pixel buffer.
+      response.extraHeaders["X-Frame-Width"] = std::to_string(snapshot.width);
+      response.extraHeaders["X-Frame-Height"] = std::to_string(snapshot.height);
+      response.extraHeaders["X-Frame-Sequence"] =
+          std::to_string(snapshot.sequence);
+    });
+    if (!configured) {
       response.error(404, "no preview output is configured");
-      return;
-    }
-    auto snapshot = preview->snapshot();
-    if (snapshot.pixels.empty()) {
+    } else if (empty) {
       response.error(503, "preview has produced no frames yet");
-      return;
     }
-    response.contentType = "application/octet-stream";
-    response.useBinary = true;
-    response.binaryBody = std::move(snapshot.pixels);
-    // Dimensions travel in headers so the body stays a bare pixel buffer.
-    response.extraHeaders["X-Frame-Width"] = std::to_string(snapshot.width);
-    response.extraHeaders["X-Frame-Height"] = std::to_string(snapshot.height);
-    response.extraHeaders["X-Frame-Sequence"] = std::to_string(snapshot.sequence);
     return;
   }
 
@@ -276,7 +321,21 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
     value.set("path", json::Value(settingsPath_));
     value.set("saved",
               json::Value(std::filesystem::exists(std::filesystem::path(settingsPath_))));
-    value.set("source", engine_->configuration().toJson());
+    // "source" is the one the request names, kept for the v0.3.0 settings page;
+    // "sources" is all of them, which is what the multi-source page edits.
+    if (!withRequestSource(request, response, [&](Engine& engine) {
+          value.set("source", engine.configuration().toJson());
+        })) {
+      // Early, or the response.json() below would overwrite the 404 body with a
+      // 200-shaped document and the client would believe a missing source was
+      // fine.
+      return;
+    }
+    json::Value list = json::Value::array();
+    for (const auto& source : sources_->configuration().sources) {
+      list.push(source.toJson());
+    }
+    value.set("sources", list);
     response.json(value.serialize());
     return;
   }
@@ -298,14 +357,20 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
       response.error(400, "expected {\"url\": \"...\"}");
       return;
     }
-    engine_->setUrl(url);
-    ok(response);
+    if (withRequestSource(request, response,
+                          [&](Engine& engine) { engine.setUrl(url); })) {
+      ok(response);
+    }
     return;
   }
 
   if (path == "/api/reload") {
-    engine_->reload(body["ignore_cache"].asBool(false));
-    ok(response);
+    const bool ignoreCache = body["ignore_cache"].asBool(false);
+    if (withRequestSource(request, response, [&](Engine& engine) {
+          engine.reload(ignoreCache);
+        })) {
+      ok(response);
+    }
     return;
   }
 
@@ -315,40 +380,54 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
       response.error(400, "expected {\"script\": \"...\"}");
       return;
     }
-    engine_->runScript(script);
-    ok(response);
+    if (withRequestSource(request, response,
+                          [&](Engine& engine) { engine.runScript(script); })) {
+      ok(response);
+    }
     return;
   }
 
   if (path == "/api/mute") {
-    engine_->setAudioMuted(body["muted"].asBool(true));
-    ok(response);
+    const bool muted = body["muted"].asBool(true);
+    if (withRequestSource(request, response, [&](Engine& engine) {
+          engine.setAudioMuted(muted);
+        })) {
+      ok(response);
+    }
     return;
   }
 
   if (path == "/api/input") {
     // Accepts one event or a batch. A batch matters for pointer moves: the
     // control page coalesces them, so a drag is one request rather than sixty.
+    // Parsed in full before any of it is delivered, so a malformed event at the
+    // end of a drag cannot leave half the gesture applied to the page.
+    std::vector<InputEvent> events;
     const json::Value& batch = body["events"];
     if (batch.isArray()) {
+      events.reserve(batch.size());
       for (size_t i = 0; i < batch.size(); ++i) {
         InputEvent event;
-        if (parseInputEvent(batch.at(i), event, response)) {
-          engine_->sendInput(event);
-        } else {
+        if (!parseInputEvent(batch.at(i), event, response)) {
           return;
         }
+        events.push_back(event);
       }
-      ok(response);
-      return;
+    } else {
+      InputEvent event;
+      if (!parseInputEvent(body, event, response)) {
+        return;
+      }
+      events.push_back(event);
     }
 
-    InputEvent event;
-    if (!parseInputEvent(body, event, response)) {
-      return;
+    if (withRequestSource(request, response, [&](Engine& engine) {
+          for (const auto& event : events) {
+            engine.sendInput(event);
+          }
+        })) {
+      ok(response);
     }
-    engine_->sendInput(event);
-    ok(response);
     return;
   }
 
@@ -361,7 +440,13 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
       return;
     }
     std::string error;
-    if (!engine_->setFormat(*format, error)) {
+    bool applied = true;
+    if (!withRequestSource(request, response, [&](Engine& engine) {
+          applied = engine.setFormat(*format, error);
+        })) {
+      return;
+    }
+    if (!applied) {
       // A partial failure: the format changed but not every output could reopen
       // at it. Reporting 409 rather than 500 because the request was valid and
       // the state did change.
@@ -378,8 +463,15 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
       response.error(400, "expected {\"name\": \"...\", \"enabled\": true}");
       return;
     }
+    const bool enabled = body["enabled"].asBool(true);
     std::string error;
-    if (!engine_->setOutputEnabled(name, body["enabled"].asBool(true), error)) {
+    bool applied = true;
+    if (!withRequestSource(request, response, [&](Engine& engine) {
+          applied = engine.setOutputEnabled(name, enabled, error);
+        })) {
+      return;
+    }
+    if (!applied) {
       response.error(409, error);
       return;
     }
@@ -403,7 +495,13 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
       spec.name = spec.kind;
     }
     std::string error;
-    if (!engine_->addOutput(spec, error)) {
+    bool applied = true;
+    if (!withRequestSource(request, response, [&](Engine& engine) {
+          applied = engine.addOutput(spec, error);
+        })) {
+      return;
+    }
+    if (!applied) {
       response.error(409, error);
       return;
     }
@@ -413,7 +511,13 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
 
   if (path == "/api/output/remove") {
     const std::string name = body["name"].asString();
-    if (!engine_->removeOutput(name)) {
+    bool removed = true;
+    if (!withRequestSource(request, response, [&](Engine& engine) {
+          removed = engine.removeOutput(name);
+        })) {
+      return;
+    }
+    if (!removed) {
       response.error(404, "no output named '" + name + "'");
       return;
     }
@@ -438,7 +542,13 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
       spec.name = name;
     }
     std::string error;
-    if (!engine_->updateOutput(name, spec, error)) {
+    bool applied = true;
+    if (!withRequestSource(request, response, [&](Engine& engine) {
+          applied = engine.updateOutput(name, spec, error);
+        })) {
+      return;
+    }
+    if (!applied) {
       response.error(409, error);
       return;
     }
@@ -452,20 +562,32 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
       response.error(400, "pacing must be \"external\" or \"internal\"");
       return;
     }
-    engine_->setPacing(mode == "internal"
-                           ? BrowserSource::Pacing::kInternalTimer
-                           : BrowserSource::Pacing::kExternalBeginFrame);
-    ok(response);
+    if (withRequestSource(request, response, [&](Engine& engine) {
+          engine.setPacing(mode == "internal"
+                               ? BrowserSource::Pacing::kInternalTimer
+                               : BrowserSource::Pacing::kExternalBeginFrame);
+        })) {
+      ok(response);
+    }
     return;
   }
 
   if (path == "/api/settings/apply") {
-    const auto config = readSourceConfig(body["source"], response);
+    const std::string requested = request.param("source", "");
+    const auto config = readSourceConfig(
+        body["source"], response,
+        requested.empty() ? sources_->primaryId() : requested);
     if (!config) {
       return;
     }
     std::string error;
-    if (!engine_->applyConfiguration(*config, error)) {
+    bool applied = true;
+    if (!withRequestSource(request, response, [&](Engine& engine) {
+          applied = engine.applyConfiguration(*config, error);
+        })) {
+      return;
+    }
+    if (!applied) {
       // 409, not 500: the settings were valid and most of them are now live.
       // The page shows the message against the output that refused.
       response.error(409, "settings applied, except: " + error);
@@ -475,11 +597,75 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
     return;
   }
 
+  // The whole set at once, which is what the multi-source page saves: sources
+  // that have gone are stopped, new ones started, the rest reconciled in place.
+  if (path == "/api/sources/apply") {
+    const json::Value& list = body["sources"];
+    if (!list.isArray()) {
+      response.error(400, "expected {\"sources\": [ ... ]}");
+      return;
+    }
+    AppConfig wanted;
+    for (size_t i = 0; i < list.size(); ++i) {
+      const auto config = readSourceConfig(list.at(i), response);
+      if (!config) {
+        return;
+      }
+      wanted.sources.push_back(*config);
+    }
+    std::string error;
+    if (!sources_->applyConfiguration(wanted, error)) {
+      response.error(409, "sources applied, except: " + error);
+      return;
+    }
+    ok(response);
+    return;
+  }
+
+  if (path == "/api/sources/add") {
+    const auto config = readSourceConfig(body["source"], response);
+    if (!config) {
+      return;
+    }
+    std::string error;
+    if (!sources_->add(*config, error)) {
+      response.error(409, error);
+      return;
+    }
+    json::Value value = json::Value::object();
+    value.set("ok", json::Value(true));
+    value.set("id", json::Value(config->id));
+    response.json(value.serialize());
+    return;
+  }
+
+  if (path == "/api/sources/remove") {
+    const std::string id = body["id"].asString();
+    if (id.empty()) {
+      response.error(400, "expected {\"id\": \"...\"}");
+      return;
+    }
+    // Refused rather than allowed: a manager with no sources has no primary, so
+    // every un-addressed request afterwards would 503 and the page would look
+    // broken. Removing the last source is a stop, and stopping is what closing
+    // the window is for.
+    if (sources_->size() <= 1) {
+      response.error(409, "'" + id + "' is the only source — stop WebLinked instead");
+      return;
+    }
+    std::string error;
+    if (!sources_->remove(id, error)) {
+      response.error(404, error);
+      return;
+    }
+    ok(response);
+    return;
+  }
+
   if (path == "/api/settings/save") {
-    // Saving what the engine is actually doing, not what the request says, so
+    // Saving what the engines are actually doing, not what the request says, so
     // the file can never claim an output that failed to open.
-    AppConfig file;
-    file.sources.push_back(engine_->configuration());
+    AppConfig file = sources_->configuration();
     file.httpBind = config_.httpBind;
     file.httpPort = config_.httpPort;
     file.httpToken = config_.httpToken;
@@ -508,7 +694,7 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
       return;
     }
     std::string applyError;
-    if (!engine_->applyConfiguration(file->sources.front(), applyError)) {
+    if (!sources_->applyConfiguration(*file, applyError)) {
       response.error(409, "settings loaded, except: " + applyError);
       return;
     }
@@ -556,10 +742,51 @@ void ControlApi::handleOsc(const OscServer::Message& message) {
     action = action.substr(1);
   }
 
+  // /weblinked/source/<id>/<verb> addresses one source; a bare /weblinked/<verb>
+  // means the primary. Companion sends a fixed address per button, so putting
+  // the id in the path — rather than in an argument — lets one button be bound
+  // to one feed and stay bound, which is how an operator expects a physical
+  // button to behave.
+  std::string target;
+  const std::string sourcePrefix = "source/";
+  if (action.rfind(sourcePrefix, 0) == 0) {
+    const std::string rest = action.substr(sourcePrefix.size());
+    const size_t slash = rest.find('/');
+    if (slash == std::string::npos || slash == 0) {
+      diag::warn("osc: %s names no verb after the source id",
+                 message.address.c_str());
+      return;
+    }
+    target = rest.substr(0, slash);
+    action = rest.substr(slash + 1);
+  } else {
+    target = sources_->primaryId();
+  }
+
+  if (target.empty()) {
+    diag::warn("osc: no sources are running, ignoring %s",
+               message.address.c_str());
+    return;
+  }
+
+  // One lookup for the whole message: every branch below needs the engine, and
+  // holding it open once means a removal cannot land between the dispatch and
+  // the call.
+  const bool delivered = sources_->withSource(target, [&](Engine& engine) {
+    handleOscForSource(engine, action, message);
+  });
+  if (!delivered) {
+    diag::warn("osc: no source called '%s' for %s", target.c_str(),
+               message.address.c_str());
+  }
+}
+
+void ControlApi::handleOscForSource(Engine& engine, const std::string& action,
+                                    const OscServer::Message& message) {
   if (action == "url") {
     const std::string url = message.firstString();
     if (!url.empty()) {
-      engine_->setUrl(url);
+      engine.setUrl(url);
     }
     return;
   }
@@ -568,20 +795,20 @@ void ControlApi::handleOsc(const OscServer::Message& message) {
     // A bare /reload with no arguments is a plain reload; an argument selects
     // whether to bypass the cache, which is what a "refresh graphics" button
     // on a Companion page wants.
-    engine_->reload(message.firstBool(false));
+    engine.reload(message.firstBool(false));
     return;
   }
 
   if (action == "script") {
     const std::string script = message.firstString();
     if (!script.empty()) {
-      engine_->runScript(script);
+      engine.runScript(script);
     }
     return;
   }
 
   if (action == "mute") {
-    engine_->setAudioMuted(message.firstBool(true));
+    engine.setAudioMuted(message.firstBool(true));
     return;
   }
 
@@ -589,7 +816,7 @@ void ControlApi::handleOsc(const OscServer::Message& message) {
     const auto format = VideoFormat::parse(message.firstString());
     if (format) {
       std::string error;
-      engine_->setFormat(*format, error);
+      engine.setFormat(*format, error);
     } else {
       diag::warn("osc: cannot parse format '%s'", message.firstString().c_str());
     }
@@ -605,7 +832,7 @@ void ControlApi::handleOsc(const OscServer::Message& message) {
       return;
     }
     std::string error;
-    if (!engine_->setOutputEnabled(name, message.firstBool(true), error)) {
+    if (!engine.setOutputEnabled(name, message.firstBool(true), error)) {
       diag::warn("osc: %s", error.c_str());
     }
     return;
