@@ -29,5 +29,14 @@ toml = "1.1"
 # (e.g. srt-router's `[web] bind`) without destroying its formatting.
 toml_edit = "0.25"
 
+# Unpacking the embedded WebLinked, on the platforms that need a zip reader.
+#
+# macOS deliberately shells out to `ditto` instead and does NOT take this
+# dependency: ditto is the only thing that round-trips the CEF framework's
+# symlinks, execute bits and ad-hoc signature, all of which a generic zip
+# extractor flattens or drops. See src/embedded.rs.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
 # Standalone: keep this out of any parent app cargo workspace.
 [workspace]
