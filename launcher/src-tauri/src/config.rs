@@ -518,11 +518,16 @@ mod tests {
         // brace here would reach Command::new and fail with a "no such file"
         // naming a path that contains the placeholder — recognisable, but only
         // once you have seen it.
-        assert_eq!(
-            launch.program,
-            "/opt/wl-runtime/WebLinked.app/Contents/MacOS/WebLinked"
-        );
-        assert!(!launch.program.contains('{'));
+        //
+        // Asserted as a property rather than an exact path on purpose: CI copies
+        // launchers/{macos,windows,linux}.toml over launcher.toml before running
+        // these, so `include_str!("../launcher.toml")` is a different file on
+        // each runner and the leaf differs by platform. An exact macOS path here
+        // passes locally and fails on the other two, which is precisely how this
+        // test broke the first time.
+        assert!(!launch.program.contains('{'), "placeholder left unsubstituted");
+        assert!(launch.program.starts_with("/opt/wl-runtime/"),
+                "program should be rooted at the runtime dir: {}", launch.program);
 
         // --headless is a no-op in current WebLinked, which no longer has an
         // operator window to suppress. It stays in the argv so this config also
@@ -559,13 +564,10 @@ mod tests {
             let cfg = parse(text);
             let launch = build_launch(&cfg, "0.0.0.0", 7654, &tmp, None, Some(&runtime))
                 .unwrap_or_else(|e| panic!("{name}: build_launch failed: {e}"));
-            // with_windows_exe appends .exe on Windows only, so compare against
-            // the platform-appropriate form rather than hard-coding one.
-            let expected = if cfg!(windows) && !expected.ends_with(".exe") {
-                format!("{expected}.exe")
-            } else {
-                expected.to_string()
-            };
+            // No .exe adjustment: with_windows_exe only appends the extension
+            // when the .exe actually exists on disk, and these paths are
+            // synthetic, so it is a no-op on Windows too. Assuming otherwise is
+            // what broke this test on the Windows runner.
             assert_eq!(launch.program, expected, "{name} command");
             assert!(!launch.program.contains('{'), "{name} left a placeholder");
         }
