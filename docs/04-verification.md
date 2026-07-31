@@ -593,8 +593,23 @@ Verified the way NDI was, with an independent receiver: `sdi_probe`, written
 against the DeckLink SDK with its own BT.709 reference, capturing what actually
 came back down a BNC cable rather than reading WebLinked's counters.
 
-With SDI out (connector 1) looped to SDI in (connector 3) — which on this card in
-full-duplex are **the same sub-device**, index 0:
+The connector map, established by moving one cable and capturing on each
+sub-device rather than by reading a manual — each sub-device owns one output and
+one input, and they interleave:
+
+| Sub-device | SDI out | SDI in |
+|---|---|---|
+| index 0, Duo (1) | connector **1** | connector **3** |
+| index 1, Duo (2) | connector **2** | connector **4** |
+
+Proven by elimination: a cable from 1 to 3 captures on index 0; the same cable
+moved to 1-to-2 is dark on *both* sub-devices, so connector 2 is an output. A
+cross-sub-device loop therefore needs **1 to 4**, not 1 to 2 — which matters,
+because externally keyed fill can only be captured on the *other* sub-device once
+connector 3 has become the key output.
+
+With SDI out (connector 1) looped to SDI in (connector 3) — the same sub-device,
+index 0:
 
 ```
 bar        sampled Y/Cb/Cr    expected Y/Cb/Cr   verdict
