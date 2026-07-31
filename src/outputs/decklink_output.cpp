@@ -498,9 +498,66 @@ class DeckLinkOutput final : public IOutput {
       error = "'" + deviceName_ + "' reports " + format.toString() +
               " as unsupported for " +
               (keying_ == Keying::kOff ? "8-bit YUV" : "8-bit BGRA") + " output";
+      if (keying_ != Keying::kOff) {
+        // Keying needs an alpha-carrying format, and RGBA costs twice the link
+        // bandwidth of the 4:2:2 the same raster fits in. On a DeckLink Duo 2
+        // that is the whole difference between 1080p50 and 1080p25: the card
+        // reports keying support and every rate as available, then refuses BGRA
+        // at the top one. Naming what *would* work turns "unsupported" into a
+        // setting to change.
+        error += ". Keying carries alpha, which needs about twice the link rate "
+                 "of the same raster without it";
+        const std::string usable = ratesSupportingAlpha(format);
+        if (!usable.empty()) {
+          error += "; this card accepts a keyed " +
+                   std::to_string(format.width) + "x" +
+                   std::to_string(format.height) + " at " + usable;
+        }
+      }
       return false;
     }
     return true;
+  }
+
+  /// Which rates at the *current* raster this card will accept with alpha.
+  ///
+  /// Asked of the hardware rather than assumed: DoesSupportVideoMode is the only
+  /// thing that knows, and the answer differs by model, by profile and by
+  /// raster.
+  std::string ratesSupportingAlpha(const VideoFormat& format) {
+    IDeckLinkDisplayModeIterator* iterator = nullptr;
+    if (output_ == nullptr ||
+        output_->GetDisplayModeIterator(&iterator) != S_OK || iterator == nullptr) {
+      return {};
+    }
+    std::string usable;
+    IDeckLinkDisplayMode* mode = nullptr;
+    while (iterator->Next(&mode) == S_OK) {
+      if (mode->GetWidth() == format.width &&
+          mode->GetHeight() == format.height) {
+        DeckLinkBool ok = false;
+        if (output_->DoesSupportVideoMode(bmdVideoConnectionUnspecified,
+                                          mode->GetDisplayMode(), bmdFormat8BitBGRA,
+                                          bmdNoVideoOutputConversion,
+                                          bmdSupportedVideoModeDefault, nullptr,
+                                          &ok) == S_OK && ok) {
+          BMDTimeValue duration = 0;
+          BMDTimeScale scale = 0;
+          mode->GetFrameRate(&duration, &scale);
+          if (duration > 0) {
+            if (!usable.empty()) usable += ", ";
+            usable += std::to_string(scale) + "/" + std::to_string(duration);
+            if (mode->GetFieldDominance() == bmdUpperFieldFirst ||
+                mode->GetFieldDominance() == bmdLowerFieldFirst) {
+              usable += " (interlaced)";
+            }
+          }
+        }
+      }
+      mode->Release();
+    }
+    iterator->Release();
+    return usable;
   }
 
   /// Turns the card's keyer on, having first checked it has one.

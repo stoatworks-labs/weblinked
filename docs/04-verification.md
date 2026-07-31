@@ -4,8 +4,9 @@ What has actually been proven about this code, how, and what has not. Written so
 that a claim in the README can be checked rather than believed.
 
 The distinction that matters throughout: **compiles against a real SDK** is not
-the same as **works against real hardware**. Three of the four output backends
-are in the first category.
+the same as **works against real hardware**. NDI and DeckLink have now been
+measured against real hardware (sections 2 and 19); OMT and AJA remain in the
+first category.
 
 Everything below was run on macOS 26.4.1, Apple Silicon (M4 Max), against
 CEF 150.0.17 / Chromium 150.0.7871.187.
@@ -567,6 +568,131 @@ has never seen the source.
 
 ---
 
+## 19. DeckLink, against a real card — verified, and it found two things
+
+The first hardware this project has ever been connected to. Everything above
+about SDI was "compiles against the SDK"; this is not.
+
+**The card:** a DeckLink Duo 2 over Thunderbolt, Desktop Video 16.0.1, on the
+same M4 Max. It presents four sub-devices, and the profile it is in matters:
+
+```
+index 0  DeckLink Duo (1)   full duplex   ext key: yes  int key: yes
+index 1  DeckLink Duo (2)   full duplex   ext key: yes  int key: yes
+index 2  DeckLink Duo (3)   INACTIVE      ext key: no   int key: no
+index 3  DeckLink Duo (4)   INACTIVE      ext key: no   int key: no
+```
+
+Indices 2 and 3 support **no display modes at all** in this profile. A
+`--decklink=2` is not a missing card, it is a card whose profile has that
+sub-device switched off — worth knowing before reading the error.
+
+### Output, and a loopback that proves it
+
+Verified the way NDI was, with an independent receiver: `sdi_probe`, written
+against the DeckLink SDK with its own BT.709 reference, capturing what actually
+came back down a BNC cable rather than reading WebLinked's counters.
+
+With SDI out (connector 1) looped to SDI in (connector 3) — which on this card in
+full-duplex are **the same sub-device**, index 0:
+
+```
+bar        sampled Y/Cb/Cr    expected Y/Cb/Cr   verdict
+grey        181  128  128       181  128  128       ok
+yellow      169   44  136       169   44  136       ok
+cyan        146  147   44       146  147   44       ok
+green       134   63   51       134   63   51       ok
+magenta      63  193  205        63  193  205       ok
+red          51  109  212        51  109  212       ok
+blue         28  212  120        28  212  120       ok
+black        16  128  128        16  128  128       ok
+
+frames received: 29  (1920x1080)   PASS
+```
+
+Every bar exact, at **1080p50 and again at 1080p25**. The colour path is correct
+on an SDI wire, not merely internally consistent.
+
+### The buffer question, answered
+
+`docs` has asked since v0.1.0 "whether the pre-roll depth is right in practice"
+and "how the buffer level behaves when the engine's software clock and the card's
+genlocked clock disagree". Over a two-minute soak at 1080p50:
+
+```
+  t     dl_frames  buffered   ticks  dropped  repeated
+ 10s       1546         6     1542        0         0
+ 60s       4053         6     4049        0         2
+120s       7061         6     7057        0         2
+```
+
+`buffered_frames` sat at 6 the entire time (one sample of 5, immediately back),
+zero dropped ticks, 50.2 fps sustained. The scheduled-playback sequence and
+pre-roll depth are right on this card.
+
+### Keying — engages, with a bandwidth ceiling nobody had hit
+
+**Both modes start on real hardware** at 1080p25:
+
+```
+keying=external   running=True   frames 371   buffered 5
+keying=internal   running=True   frames 370   buffered 5
+```
+
+At **1080p50 both fail**, and the reason is the finding:
+
+```
+'DeckLink Duo (1)' reports 1920x1080p50 as unsupported for 8-bit BGRA output
+```
+
+Asked of the hardware directly, this card supports **no** alpha-carrying pixel
+format at 1080p50 — but does at every lower rate:
+
+```
+1080p50 :  8BitYUV=yes  8BitBGRA=no   8BitARGB=no
+1080i50 :  8BitYUV=yes  8BitBGRA=yes  8BitARGB=yes
+1080p25 :  8BitYUV=yes  8BitBGRA=yes  8BitARGB=yes
+720p50  :  8BitYUV=yes  8BitBGRA=yes  8BitARGB=yes
+```
+
+RGBA costs roughly twice the link rate of the 4:2:2 that fits the same raster, so
+a keyed 1080p50 is over what the card will carry. Nothing in the code was wrong,
+but the message stopped at "unsupported" — and the guard it is documented as
+having (`SupportsExternalKeying`/`SupportsInternalKeying`) *passes* on this card,
+because the card really does have a keyer. The capability check and the
+bandwidth limit are different questions. The error now asks the card which rates
+it would accept and names them:
+
+```
+... Keying carries alpha, which needs about twice the link rate of the same
+raster without it; this card accepts a keyed 1920x1080 at 24000/1001,
+24000/1000, 25000/1000, 30000/1001, 30000/1000, 25000/1000 (interlaced), ...
+```
+
+### External keying takes the second connector
+
+With external keying enabled on index 0, the loopback goes dark; with keying off
+at the identical raster and rate it captures perfectly. That is key + fill doing
+what it is supposed to — connector 3 stops being an input and becomes the **key**
+output beside the fill on connector 1 — but it means this cable arrangement
+cannot see a keyed signal. Inferred from the controlled comparison rather than
+measured directly.
+
+**Still not verified, and now for concrete reasons:**
+
+- **The content of a keyed signal.** Proving fill carries straight (not
+  premultiplied) colour and key carries alpha needs a capture on a *different*
+  sub-device, i.e. a cable from connector 1 to connector 2 or 4. The equivalent
+  bug was real on NDI (section 7), so this is worth doing.
+- **Internal keying compositing over a real input.** Overlay keys over whatever
+  the card is receiving; looping our own output into it is a feedback path, not a
+  test. It needs an external source.
+- **Audio over SDI.** Not exercised at all.
+- **Genlock over hours**, rather than two minutes.
+- **AJA.** Still no card. Unchanged from "compiles and nothing more".
+
+---
+
 ## Bugs this verification actually found
 
 Recorded because they are the argument for doing it at all. Every one was found
@@ -702,24 +828,27 @@ browser at the same URL.
 
 ## Not verified
 
-Everything in this section is written against a real SDK header set and compiles,
-and nothing in it has ever moved a pixel.
+Everything in this section is written against a real SDK header set and compiles.
+Since section 19 that is no longer true of DeckLink, which has now moved real
+pixels down a real cable; the rest of this section still has never done so.
 
-**DeckLink.** Compiles against DeckLink SDK 12.2 headers. The scheduled-playback
-sequence follows the SDK's documented order — `EnableVideoOutput`, pre-roll,
-`StartScheduledPlayback`, top up on completion — but no card has been connected.
-Unknowns worth expecting: whether the pre-roll depth is right in practice,
-whether the audio and video stream clocks stay aligned over hours, and how the
-buffer level behaves when the engine's software clock and the card's genlocked
-clock disagree. `buffered_frames` in `/api/state` is the number to watch.
+**DeckLink — now largely verified; see section 19.** Output, pre-roll, the
+scheduled-playback sequence and the buffer level have all been measured against a
+real DeckLink Duo 2, and a loopback capture confirms the colour on the wire. What
+is still open on DeckLink is narrower than it was: the **content** of a keyed
+signal (that fill carries straight colour and key carries alpha, which needs a
+capture on a different sub-device), internal keying over a genuine external
+input, **audio over SDI**, and genlock behaviour over hours rather than minutes.
 
 **DeckLink key + fill.** `--key` enables the card's keyer through
-`IDeckLinkKeyer`, switching the output to 8-bit BGRA so the alpha survives, and
-checks `BMDDeckLinkSupportsExternalKeying`/`SupportsInternalKeying` first so an
-unsupported card gets a clear message rather than a bare failure. Compiles
-against SDK 12.2, and the alpha it feeds the card is verified correct by the NDI
-measurement above — but no card has confirmed that fill and key actually appear
-on separate connectors.
+`IDeckLinkKeyer`, switching the output to 8-bit BGRA so the alpha survives. Both
+modes now **start on real hardware** — but only where the card can carry RGBA:
+a Duo 2 refuses 8-bit BGRA at 1080p50 while accepting it at 1080p25, 1080i50 and
+720p50, because alpha roughly doubles the link rate. The
+`SupportsExternalKeying`/`SupportsInternalKeying` guard passes on such a card and
+is therefore *not* sufficient on its own; the failure surfaces one layer down, at
+the pixel format. That no card has yet confirmed fill and key appearing on
+separate connectors remains true.
 
 **AJA.** Compiles against libajantv2 18.1. AutoCirculate playout follows the
 SDK's documented sequence. No card connected. Also untested: whether
