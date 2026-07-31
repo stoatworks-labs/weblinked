@@ -28,10 +28,22 @@ right to modify and redistribute everything in the tree. It cannot
 simultaneously forbid those things for `libndi.dylib`. Committing NDI binaries
 here, or attaching them to a GitHub release, would contradict our own LICENSE.
 
-So the source tree carries **only the headers** — which Vizrt explicitly permits
-open-source projects to distribute under MIT terms — and resolves the library at
-run time. See the comment at the top of
+So the source tree carries **only the headers**, vendored in
+[`third_party/ndi`](../third_party/ndi), and resolves the library at run time.
+See the comment at the top of
 [`src/outputs/ndi_output.cpp`](../src/outputs/ndi_output.cpp).
+
+Vendoring them is explicitly permitted: every NDI header opens with *"the
+following MIT license applies to this file ONLY and not to the SDK as a whole"*
+followed by a full MIT grant, and Vizrt's Software Distribution page says the
+same in prose. That grant covers the headers alone — the runtime library stays
+under the SDK agreement, which is why it is not here.
+
+This matters more than it sounds. `find_package(NDI)` used to need an installed
+SDK to find the headers, and hosted CI runners have none, so the backend was
+silently dropped and **every released binary shipped without NDI**. The vendored
+copy is what makes the backend build everywhere; whether it *works* is then
+decided at run time, which is the right place for that question.
 
 The second reason is practical and unrelated to licensing: the flat C entry
 points (`NDIlib_send_create` and friends) exist in every NDI 5 and 6 runtime,

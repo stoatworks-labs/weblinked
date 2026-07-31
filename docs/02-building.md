@@ -17,7 +17,7 @@ build that breaks on someone else's Tuesday.
 
 | Option | Default | Notes |
 |---|---|---|
-| `WEBLINKED_WITH_NDI` | ON | Needs the NDI SDK headers |
+| `WEBLINKED_WITH_NDI` | ON | Headers vendored; nothing to install |
 | `WEBLINKED_WITH_OMT` | ON | Header vendored; nothing to install |
 | `WEBLINKED_WITH_DECKLINK` | ON | Needs `-DDECKLINK_SDK_DIR` |
 | `WEBLINKED_WITH_AJA` | OFF | Needs `-DNTV2_DIR` and `-DNTV2_BUILD_DIR` |
@@ -29,10 +29,17 @@ this do not have all four.
 
 ### NDI
 
-Install the NDI SDK or the redistributable runtime. Found automatically at
+Nothing to install. The headers are vendored in `third_party/ndi` under the
+per-file MIT grant each one carries, so this backend always builds. An installed
+SDK still wins if you have one — found automatically at
 `/Library/NDI SDK for Apple`, `C:/Program Files/NDI/NDI 6 SDK`, or via
-`-DNDI_SDK_DIR=`. Only headers are needed at build time — the library is resolved
-at run time.
+`-DNDI_SDK_DIR=` — which is how you build against a newer SDK than the vendored
+set.
+
+Only headers are ever needed at build time; the library is resolved at run time
+with `dlopen`. Without a runtime the NDI output reports itself unavailable and
+names the download, and the rest of the app is unaffected. See
+[06-ndi-distribution.md](06-ndi-distribution.md).
 
 ### OMT
 

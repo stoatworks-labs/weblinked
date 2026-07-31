@@ -9,12 +9,17 @@ name: release
 # before project() for exactly this reason; a build that sets it afterwards
 # silently produces a single-arch binary.
 #
-# OUTPUT BACKENDS DIFFER FROM A LOCAL BUILD. NDI and DeckLink are found via
-# find_package and quietly disabled when their SDKs are absent, which they are
-# on hosted runners — so these artefacts ship with OMT (vendored in
-# third_party/omt) and without NDI or DeckLink. A local build on a machine with
-# the SDKs installed gets more. The release notes say so rather than letting
-# someone discover it after downloading.
+# OUTPUT BACKENDS DIFFER FROM A LOCAL BUILD, but less than they used to.
+# NDI and OMT are always compiled in: both are loaded with dlopen at run time
+# and both have their headers vendored (third_party/ndi, third_party/omt) under
+# the per-file MIT grants their vendors give, so no SDK is needed to build them.
+# Until those NDI headers were vendored, find_package quietly disabled the
+# backend on every hosted runner and these artefacts shipped with no NDI at all.
+#
+# DeckLink and AJA still are not: they link real SDKs, which are not
+# redistributable and are absent here. A local build on a machine with those
+# SDKs gets more. The release notes say so rather than letting someone discover
+# it after downloading.
 on:
   workflow_dispatch:
   push:
