@@ -311,6 +311,16 @@ else()
   add_executable(weblinked WIN32 src/app/main.cpp)
   set_target_properties(weblinked PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
   target_link_libraries(weblinked PRIVATE weblinked_engine libcef_lib)
+
+  if(MSVC AND WEBLINKED_WITH_OMT)
+    # libomt.h carries #pragma comment(lib, "libomt.lib"), so merely including it
+    # makes MSVC auto-link an import library we deliberately do not have: every
+    # OMT entry point is resolved with GetProcAddress at run time, which is what
+    # lets the binary start on a machine with no OMT installed and simply report
+    # the output unavailable. Without this the link dies with
+    # "LNK1104: cannot open file 'libomt.lib'".
+    target_link_options(weblinked PRIVATE "/NODEFAULTLIB:libomt.lib")
+  endif()
   target_compile_options(weblinked PRIVATE ${CEF_COMPILER_FLAGS} ${CEF_CXX_COMPILER_FLAGS})
   target_link_options(weblinked PRIVATE ${CEF_LINKER_FLAGS} ${CEF_EXE_LINKER_FLAGS})
 
