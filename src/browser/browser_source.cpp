@@ -28,7 +28,10 @@ bool createOffscreenBrowser(const CefRefPtr<RenderClient>& client,
                             std::string& error) {
   CefWindowInfo windowInfo;
   // The whole browser is offscreen; there is no parent view.
-  windowInfo.SetAsWindowless(nullptr);
+  // kNullWindowHandle, not nullptr: cef_window_handle_t is a pointer on macOS
+  // and Windows but an X11 Window id (unsigned long) on Linux, where nullptr
+  // does not convert. CEF defines the right zero for each platform.
+  windowInfo.SetAsWindowless(kNullWindowHandle);
   windowInfo.windowless_rendering_enabled = true;
   // Painting on request rather than on Chromium's timer. This is what makes one
   // engine tick produce exactly one paint. Fixed for the browser's lifetime,
