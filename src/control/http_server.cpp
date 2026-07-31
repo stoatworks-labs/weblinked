@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <sstream>
 
 #if defined(_WIN32)
@@ -75,6 +76,16 @@ const char* statusText(int status) {
   }
 }
 
+/// Winsock's recv/send take an `int` length where POSIX takes `size_t`, so a
+/// bare size_t argument is a narrowing conversion — C4267, which is an error
+/// under CEF's /WX. Clamping here rather than casting at each call site keeps
+/// the intent visible: a single read or write is bounded, and the loops around
+/// them already handle a short transfer.
+int toSocketLength(size_t bytes) {
+  constexpr size_t kMax = static_cast<size_t>((std::numeric_limits<int>::max)());
+  return static_cast<int>(bytes < kMax ? bytes : kMax);
+}
+
 /// Reads until the header terminator, returning everything read (which may
 /// include the start of the body).
 bool readHeaders(socket_t socket, std::string& buffer) {
@@ -83,7 +94,7 @@ bool readHeaders(socket_t socket, std::string& buffer) {
     if (buffer.size() > 64 * 1024) {
       return false;  // no legitimate request header is this large
     }
-    const auto received = ::recv(socket, chunk, sizeof(chunk), 0);
+    const auto received = ::recv(socket, chunk, toSocketLength(sizeof(chunk)), 0);
     if (received <= 0) {
       return false;
     }
@@ -96,7 +107,8 @@ bool readExactly(socket_t socket, std::string& buffer, size_t wanted) {
   char chunk[4096];
   while (buffer.size() < wanted) {
     const auto received =
-        ::recv(socket, chunk, std::min(sizeof(chunk), wanted - buffer.size()), 0);
+        ::recv(socket, chunk,
+               toSocketLength(std::min(sizeof(chunk), wanted - buffer.size())), 0);
     if (received <= 0) {
       return false;
     }
@@ -108,7 +120,7 @@ bool readExactly(socket_t socket, std::string& buffer, size_t wanted) {
 bool sendAll(socket_t socket, const char* data, size_t length) {
   size_t sent = 0;
   while (sent < length) {
-    const auto wrote = ::send(socket, data + sent, length - sent, 0);
+    const auto wrote = ::send(socket, data + sent, toSocketLength(length - sent), 0);
     if (wrote <= 0) {
       return false;
     }
