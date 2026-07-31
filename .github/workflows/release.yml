@@ -262,6 +262,22 @@ jobs:
         # (every_platform_variant_parses_and_launches) pins all three.
         run: cp "launcher/launchers/${{ matrix.config }}.toml" launcher/src-tauri/launcher.toml
 
+      - name: Stamp the launcher with the release version
+        shell: bash
+        # The launcher ships inside WebLinked's release, so an artefact named
+        # 0.6.0 in a v0.6.1 release reads as a build mistake even when the
+        # launcher genuinely has not changed. Derived from the tag rather than
+        # hand-maintained in tauri.conf.json, because that is a second place to
+        # forget - v0.6.1 shipped with 0.6.0 launcher artefacts for exactly that
+        # reason.
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          case "$version" in
+            [0-9]*) ;;
+            *) version="$(sed -n 's/^project(weblinked VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)" ;;
+          esac
+          python3 -c 'import json,sys,pathlib; p=pathlib.Path("launcher/src-tauri/tauri.conf.json"); c=json.loads(p.read_text()); c["version"]=sys.argv[1]; p.write_text(json.dumps(c,indent=2)+"\n"); print("launcher version ->",sys.argv[1])' "$version"
+
       - name: Test
         working-directory: launcher
         run: cargo test --manifest-path src-tauri/Cargo.toml
