@@ -41,7 +41,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "launcher.toml"
+      "launcher.toml",
+      "resources/*"
     ]
   }
 }

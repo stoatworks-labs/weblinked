@@ -646,8 +646,28 @@ const OUTPUT_FIELDS = {
   // No 'keying': aja_output.cpp implements none, so offering the control would
   // let an operator set a mode that is silently discarded.
   aja: ['device'],
+  // The display list comes from state.displays, so this offers real monitors
+  // rather than an index the operator has to count out for themselves.
+  screen: ['display', 'scaling'],
   preview: ['factor'],
 };
+
+// A <option> per attached display. Falls back to a bare index when the build
+// has no screen backend and state.displays is therefore absent, so the editor
+// still renders rather than throwing halfway through building its HTML.
+function displayOptions(selected) {
+  const displays = lastState.displays || [];
+  if (displays.length === 0) {
+    return '<option value="' + selected + '">display ' + selected + '</option>';
+  }
+  return displays.map((d) => {
+    const label = d.name + ' (' + d.width + 'x' + d.height +
+                  (d.refresh_hz ? ', ' + Math.round(d.refresh_hz) + ' Hz' : '') +
+                  (d.primary ? ', main' : '') + ')';
+    return '<option value="' + d.index + '"' +
+           (d.index === selected ? ' selected' : '') + '>' + label + '</option>';
+  }).join('');
+}
 
 function outputEditor(output, isNew) {
   const kinds = lastState.compiled_backends || ['preview'];
@@ -679,7 +699,20 @@ function outputEditor(output, isNew) {
       '<div class="field" data-when="factor"><label>Preview scale (1/n)</label>' +
         '<input type="number" min="1" max="16" data-f="factor" value="' +
         (options.factor ?? 4) + '"></div>' +
+      '<div class="field" data-when="display"><label>Display</label>' +
+        '<select data-f="display">' + displayOptions(options.display ?? 0) +
+        '</select></div>' +
+      '<div class="field" data-when="scaling"><label>Scaling</label>' +
+        '<select data-f="scaling">' +
+          '<option value="fit">Fit (bars)</option>' +
+          '<option value="fill">Fill (crop)</option>' +
+          '<option value="stretch">Stretch</option>' +
+        '</select></div>' +
     '</div>' +
+    '<p class="hint" data-when="display">' +
+      'Paced by the display, not by the video format &mdash; a 50 Hz page on a ' +
+      '60 Hz monitor repeats frames rather than tearing, so presented and ' +
+      'frames are expected to differ.</p>' +
     '<p class="hint" data-when="keying">' +
       'Fill only sends the picture with no key. Key + fill puts fill and key on ' +
       'separate SDI connectors. Overlay composites over the input the card is ' +
@@ -697,6 +730,7 @@ function outputEditor(output, isNew) {
 
   const field = (name) => node.querySelector('[data-f="' + name + '"]');
   field('keying').value = options.keying || '';
+  field('scaling').value = options.scaling || 'fit';
 
   const applyVisibility = () => {
     const shown = OUTPUT_FIELDS[field('kind').value] || [];
@@ -722,6 +756,8 @@ function outputEditor(output, isNew) {
       body.options.key_level = Number(field('key_level').value);
     }
     if (shown.includes('factor')) body.options.factor = Number(field('factor').value);
+    if (shown.includes('display')) body.options.display = Number(field('display').value);
+    if (shown.includes('scaling')) body.options.scaling = field('scaling').value;
     return body;
   };
 

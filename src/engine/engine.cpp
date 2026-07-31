@@ -5,6 +5,9 @@
 #include "core/source_config.h"
 #include "diag/diag.h"
 #include "outputs/preview_output.h"
+#if defined(WEBLINKED_WITH_SCREEN)
+#include "outputs/screen_window.h"
+#endif
 
 namespace weblinked {
 
@@ -770,6 +773,25 @@ json::Value Engine::state() const {
     compiled.push(json::Value(kind));
   }
   root.set("compiled_backends", compiled);
+
+#if defined(WEBLINKED_WITH_SCREEN)
+  // Every attached display, so the settings page can offer a list of real
+  // monitors instead of asking an operator to guess an index. Enumerated on
+  // each state read rather than cached: a screen plugged in after start-up is
+  // exactly when someone goes looking for it.
+  json::Value displays = json::Value::array();
+  for (const auto& display : enumerateDisplays()) {
+    json::Value value = json::Value::object();
+    value.set("index", json::Value(display.index));
+    value.set("name", json::Value(display.name));
+    value.set("width", json::Value(display.width));
+    value.set("height", json::Value(display.height));
+    value.set("refresh_hz", json::Value(display.refreshHz));
+    value.set("primary", json::Value(display.primary));
+    displays.push(value);
+  }
+  root.set("displays", displays);
+#endif
 
   if (browser_ != nullptr) {
     const auto diagnostics = browser_->diagnostics();

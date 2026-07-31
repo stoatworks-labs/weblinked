@@ -3,6 +3,7 @@
 //! and live in the system tray.
 
 mod config;
+mod embedded;
 
 use std::process::{Child, Command};
 use std::sync::Mutex;
@@ -198,7 +199,24 @@ fn start_server(app: AppHandle, state: State<AppState>) -> Result<Status, String
         .app_config_dir()
         .map_err(|e| format!("resolving app config dir: {e}"))?;
     let resource_dir = app.path().resource_dir().ok();
-    let launch = config::build_launch(&cfg, &bind_host, s.port, &work_dir, resource_dir.as_deref())?;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("resolving app data dir: {e}"))?;
+
+    // Unpacks the bundled WebLinked on first run, and after an upgrade. A no-op
+    // on every launch after that, and a fallback to /Applications when nothing
+    // is bundled — see embedded.rs for why it is unpacked outside the bundle.
+    let runtime = embedded::ensure_unpacked(resource_dir.as_deref(), &data_dir)?;
+
+    let launch = config::build_launch(
+        &cfg,
+        &bind_host,
+        s.port,
+        &work_dir,
+        resource_dir.as_deref(),
+        Some(&runtime.root),
+    )?;
 
     // A binary bundled as a resource can lose its execute bit on some platforms;
     // restore it before spawning so a shipped bundle just works.
@@ -220,7 +238,16 @@ fn start_server(app: AppHandle, state: State<AppState>) -> Result<Status, String
         .map_err(|e| format!("starting {}: {e}", launch.program))?;
     *state.child.lock().map_err(|e| e.to_string())? = Some(child);
 
-    status_from(&app, true, "Running".into())
+    // Which WebLinked is running is worth saying. The two cases behave
+    // identically until they don't: a separately installed copy can be a
+    // different version from the launcher that started it, and that mismatch is
+    // otherwise invisible right up to the point it explains a missing feature.
+    let message = if runtime.fallback {
+        "Running (installed copy)".to_string()
+    } else {
+        "Running".to_string()
+    };
+    status_from(&app, true, message)
 }
 
 #[tauri::command]

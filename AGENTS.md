@@ -61,7 +61,7 @@ src/core/     formats, frames, pools, clock, FIFO, JSON, dlopen  ─ NO CEF
 src/diag/     logging, crash reports, bundles                    ─ NO CEF
 src/browser/  CefApp, CefClient (paint + audio), BrowserSource
 src/engine/   the clock loop and everything it owns
-src/outputs/  IOutput + preview | ndi | omt | decklink | aja
+src/outputs/  IOutput + preview | ndi | omt | decklink | aja | screen
 src/control/  HTTP server, OSC receiver, embedded control page
 src/app/      entry points, Info.plists, entitlements
 launcher/     the av-launcher tray shell, configured for WebLinked (Rust/Tauri)

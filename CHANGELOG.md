@@ -1,5 +1,68 @@
 # Changelog
 
+## Unreleased
+
+Two things, both about WebLinked being usable somewhere other than a terminal.
+
+### Added
+
+- **A fullscreen GPU output.** `--screen[=display]` puts the rendered page
+  fullscreen on an attached display — a projector, a confidence monitor, an LED
+  processor fed from a GPU head. `--scaling fit|fill|stretch` handles a head
+  whose shape does not match the raster, and both are editable from the settings
+  page, which now lists real monitors rather than asking for an index.
+
+  It is an `IOutput` like the preview, so it takes the same frames SDI and NDI
+  take and cannot drift from them. It is deliberately **not** a second Chromium
+  window: every browser here is windowless, which forces Alloy runtime style, and
+  a windowed one defaults to Chrome style — running both is what segfaulted the
+  GPU process and removed the operator window in v0.5.3. This uploads frames the
+  engine already produced and draws them with Metal.
+
+  Presentation is paced by the **display**, not by `--format`. A 50 Hz page on a
+  60 Hz head repeats frames rather than tearing, so `presented` and `frames` in
+  `/api/state` are expected to differ; `dropped` counts frames overwritten before
+  a refresh could show them. Measured at 1080p25 on a 50 Hz panel: 25 submitted a
+  second, 50 presented, zero dropped.
+
+  Verified on macOS: picture, all three scaling modes, live add and remove, and
+  the error when a display index does not exist. Windows (D3D11) and Linux
+  (X11 + EGL) are written and have never been run. `state.displays` is new, and
+  `weblinked_tests` is 81 tests, up from 74.
+
+- **The launcher now carries WebLinked inside it**, so the macOS download is one
+  install rather than two applied in the right order. It ships as an archive the
+  launcher expands to Application Support on first run — never nested, because an
+  ad-hoc signed bundle carrying five helper `.app`s inside another one is exactly
+  where Gatekeeper kills the helpers silently. `launcher/README.md` used to argue
+  against embedding for that reason and for Tauri's resource walk; both are now
+  addressed rather than avoided, and the reasoning is recorded there.
+
+  The launcher `.app` grows from 3.8 MB to about 142 MB and the first Start takes
+  a few seconds to unpack. A build with no archive falls back to
+  `/Applications/WebLinked.app`, so `tauri dev` is unchanged. Launcher tests are
+  15, up from 9.
+
+### Changed
+
+- `docs/01-architecture.md` no longer claims there is no platform windowing code
+  — there is now, for the screen output. The rule that was actually doing the
+  work is stated instead: no toolkit renders our UI, and no browser in this
+  process owns a window.
+- `config.rs` gains a `{runtime}` placeholder alongside `{resource}`. It is
+  vendored from av-launcher and **needs carrying upstream**.
+
+### Fixed
+
+- **The screen output's window was released twice**, which took the process down
+  on the second remove/add cycle. `NSWindow.isReleasedWhenClosed` defaults to YES
+  for a window built with `initWithContentRect:`, so `-close` had already
+  released it. Over-releases do not fault where they happen — this one died on
+  the main thread inside `objc_autoreleasePoolPop`, with a backtrace containing
+  nothing of ours, which reads exactly like a CEF bug. Found by running the
+  add/remove test twice rather than once.
+
+
 ## v0.6.1 — 2026-07-31
 
 The SDI path stops being an assumption. A DeckLink was connected for the first

@@ -92,11 +92,13 @@ AV_LAUNCHER_CONFIG=launchers/dev.toml npm run tauri dev   # against ./build
 7. **`FramePool` is always held by `shared_ptr`** (`FramePool::create`).
 8. **macOS bundles are signed inside-out, ad-hoc without hardened runtime.** See
    `cmake/SignMacBundle.cmake` before changing anything there.
-9. **Popups are never allowed to become windows, and neither is anything else.**
-   A windowless browser cannot own one; `OnBeforePopup` always cancels. This
-   process opens **no** window at all — every browser in it is windowless, which
-   forces Alloy runtime style, and a windowed browser would default to Chrome
-   style and segfault the GPU process. See `docs/04-verification.md` section 9.
+9. **No browser in this process may own a window.** A windowless browser cannot
+   own a popup; `OnBeforePopup` always cancels. Every browser here is windowless,
+   which forces Alloy runtime style, and a windowed browser would default to
+   Chrome style and segfault the GPU process. See `docs/04-verification.md`
+   section 9. The `screen` output *is* a real platform window, and is not an
+   exception to this: it is a video destination, not a UI and not a browser —
+   it draws frames the engine already produced. Keep it that way.
 10. **Anything the clock thread reads outside `Engine::mutex_` is atomic** —
     `matrix_`, `pacing_`. The settings page can write both at run time.
 11. **Build clean (`rm -rf build`) before tagging a release.** An incremental
@@ -121,7 +123,7 @@ AV_LAUNCHER_CONFIG=launchers/dev.toml npm run tauri dev   # against ./build
 | `src/diag/` | logging, crash reports, diagnostics bundles |
 | `src/browser/` | CefApp, CefClient (paint + audio), BrowserSource |
 | `src/engine/` | the clock loop |
-| `src/outputs/` | IOutput + preview, ndi, omt, decklink, aja |
+| `src/outputs/` | IOutput + preview, ndi, omt, decklink, aja, screen |
 | `src/control/` | HTTP server, OSC receiver, embedded control page |
 | `src/app/` | entry points, Info.plists, entitlements |
 | `launcher/` | av-launcher tray shell (Rust/Tauri); separate build |

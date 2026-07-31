@@ -31,7 +31,7 @@ struct AudioBlock {
 /// deliberately loose, because a DeckLink needs a device index and keying mode
 /// while NDI needs a source name and nothing else.
 struct OutputSpec {
-  std::string kind;              ///< "ndi" | "omt" | "decklink" | "aja" | "preview"
+  std::string kind;              ///< "ndi" | "omt" | "decklink" | "aja" | "screen" | "preview"
   std::string name;              ///< NDI/OMT source name, or a label for SDI
   int deviceIndex = 0;           ///< DeckLink/AJA device ordinal
   json::Value options = json::Value::object();
@@ -124,6 +124,9 @@ std::unique_ptr<IOutput> createDeckLinkOutput(const OutputSpec& spec);
 #endif
 #if defined(WEBLINKED_WITH_AJA)
 std::unique_ptr<IOutput> createAjaOutput(const OutputSpec& spec);
+#endif
+#if defined(WEBLINKED_WITH_SCREEN)
+std::unique_ptr<IOutput> createScreenOutput(const OutputSpec& spec);
 #endif
 std::unique_ptr<IOutput> createPreviewOutput(const OutputSpec& spec);
 

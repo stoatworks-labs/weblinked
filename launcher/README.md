@@ -66,9 +66,12 @@ AV_LAUNCHER_CONFIG=/path/to/my-weblinked.toml npm run tauri dev
 npm run tauri build
 ```
 
-The launcher does **not** embed WebLinked, which is where the rest of the fleet
-puts its server. Install WebLinked to `/Applications` and the shipped
-`launcher.toml` finds it there. See [Status](#status) for why.
+The launcher **does** embed WebLinked, the way the rest of the fleet embeds its
+server — but as an archive it unpacks on first run, not as a nested bundle. See
+[How the embedding works](#how-the-embedding-works).
+
+A build with no archive present — which is every `tauri dev` run — falls back to
+`/Applications/WebLinked.app`, so the development flow above is unchanged.
 
 ## Status
 
@@ -80,30 +83,68 @@ What has been done, and what has not:
   argv it produces, including `--headless`; the release binary builds and comes
   up with its own log at `~/Library/Logs/WebLinked Launcher`; the panel is
   rendered above from the real HTML and CSS.
+- **Verified** — that the embedded archive unpacks, keeps its signature, and
+  runs with its helpers alive; a full unpack → short-circuit → upgrade cycle is
+  covered by tests, as is a corrupt archive leaving no stamp behind.
 - **Not verified** — Start, Stop and Launch GUI driven against a live
   WebLinked, and the built `.app` on a machine that has never seen the source.
+  The Start button sits inside a WKWebView whose contents are not exposed in the
+  accessibility tree, so it could not be driven from a script; the sequence it
+  triggers was exercised by hand instead.
 
-### Why WebLinked is not embedded
+## How the embedding works
 
-Every other app in the fleet ships its server inside the launcher bundle. This
-one does not, for two reasons found in that order:
+This document used to argue that WebLinked should *not* be embedded. Both of its
+reasons were real. Both are addressed rather than waved away, and the workaround
+it named at the end — unpacking a zipped bundle on first run — is what is
+implemented.
 
-1. Tauri's resource collector walks the tree it is told to bundle. The Chromium
-   Embedded Framework is a macOS framework, so `Versions/Current` and
-   `Resources` are symlinks; the walk follows them and fails on a path that does
-   not exist (`.../Resources/Resources`).
-2. Past that, it would not be safe anyway. WebLinked is ad-hoc signed without a
-   hardened runtime and carries five name-matched helper `.app`s. Nesting that
-   inside another ad-hoc signed bundle is exactly the arrangement where
-   Gatekeeper approves the outer app and then kills the inner helpers silently,
-   with nothing in any log to say why.
+**1. Tauri's resource collector could not walk the tree.** It follows the CEF
+framework's `Versions/Current` and `Resources` symlinks and fails on a path that
+does not exist (`.../Resources/Resources`). So the bundle ships as a **single
+`.zip`**: one regular file, nothing to walk. CI packs it with
+`ditto -c -k --sequesterRsrc --keepParent`, which is the tool that round-trips a
+framework — symlinks stay symlinks, execute bits and resource forks survive.
 
-Unpacking a zipped bundle on first run would work around both. It is not worth
-312 MB of resource and a first-launch delay for something an operator installs
-once.
+**2. Nesting it would not have been safe.** An ad-hoc signed `.app` carrying five
+name-matched helper `.app`s, inside *another* ad-hoc signed `.app`, is exactly
+where Gatekeeper approves the outer bundle and SIGKILLs the inner helpers with
+nothing in any log.
+
+So it is never nested. On first run — and after an upgrade —
+[`src-tauri/src/embedded.rs`](src-tauri/src/embedded.rs) expands the archive to
+`~/Library/Application Support/works.stoat.weblinked.launcher/runtime/`, outside
+any bundle, and `launcher.toml` points `command` at it through the `{runtime}`
+placeholder. A stamp file makes every launch after the first a no-op.
+
+What that costs: the launcher `.app` is about 142 MB instead of 3.8 MB, and the
+first Start takes a few seconds to unpack. What it buys: one thing to install
+instead of two, applied in the right order.
+
+Measured, on macOS 26 — see [docs/04-verification.md](../docs/04-verification.md)
+section 21:
+
+- the ad-hoc signature survives the archive intact (`flags=0x2(adhoc)`, original
+  identifier), and the extracted files carry no `com.apple.quarantine`;
+- the unpacked copy runs, and its renderer and GPU helpers stay alive — the
+  precise thing that dies when the nested-bundle failure mode bites;
+- all of that with no re-signing. An earlier version ran
+  `codesign --force --deep --sign -` over the unpacked tree; it turned out to be
+  unnecessary, its own verification was failing, and `--deep` contradicts
+  WebLinked's inside-out signing rule, so it was removed. The quarantine clear
+  stays, because the case it defends — a `.dmg` downloaded from GitHub — cannot
+  be reproduced from a source checkout.
 
 The injection mode is `args`, so nothing about the launcher's behaviour depends
 on parsing or patching a config file.
+
+### `{runtime}` is a local addition to av-launcher
+
+`src-tauri/src/config.rs` is vendored from av-launcher, and `{runtime}` — the
+directory the supervised app actually lives in, as opposed to `{resource}`,
+which is the read-only bundle — was added here. It is backwards compatible: a
+config that never writes `{runtime}` behaves exactly as before. **It needs
+carrying upstream** rather than being left to drift.
 
 ## Configuration
 

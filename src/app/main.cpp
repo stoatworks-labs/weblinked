@@ -121,6 +121,16 @@ Outputs (repeatable; without any, only the preview runs)
   --omt[=name]             OMT sender. Default name: WebLinked
   --decklink[=index]       DeckLink device by index. Default: 0
   --aja[=index]            AJA device by index. Default: 0
+  --screen[=display]       Fullscreen on a GPU-attached display, by index.
+                           Default: 0, the main display. The picture is paced by
+                           that display's refresh, not by --format, so a 50 Hz
+                           page on a 60 Hz monitor repeats frames rather than
+                           tearing. Not a second browser — the frames are the
+                           same ones the SDI and NDI outputs get.
+  --scaling <fit|fill|stretch>
+                           Applies to the next --screen. fit (default) shows the
+                           whole frame with bars; fill crops to the display;
+                           stretch ignores aspect ratio
   --alpha                  Applies to the next --ndi/--omt: send BGRA with alpha
   --key[=mode]             Applies to the next --decklink/--aja: key + fill.
                            external (default) puts fill and key on separate SDI
@@ -171,6 +181,7 @@ std::string inlineValue(const std::string& argument) {
 bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
   bool nextAlpha = false;
   std::string nextKeying;
+  std::string nextScaling;
   int keyLevel = 255;
 
   for (int i = 1; i < argc; ++i) {
@@ -254,6 +265,33 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
                      nextKeying.c_str());
         return false;
       }
+      continue;
+    }
+    if (argument.rfind("--scaling", 0) == 0) {
+      std::string text;
+      if (!needsValue(text)) return false;
+      if (text != "fit" && text != "fill" && text != "stretch") {
+        std::fprintf(stderr,
+                     "--scaling must be fit, fill or stretch, not '%s'\n",
+                     text.c_str());
+        return false;
+      }
+      nextScaling = text;
+      continue;
+    }
+    if (argument.rfind("--screen", 0) == 0) {
+      OutputSpec spec;
+      spec.kind = "screen";
+      const std::string index = inlineValue(argument);
+      const int display = index.empty() ? 0 : std::atoi(index.c_str());
+      spec.name = "screen" + std::to_string(display);
+      spec.options.set("display", json::Value(display));
+      if (!nextScaling.empty()) {
+        spec.options.set("scaling", json::Value(nextScaling));
+        nextScaling.clear();
+      }
+      options.outputs.push_back(spec);
+      options.given.outputs = true;
       continue;
     }
     if (argument == "--no-osc") { options.control.oscEnabled = false; continue; }

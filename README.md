@@ -3,10 +3,11 @@
 **A URL in. SDI and video-over-IP out.**
 
 WebLinked renders a web page offscreen at a broadcast raster and frame rate, then
-sends it to Blackmagic DeckLink and AJA cards over SDI, and to the network as
-[NDI](https://ndi.video) and [OMT](https://openmediatransport.org). Point it at a
-scoreboard, a lower-third, a countdown clock, a dashboard or a whole HTML
-playback page, and it becomes a source your vision mixer can cut to.
+sends it to Blackmagic DeckLink and AJA cards over SDI, to the network as
+[NDI](https://ndi.video) and [OMT](https://openmediatransport.org), and fullscreen
+to a GPU-attached display. Point it at a scoreboard, a lower-third, a countdown
+clock, a dashboard or a whole HTML playback page, and it becomes a source your
+vision mixer can cut to — or a feed for a projector or LED processor.
 
 Small on purpose: one binary, no service to install, no framework in the browser.
 It is driven from a control page, over HTTP, or over OSC from Companion or a
@@ -17,6 +18,9 @@ weblinked --url https://example.com/scoreboard --format 1080p50 --ndi=Scoreboard
 
 # A keyed graphic: alpha over NDI, and key + fill out of a DeckLink
 weblinked --url https://example.com/lower-third --alpha --ndi=LowerThird --key --decklink=0
+
+# Fullscreen on the second display, alongside SDI
+weblinked --url https://example.com/wall --screen=1 --decklink=0
 
 # Several at once, each with its own browser, clock, raster and outputs
 weblinked --config show.json
@@ -115,8 +119,16 @@ All builds, checksums and release notes: [github.com/stoatworks-labs/weblinked/r
   raster like `3840x600p60` for an LED strip.
 - **Carries the page's audio** — WebAudio, `<video>`, anything Chromium plays —
   as 48 kHz float, embedded in SDI or sent alongside the IP video.
-- **Outputs to four kinds of destination at once**: DeckLink, AJA, NDI, OMT.
-  Every output takes the same frame, so what NDI sees is what SDI sees.
+- **Outputs to five kinds of destination at once**: DeckLink, AJA, NDI, OMT and
+  a fullscreen GPU display. Every output takes the same frame, so what NDI sees
+  is what SDI sees.
+- **Fullscreen on a display** (`--screen`), for a projector, a confidence monitor
+  or an LED processor fed from a GPU head. Not a second browser window — it puts
+  the frames the engine already produced straight onto the glass with Metal
+  (Direct3D on Windows, EGL on Linux), which is why it stays consistent with the
+  SDI and NDI outputs. Paced by the *display*, so a 50 Hz page on a 60 Hz monitor
+  repeats frames instead of tearing, and it fits, fills or stretches to a head
+  whose shape does not match the raster.
 - **Frame-accurate pacing.** The engine's clock drives Chromium one frame at a
   time (`SendExternalBeginFrame`) rather than letting the browser paint on its
   own timer, so 50 ticks a second means 50 paints a second.
@@ -183,7 +195,8 @@ All builds, checksums and release notes: [github.com/stoatworks-labs/weblinked/r
 | **Preview** | Verified, and interactive — it is the control page's confidence monitor. |
 | **Several sources** | **Verified**: three at once on three rasters, each confirmed by a separate receiver, with one retargeted and a fourth added and removed mid-run without disturbing the others. Frame rates are a capacity question — see below. |
 | **Settings + diagnostics pages** | Verified against a running instance: outputs added, renamed and removed, settings saved and read back after a restart, the log and bundle served. |
-| **Tray launcher** | Builds; its config is unit-tested against the file it ships. **Not clicked through against a live WebLinked** — see [launcher/README.md](launcher/README.md). |
+| **Screen (fullscreen GPU)** | **Verified on this Mac**: picture, all three scaling modes, live add and remove, and pacing measured against the display's own refresh rather than the video rate. No second display here, so multi-head is untested. Windows and Linux are written and never run. |
+| **Tray launcher** | **Now carries WebLinked inside it**, so the macOS download is one install. The unpack, the signature surviving it and the helpers running from it are verified; the config is unit-tested for all three platforms. **The Start button itself still has not been clicked through** — see [launcher/README.md](launcher/README.md). |
 | **OMT** | Compiles against `libomt.h` 1.0.0.16. **Never tested against an OMT receiver.** |
 | **DeckLink** | **Verified against a real card** (DeckLink Duo 2): output, pre-roll and buffer level, colour confirmed by an SDI loopback capture, and key + fill measured — the fill carries straight alpha. The key channel itself and audio over SDI are still unmeasured. |
 | **AJA** | Compiles against libajantv2 18.1. **Never run against a card.** Off by default. |

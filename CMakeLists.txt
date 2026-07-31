@@ -66,7 +66,25 @@ option(WEBLINKED_WITH_NDI      "Build the NDI output backend"      ON)
 option(WEBLINKED_WITH_OMT      "Build the OMT output backend"      ON)
 option(WEBLINKED_WITH_DECKLINK "Build the DeckLink output backend" ON)
 option(WEBLINKED_WITH_AJA      "Build the AJA NTV2 output backend" OFF)
+option(WEBLINKED_WITH_SCREEN   "Build the fullscreen GPU output backend" ON)
 option(WEBLINKED_BUILD_TESTS   "Build the unit tests"              ON)
+
+# The screen output is the one backend with no SDK to find: macOS and Windows
+# both ship everything it needs. Linux does not — X11 and EGL are separate dev
+# packages — so it disables itself there rather than failing the build, the same
+# way a missing NDI or DeckLink SDK does. See docs/02-building.md for the apt
+# line that turns it back on.
+if(WEBLINKED_WITH_SCREEN AND UNIX AND NOT APPLE)
+  find_package(X11)
+  find_library(WEBLINKED_EGL_LIBRARY NAMES EGL)
+  find_library(WEBLINKED_GLES_LIBRARY NAMES GLESv2)
+  if(NOT X11_FOUND OR NOT WEBLINKED_EGL_LIBRARY OR NOT WEBLINKED_GLES_LIBRARY)
+    message(STATUS
+      "Screen output: disabled — needs libx11-dev, libegl1-mesa-dev and "
+      "libgles2-mesa-dev")
+    set(WEBLINKED_WITH_SCREEN OFF)
+  endif()
+endif()
 
 # ----------------------------------------------------------------------------
 # CEF
@@ -155,6 +173,10 @@ if(WEBLINKED_WITH_AJA)
   endif()
 endif()
 
+if(WEBLINKED_WITH_SCREEN)
+  list(APPEND WEBLINKED_BACKENDS screen)
+endif()
+
 message(STATUS "WebLinked output backends: preview ${WEBLINKED_BACKENDS}")
 
 # ----------------------------------------------------------------------------
@@ -226,6 +248,23 @@ endif()
 if(WEBLINKED_WITH_AJA)
   list(APPEND WEBLINKED_ENGINE_SOURCES src/outputs/aja_output.cpp)
 endif()
+if(WEBLINKED_WITH_SCREEN)
+  list(APPEND WEBLINKED_ENGINE_SOURCES
+    src/outputs/screen_output.cpp
+    src/outputs/screen_output.h
+    src/outputs/screen_frame_ring.h
+    src/outputs/screen_window.h)
+  if(APPLE)
+    # A .mm, and deliberately not OBJCXX — see the note at the head of this
+    # file. CMake compiles it as CXX and clang infers Objective-C++ from the
+    # extension, exactly as it already does for src/app/mac_application.mm.
+    list(APPEND WEBLINKED_ENGINE_SOURCES src/outputs/screen_window_mac.mm)
+  elseif(WIN32)
+    list(APPEND WEBLINKED_ENGINE_SOURCES src/outputs/screen_window_win.cpp)
+  else()
+    list(APPEND WEBLINKED_ENGINE_SOURCES src/outputs/screen_window_linux.cpp)
+  endif()
+endif()
 
 # ----------------------------------------------------------------------------
 # weblinked_core — everything that does not need CEF
@@ -275,7 +314,25 @@ target_compile_definitions(weblinked_engine PUBLIC
   $<$<BOOL:${WEBLINKED_WITH_OMT}>:WEBLINKED_WITH_OMT=1>
   $<$<BOOL:${WEBLINKED_WITH_DECKLINK}>:WEBLINKED_WITH_DECKLINK=1>
   $<$<BOOL:${WEBLINKED_WITH_AJA}>:WEBLINKED_WITH_AJA=1>
+  $<$<BOOL:${WEBLINKED_WITH_SCREEN}>:WEBLINKED_WITH_SCREEN=1>
 )
+
+if(WEBLINKED_WITH_SCREEN)
+  if(APPLE)
+    # QuartzCore carries CAMetalLayer; CoreVideo carries CVDisplayLink. Cocoa
+    # and Metal are the obvious two.
+    target_link_libraries(weblinked_engine PUBLIC
+      "-framework Metal" "-framework QuartzCore" "-framework CoreVideo")
+  elseif(WIN32)
+    # d3dcompiler because the shaders are compiled from source at open() rather
+    # than built into bytecode — no fxc step, no generated headers.
+    target_link_libraries(weblinked_engine PUBLIC d3d11 dxgi d3dcompiler)
+  else()
+    target_link_libraries(weblinked_engine PUBLIC
+      ${X11_LIBRARIES} ${WEBLINKED_EGL_LIBRARY} ${WEBLINKED_GLES_LIBRARY})
+    target_include_directories(weblinked_engine PRIVATE ${X11_INCLUDE_DIR})
+  endif()
+endif()
 
 set_target_properties(weblinked_engine PROPERTIES
   CXX_STANDARD 20

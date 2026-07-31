@@ -21,6 +21,7 @@ build that breaks on someone else's Tuesday.
 | `WEBLINKED_WITH_OMT` | ON | Header vendored; nothing to install |
 | `WEBLINKED_WITH_DECKLINK` | ON | Needs `-DDECKLINK_SDK_DIR` |
 | `WEBLINKED_WITH_AJA` | OFF | Needs `-DNTV2_DIR` and `-DNTV2_BUILD_DIR` |
+| `WEBLINKED_WITH_SCREEN` | ON | Fullscreen GPU output. No SDK on macOS or Windows; on Linux see below |
 | `WEBLINKED_BUILD_TESTS` | ON | Links `weblinked_core` only |
 
 Configure output lists which backends were found. A missing SDK disables its
@@ -142,6 +143,19 @@ compiled. Expect to do work here, particularly:
   `CefExecuteProcess` runs first in `main()` — there are no helper bundles.
 - Linux needs the usual Chromium runtime libraries (`libnss3`, `libgbm`,
   `libatk`, X11 or Wayland); CEF's `FIND_LINUX_LIBRARIES` handles the link side.
+- **The screen output needs X11 and EGL headers on Linux.** Without them it
+  disables itself at configure time with a message, the same way a missing NDI
+  or DeckLink SDK does — so a build that quietly has no `screen` backend is
+  almost always a missing package:
+
+  ```bash
+  sudo apt-get install -y libx11-dev libegl1-mesa-dev libgles2-mesa-dev
+  ```
+
+  The Linux backend is X11 only. A Wayland session with XWayland gets a window;
+  one without does not, and `open()` says so. It also indexes **X screens**, not
+  RandR heads, so a normal multi-monitor Linux desktop presents as one screen —
+  which makes `--screen=1` there not yet useful. Neither has ever been run.
 
 ## Tests
 

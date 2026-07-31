@@ -101,21 +101,38 @@ pub struct Launch {
     pub cwd: Option<PathBuf>,
 }
 
-/// Substitute `{host}`/`{port}` (plus `{config}`/`{resource}` when provided).
+/// Substitute `{host}`/`{port}` (plus `{config}`/`{resource}`/`{runtime}` when
+/// provided).
+///
 /// `{resource}` is the bundle's resource dir — lets a shipped config point at
 /// bundled files (e.g. an embedded Node runtime + server) by absolute path.
+///
+/// `{runtime}` is the directory the supervised app actually lives in, which is
+/// not `{resource}`: the bundle is read-only, so an app shipped as an archive
+/// has to be unpacked elsewhere before it can run. Resolving it at run time
+/// rather than in the config is what lets one `command` string cover both the
+/// unpacked copy and a fallback to a separately installed one. WebLinked is the
+/// case that forced it — see embedded.rs.
+///
+/// NOTE: this file is vendored from av-launcher and `{runtime}` is a local
+/// addition. It is backwards compatible (a config that never writes `{runtime}` is
+/// unaffected), but it must be carried upstream rather than left to drift.
 fn subst(
     s: &str,
     host: &str,
     port: u16,
     config: Option<&str>,
     resource: Option<&str>,
+    runtime: Option<&str>,
 ) -> String {
     let mut out = s
         .replace("{host}", host)
         .replace("{port}", &port.to_string());
     if let Some(r) = resource {
         out = out.replace("{resource}", r);
+    }
+    if let Some(r) = runtime {
+        out = out.replace("{runtime}", r);
     }
     if let Some(c) = config {
         out = out.replace("{config}", c);
@@ -255,17 +272,23 @@ fn with_windows_exe(program: String) -> String {
 /// * `resource_dir` — the bundle's resource dir; relative `command`/`template`
 ///   paths resolve against it, so a shipped `.app` can carry its server binary
 ///   and config template as bundled resources. `None` in dev (absolute paths).
+/// * `runtime_dir` — the directory the supervised app actually lives in,
+///   substituted for `{runtime}`. Either where the bundled archive was
+///   unpacked, or where a separately installed copy already is.
 pub fn build_launch(
     cfg: &LauncherConfig,
     bind_host: &str,
     port: u16,
     work_dir: &Path,
     resource_dir: Option<&Path>,
+    runtime_dir: Option<&Path>,
 ) -> Result<Launch, String> {
     let mut envs: Vec<(String, String)> = Vec::new();
     let mut rendered_config: Option<String> = None;
     let res_str = resource_dir.map(|p| p.to_string_lossy().into_owned());
     let res = res_str.as_deref();
+    let runtime_str = runtime_dir.map(|p| p.to_string_lossy().into_owned());
+    let runtime = runtime_str.as_deref();
 
     match cfg.inject.mode.as_str() {
         "configfile" => {
@@ -278,7 +301,7 @@ pub fn build_launch(
             let mut doc = raw
                 .parse::<toml_edit::DocumentMut>()
                 .map_err(|e| format!("parsing template {template}: {e}"))?;
-            let value = subst(&ci.value, bind_host, port, None, res);
+            let value = subst(&ci.value, bind_host, port, None, res, runtime);
             set_dotted(&mut doc, &ci.set_key, &value);
 
             std::fs::create_dir_all(work_dir)
@@ -290,7 +313,7 @@ pub fn build_launch(
         }
         "env" => {
             for (k, v) in &cfg.inject.env {
-                envs.push((k.clone(), subst(v, bind_host, port, None, res)));
+                envs.push((k.clone(), subst(v, bind_host, port, None, res, runtime)));
             }
         }
         "args" => { /* host/port already substituted into args below */ }
@@ -301,13 +324,13 @@ pub fn build_launch(
         .app
         .args
         .iter()
-        .map(|a| subst(a, bind_host, port, rendered_config.as_deref(), res))
+        .map(|a| subst(a, bind_host, port, rendered_config.as_deref(), res, runtime))
         .collect();
 
     // Substitute {resource} in the command, then resolve any remaining relative
     // path against the resource dir (covers both `{resource}/node` and `bin/x`).
     let program = with_windows_exe(resolve_against(
-        &subst(&cfg.app.command, bind_host, port, None, res),
+        &subst(&cfg.app.command, bind_host, port, None, res, runtime),
         resource_dir,
     ));
 
@@ -377,7 +400,7 @@ mod tests {
             toml_path(&template)
         ));
 
-        let launch = build_launch(&cfg, "10.0.0.5", 9000, &tmp, None).unwrap();
+        let launch = build_launch(&cfg, "10.0.0.5", 9000, &tmp, None, None).unwrap();
         // The single positional arg is the rendered config path.
         assert_eq!(launch.args.len(), 1);
         let rendered = std::fs::read_to_string(&launch.args[0]).unwrap();
@@ -413,7 +436,7 @@ mod tests {
             toml_path(&template)
         ));
 
-        let launch = build_launch(&cfg, "0.0.0.0", 8080, &tmp, None).unwrap();
+        let launch = build_launch(&cfg, "0.0.0.0", 8080, &tmp, None, None).unwrap();
         assert_eq!(launch.args[0], "--config");
         let rendered = std::fs::read_to_string(&launch.args[1]).unwrap();
         assert!(
@@ -440,7 +463,7 @@ mod tests {
             "#,
         );
 
-        let launch = build_launch(&cfg, "192.168.1.20", 8420, &tmp, None).unwrap();
+        let launch = build_launch(&cfg, "192.168.1.20", 8420, &tmp, None, None).unwrap();
         assert!(launch
             .envs
             .contains(&("RFUTILS_SERVER_PORT".into(), "8420".into())));
@@ -467,7 +490,7 @@ mod tests {
             PORT = "{port}"
             "#,
         );
-        let launch = build_launch(&cfg, "0.0.0.0", 8420, &work, Some(&res)).unwrap();
+        let launch = build_launch(&cfg, "0.0.0.0", 8420, &work, Some(&res), None).unwrap();
         assert_eq!(launch.program, format!("{}/node", res.to_string_lossy()));
         assert_eq!(launch.args, vec![format!("{}/app/server.mjs", res.to_string_lossy())]);
         assert!(launch.envs.contains(&("PORT".into(), "8420".into())));
@@ -487,7 +510,19 @@ mod tests {
         assert_eq!(cfg.app.default_port, 7654);
 
         let tmp = std::env::temp_dir().join("weblinked-launcher-test-shipped");
-        let launch = build_launch(&cfg, "10.0.0.7", 7654, &tmp, None).unwrap();
+        let runtime = std::path::PathBuf::from("/opt/wl-runtime");
+        let launch =
+            build_launch(&cfg, "10.0.0.7", 7654, &tmp, None, Some(&runtime)).unwrap();
+
+        // {runtime} must be substituted, not passed through literally. A stray
+        // brace here would reach Command::new and fail with a "no such file"
+        // naming a path that contains the placeholder — recognisable, but only
+        // once you have seen it.
+        assert_eq!(
+            launch.program,
+            "/opt/wl-runtime/WebLinked.app/Contents/MacOS/WebLinked"
+        );
+        assert!(!launch.program.contains('{'));
 
         // --headless is a no-op in current WebLinked, which no longer has an
         // operator window to suppress. It stays in the argv so this config also
@@ -501,6 +536,39 @@ mod tests {
         // The saved settings file must keep working, so --no-settings must not
         // creep in here.
         assert!(!launch.args.iter().any(|a| a == "--no-settings"));
+    }
+
+    #[test]
+    /// Each platform's shipped config must resolve `{runtime}` to a real
+    /// program path. These are the three files CI copies over launcher.toml,
+    /// and a typo in one of them only shows up on that platform's runner —
+    /// which is the slowest possible place to find it.
+    fn every_platform_config_substitutes_the_runtime_placeholder() {
+        let cases = [
+            (
+                "macos",
+                include_str!("../../launchers/macos.toml"),
+                "/r/WebLinked.app/Contents/MacOS/WebLinked",
+            ),
+            ("windows", include_str!("../../launchers/windows.toml"), "/r/WebLinked.exe"),
+            ("linux", include_str!("../../launchers/linux.toml"), "/r/WebLinked"),
+        ];
+        let tmp = std::env::temp_dir().join("weblinked-launcher-test-platforms");
+        let runtime = std::path::PathBuf::from("/r");
+        for (name, text, expected) in cases {
+            let cfg = parse(text);
+            let launch = build_launch(&cfg, "0.0.0.0", 7654, &tmp, None, Some(&runtime))
+                .unwrap_or_else(|e| panic!("{name}: build_launch failed: {e}"));
+            // with_windows_exe appends .exe on Windows only, so compare against
+            // the platform-appropriate form rather than hard-coding one.
+            let expected = if cfg!(windows) && !expected.ends_with(".exe") {
+                format!("{expected}.exe")
+            } else {
+                expected.to_string()
+            };
+            assert_eq!(launch.program, expected, "{name} command");
+            assert!(!launch.program.contains('{'), "{name} left a placeholder");
+        }
     }
 
     /// Every platform variant CI can ship must parse and produce the right argv.
@@ -525,7 +593,7 @@ mod tests {
             assert!(!cfg.app.command.is_empty(), "{name} has no command");
 
             let tmp = std::env::temp_dir().join(format!("weblinked-launcher-{name}"));
-            let launch = build_launch(&cfg, "10.0.0.7", 7654, &tmp, None)
+            let launch = build_launch(&cfg, "10.0.0.7", 7654, &tmp, None, None)
                 .unwrap_or_else(|e| panic!("{name}: build_launch failed: {e}"));
             assert_eq!(
                 launch.args,
@@ -579,7 +647,7 @@ mod tests {
             mode = "args"
             "#,
         );
-        let launch = build_launch(&cfg, "127.0.0.1", 7000, &tmp, None).unwrap();
+        let launch = build_launch(&cfg, "127.0.0.1", 7000, &tmp, None, None).unwrap();
         assert_eq!(launch.args, vec!["--host", "127.0.0.1", "--port", "7000"]);
     }
 
@@ -606,7 +674,7 @@ mod tests {
             value = "{host}:{port}"
             "#,
         );
-        let launch = build_launch(&cfg, "0.0.0.0", 8080, &work, Some(&res)).unwrap();
+        let launch = build_launch(&cfg, "0.0.0.0", 8080, &work, Some(&res), None).unwrap();
         assert_eq!(launch.program, res.join("flock").to_string_lossy());
         assert_eq!(launch.cwd, Some(work.clone()));
         let rendered = std::fs::read_to_string(&launch.args[0]).unwrap();

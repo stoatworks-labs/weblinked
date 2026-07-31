@@ -51,7 +51,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libgtk-3-dev libnss3-dev libasound2-dev libxss-dev \
-            libxtst-dev libatk-bridge2.0-dev libdrm-dev libgbm-dev
+            libxtst-dev libatk-bridge2.0-dev libdrm-dev libgbm-dev \
+            libx11-dev libegl1-mesa-dev libgles2-mesa-dev
 
       - name: Cache the CEF distribution
         uses: actions/cache@v4
@@ -207,6 +208,36 @@ jobs:
             tar czf "weblinked-${{ steps.ver.outputs.version }}-${{ matrix.name }}.tar.gz" -C out .
           fi
 
+      - name: Pack WebLinked for embedding in the launcher
+        shell: bash
+        # Packed here rather than in the launcher job because this is the runner
+        # that has the built tree; the published .dmg and .pkg do not contain a
+        # WebLinked.app the launcher job could reach into.
+        #
+        # ONE archive, not the tree. Tauri's resource collector walks whatever
+        # it is told to bundle, and the CEF framework's Versions/Current and
+        # Resources symlinks send that walk into a path that does not exist
+        # (.../Resources/Resources). A single regular file has nothing to walk.
+        #
+        # macOS uses ditto, not zip: it is the one that round-trips a framework
+        # with its symlinks, execute bits and ad-hoc signature intact —
+        # measured, see docs/04-verification.md section 11.
+        run: |
+          set -euo pipefail
+          mkdir -p embed
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # The staged copy, not build/Release: this one is ad-hoc signed and
+            # has the NDI runtime bundled beside it, so the embedded WebLinked
+            # is the same thing the .dmg installs rather than a barer build.
+            ditto -c -k --sequesterRsrc --keepParent \
+              "$RUNNER_TEMP/stage-mac/WebLinked.app" embed/WebLinked.app.zip
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            7z a embed/WebLinked.zip ./out/*
+          else
+            (cd out && zip -qry ../embed/WebLinked.zip .)
+          fi
+          ls -lh embed/
+
       - uses: actions/upload-artifact@v4
         with:
           name: weblinked-${{ matrix.name }}
@@ -217,9 +248,23 @@ jobs:
             *.pkg
           if-no-files-found: error
 
+      - name: Upload the embed archive
+        uses: actions/upload-artifact@v4
+        # Separate from the artefact above on purpose: this one feeds the
+        # launcher job and must NOT become a published release asset, where it
+        # would sit next to the .dmg as a second copy of the same thing.
+        with:
+          name: weblinked-embed-${{ matrix.name }}
+          path: embed/*
+          if-no-files-found: error
+
   launcher:
     name: Launcher (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
+    # The launcher now ships WebLinked inside itself, so it cannot be built
+    # until the renderer exists. This is what makes the macOS download a single
+    # install rather than two that have to be applied in the right order.
+    needs: build
     strategy:
       fail-fast: false
       matrix:
@@ -253,6 +298,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      - name: Fetch the packed WebLinked
+        uses: actions/download-artifact@v4
+        with:
+          name: weblinked-embed-${{ matrix.name }}
+          path: launcher/src-tauri/resources
+
+      - name: Confirm the archive is there
+        shell: bash
+        # A launcher that silently ships without the archive still builds and
+        # still runs — it just falls back to /Applications and an operator who
+        # installed only the launcher gets "no such file" on Start. Fail here
+        # instead, where it is obvious.
+        run: |
+          set -euo pipefail
+          ls -lh launcher/src-tauri/resources/
+          test -s launcher/src-tauri/resources/WebLinked.app.zip \
+            || test -s launcher/src-tauri/resources/WebLinked.zip
 
       - name: Select the platform launcher config
         shell: bash

@@ -49,6 +49,9 @@ std::vector<std::string> compiledOutputKinds() {
 #if defined(WEBLINKED_WITH_AJA)
   kinds.push_back("aja");
 #endif
+#if defined(WEBLINKED_WITH_SCREEN)
+  kinds.push_back("screen");
+#endif
   return kinds;
 }
 
@@ -76,13 +79,18 @@ std::unique_ptr<IOutput> createOutput(const OutputSpec& spec, std::string& error
     return createAjaOutput(spec);
   }
 #endif
+#if defined(WEBLINKED_WITH_SCREEN)
+  if (spec.kind == "screen") {
+    return createScreenOutput(spec);
+  }
+#endif
 
   // Distinguish "never heard of it" from "this build has no support for it",
   // because the second is a build problem and the first is a typo.
   const auto compiled = compiledOutputKinds();
   const bool known = spec.kind == "ndi" || spec.kind == "omt" ||
                      spec.kind == "decklink" || spec.kind == "aja" ||
-                     spec.kind == "preview";
+                     spec.kind == "screen" || spec.kind == "preview";
   if (known) {
     error = "output kind '" + spec.kind + "' was not compiled into this build";
   } else {

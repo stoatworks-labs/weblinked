@@ -23,7 +23,7 @@
 
 [app]
 name = "WebLinked"
-command = "weblinked"
+command = "{runtime}/WebLinked"
 args = ["--headless", "--bind", "{host}", "--port", "{port}"]
 url = "http://{host}:{port}/"
 default_port = 7654

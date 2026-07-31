@@ -113,13 +113,27 @@ crash; see [04-verification.md](04-verification.md).
 ## Why there is no GUI toolkit
 
 The UI is a web page this process already serves, opened in a browser you already
-have. No Qt, no JUCE, no platform windowing code — and no window of our own.
+have. No Qt, no JUCE, no window of our own for an operator to look at.
 
 It did briefly have one: a windowed CEF browser on the same control page. That
 cannot work in this process. Windowless rendering always uses Alloy runtime style
 and a windowed browser defaults to Chrome style, so hosting both meant two
 runtime styles at once, a GPU process that segfaulted on startup, and an empty
 window. See docs/04-verification.md section 9.
+
+**There is now platform windowing code, and the distinction matters.** The
+`screen` output opens a borderless fullscreen window on a chosen display
+(`src/outputs/screen_window_mac.mm` and its Windows and Linux siblings). That is
+not a retreat from the paragraph above: it is not a user interface, it takes no
+input, and nothing is laid out in it. It is a *video destination* that happens to
+be made of glass rather than a cable, and it exists because the alternative — a
+second CEF browser, windowed — is precisely what crashed the GPU process.
+
+So the rule survives in the form that was always doing the work: **no toolkit
+renders our UI, and no browser in this process owns a window.** The screen output
+is a few hundred lines of AppKit and Metal that upload a frame and draw a
+triangle, and it is an `IOutput` like every other, so it shares the frame path
+rather than reaching into the browser.
 
 The preview it shows is modelled as an *output*, so it travels the same frame
 path as SDI and NDI. If the preview is wrong, the outputs are wrong. That is the
@@ -131,7 +145,10 @@ separate pages: switching must not cost the preview stream or the state poll.
 
 For a machine where WebLinked should come up at login and sit in the menu bar
 instead of a terminal, [`launcher/`](../launcher/) wraps it in the fleet's
-av-launcher tray shell, running it `--headless` so there is only ever one UI.
+av-launcher tray shell. It **carries WebLinked inside it** as an archive it
+unpacks to Application Support on first run — deliberately not nested, because
+an ad-hoc signed bundle with five helper `.app`s inside another one is where
+Gatekeeper kills the helpers silently. See `launcher/README.md`.
 
 ## A windowless browser cannot own a popup
 

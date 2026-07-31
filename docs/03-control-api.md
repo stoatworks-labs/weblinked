@@ -94,9 +94,17 @@ Everything, as one JSON object. The shape:
       "device_index": 0, "options": { "alpha": true },
       "pixel_format": "UYVY", "frames": 10464, "audio_frames": 10460,
       "receivers": 1, "library": "/Library/NDI SDK for Apple/lib/macOS/libndi.dylib",
-      "sdk_version": "NDI SDK APPLE ... 6.3.2.0" }
+      "sdk_version": "NDI SDK APPLE ... 6.3.2.0" },
+    { "kind": "screen", "name": "Wall", "running": true, "enabled": true,
+      "device_index": 0, "options": { "display": 1, "scaling": "fit" },
+      "display": 1, "scaling": "fit", "frames": 10464,
+      "presented": 12557, "dropped": 0, "renderer": "Metal, Apple M4 Max" }
   ],
-  "compiled_backends": ["preview", "ndi", "omt", "decklink"],
+  "compiled_backends": ["preview", "ndi", "omt", "decklink", "screen"],
+  "displays": [
+    { "index": 0, "name": "Built-in Retina Display", "width": 4112,
+      "height": 2658, "refresh_hz": 50, "primary": true }
+  ],
   "source": { "url": "...", "loaded_url": "...", "loading": false,
               "paints": 10440, "audio_packets": 20880, "console_errors": 0,
               "audio_muted": false, "pacing": "external",
@@ -109,6 +117,12 @@ Everything, as one JSON object. The shape:
              "underruns": 0, "overruns": 0 }
 }
 ```
+
+`displays` is present only in a build with the screen backend, and is
+re-enumerated on every read — a monitor plugged in after start-up is exactly
+when someone goes looking for it. `refresh_hz` is 0 where the platform will not
+say (built-in Apple panels sometimes, and X11 always, since the Linux backend
+does not link RandR). Index 0 is the main display.
 
 Object key order is stable, so two responses can be diffed by eye mid-show.
 
@@ -123,6 +137,9 @@ Object key order is stable, so two responses can be diffed by eye mid-show.
 | `outputs[].buffered_frames` | DeckLink only. **Steady = our clock and the card's agree.** Drifting either way ends in a glitch. |
 | `outputs[].buffer_level` | The AJA equivalent. |
 | `outputs[].receivers` | How many receivers are connected (NDI/OMT). |
+| `outputs[].presented` | Screen only. Frames put on the glass. Paced by the **display**, not by `--format`, so this is expected to differ from `frames`: a 50 Hz page on a 60 Hz head repeats, and on a 30 Hz head drops. |
+| `outputs[].dropped` | Screen only. Frames overwritten before a refresh could show them. Non-zero and steady is normal when the source and the head run at the same nominal rate but unsynchronised. |
+| `outputs[].renderer` | Screen only. The GPU path in use, e.g. `Metal, Apple M4 Max`. |
 | `source.popups` | How many times the page has tried to open a new tab or window. A page doing this repeatedly is usually about to behave oddly on air. |
 
 `outputs[].device_index` and `outputs[].options` are the spec **as configured**,
@@ -209,6 +226,7 @@ All take a JSON body and return `{"ok":true}` or `{"error":"..."}`.
 | `/api/output` | `{"name": "Graphic", "enabled": false}` | Disabling stops the device and frees it for another application |
 | `/api/output/add` | `{"kind":"ndi","name":"Second","options":{"alpha":true}}` | |
 | `/api/output/remove` | `{"name": "Second"}` | |
+| `/api/output/add` (screen) | `{"kind":"screen","name":"Wall","options":{"display":1,"scaling":"fit"}}` | `display` indexes `state.displays`; `scaling` is `fit` (default), `fill` or `stretch`. On macOS the window is created on the main thread however the request arrived |
 | `/api/output/update` | `{"name":"Second","output":{"kind":"ndi","name":"Renamed"}}` | Replaces an output in place, keeping its position. On failure the previous one is restarted — see below |
 | `/api/pacing` | `{"pacing": "internal"}` | Rebuilds the browser at the same URL |
 | `/api/settings/apply` | `{"source": { ... }}` | Applies a whole source configuration; see below |

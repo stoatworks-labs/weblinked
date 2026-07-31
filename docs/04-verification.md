@@ -756,10 +756,160 @@ left to capture the keyed result on.
 
 ---
 
+## 20. The screen output — verified on this Mac
+
+`--screen` puts the rendered frame fullscreen on a GPU-attached display. It is
+an `IOutput` like any other, which is the point: the frames it shows are the
+same objects the SDI and NDI outputs are handed, so it cannot drift from them.
+
+It is **not** a second Chromium window. Every browser here is windowless, which
+forces Alloy runtime style; a windowed browser defaults to Chrome style, and one
+process running both crashed the GPU process every time (section 9). This takes
+frames the engine has already produced and puts them on the glass with Metal.
+
+Run against a local bars page at 1080p50 on the built-in display:
+
+```
+--url file://…/bars.html --screen=0 --format 1080p50
+```
+
+**Picture — correct.** Fullscreen, right way up, all four corner markers and the
+full magenta border visible, letterboxed top and bottom. That last part is the
+expected result rather than a fault: 1920x1080 is 1.78:1 and this display is
+4112x2658, which is 1.55:1, so `fit` bars the vertical axis.
+
+**All three scaling modes — correct**, checked by screenshot:
+
+| Mode | Expected | Observed |
+|---|---|---|
+| `fit` | whole frame, bars where the aspects differ | bars top and bottom, all four corners visible |
+| `fill` | fills the display, crops the long axis | no bars, corners and part of the HUD cropped away |
+| `stretch` | fills, ignores aspect | no bars, all corners visible, geometry distorted |
+
+**Pacing is the display's, not the engine's — measured, and this is the part
+worth reading.** The counters at first looked wrong: at 1080p50 the output
+reported 50 submitted and 50 presented per second, which is exactly what a bug
+that only draws on a new frame would produce. It is not that. Re-run at 1080p25:
+
+```
+at 1080p25 over 10s: submitted=25/s  presented=50/s  dropped=0
+```
+
+Each frame is presented twice, with nothing dropped, because the panel is
+running at 50 Hz — confirmed independently by `/api/state`, which now reports
+`displays[].refresh_hz: 50`. The 50p case matching so exactly was two
+independent ~50 Hz clocks, not one clock driving both. At 50p the same run shows
+roughly 8 dropped frames a second, which is those two clocks beating against
+each other and is expected: `dropped` counts a frame overwritten before a
+refresh could show it, and a source and a head at the same nominal rate but
+unsynchronised will do that continually.
+
+So `presented` and `frames` are *supposed* to differ. That is what makes
+repetition on a faster head distinguishable from a genuine drop.
+
+**Live add and remove — verified, after fixing a crash it found.** Four full
+remove/add cycles through `/api/output/remove` and `/api/output/add`, plus a
+fifth driven through the settings page itself (named `Projector`, scaling
+`fill`), with the process surviving all of them and the counters resetting each
+time. This exercises the path where `start()` arrives on the **HTTP thread**
+rather than the main thread, which on macOS is the one that cannot create a
+window; the backend marshals with `dispatch_sync` to the main queue.
+
+The first attempt at this killed the process on the second cycle. See the bug
+list below — it was an over-release, and it is exactly the kind of thing a
+single happy-path run does not find.
+
+**A display index that does not exist — handled.** `--screen=5` with one display
+attached does not take the process down: the output fails to start, the rest of
+the app carries on, and the reason reaches both the log and `outputs[].error`:
+
+```
+ERROR output 'screen5' (screen) failed to start: display 5 does not exist (1 attached)
+```
+
+**Not verified.** A second physical display — this machine has one, so
+multi-head selection, and `--screen=1` succeeding rather than erroring, are
+untested. Colour was checked against the same bars page rather than against
+`ndi_probe`'s independent BT.709 reference; the layer's colour space is pinned
+to sRGB precisely so it *can* be compared that way, but that comparison has not
+been made. Nothing has been shown on a projector.
+
+**Windows and Linux: never run.** `screen_window_win.cpp` (D3D11) and
+`screen_window_linux.cpp` (X11 + EGL) are written and compile-targeted only.
+Linux additionally disables the whole backend when X11 or EGL headers are
+absent, the same way a missing NDI SDK disables NDI.
+
+---
+
+## 21. The launcher carrying WebLinked — mostly verified
+
+The launcher now ships WebLinked inside itself, so the macOS download is one
+install rather than two applied in the right order. `launcher/README.md`
+previously argued against this. Both of its reasons were real, and both are
+addressed rather than ignored.
+
+**The Tauri resource walk — solved, verified.** The collector follows the CEF
+framework's `Versions/Current` and `Resources` symlinks and dies on
+`.../Resources/Resources`. Shipping one `.zip` gives it a single regular file.
+`npm run tauri build` completes and produces a 142 MB `.app` and a 144 MB
+`.dmg`, from a 130 MB archive.
+
+**`ditto` round-trips the framework — verified.** Packed with
+`ditto -c -k --sequesterRsrc --keepParent` and expanded again, the three
+framework symlinks are still symlinks and all five helper `.app`s are present.
+
+**Gatekeeper — verified for this path, and it removed a step.** The unpacked
+copy was run directly from Application Support:
+
+- it starts, serves, paints and drives the screen output;
+- the renderer and GPU helpers stay alive at the new path — the specific thing
+  that dies when the nested-bundle failure mode bites;
+- the ad-hoc signature survives the archive intact: `flags=0x2(adhoc)` with the
+  original `works.stoat.weblinked` identifier;
+- the extracted files carry no `com.apple.quarantine`.
+
+All of that with **no post-processing at all**. An earlier version of
+`embedded.rs` re-signed with `codesign --force --deep --sign -` on the
+assumption the helper signatures needed re-establishing. They do not, the
+verification of that signature was itself failing, and `--deep` contradicts this
+project's own inside-out signing rule (`cmake/SignMacBundle.cmake`). It was
+removed. The quarantine clear stays as one cheap line, because the case it
+defends — a launcher `.dmg` downloaded from GitHub, whose contents *are*
+quarantined — cannot be reproduced from a source checkout.
+
+**The unpack logic — covered by tests.** `cargo test` is 15 tests, up from 9,
+including a full unpack → short-circuit-on-stamp → re-unpack-on-upgrade cycle
+against a real `ditto` archive, and a corrupt-archive case asserting that a
+failed unpack leaves no stamp behind to be trusted later.
+
+**Not verified: the tray click-through.** Still true, and still for the reason
+section 18 gives. The panel renders correctly from the shipped bundle and the
+window is there, but the Start button lives inside a WKWebView whose contents
+are not exposed in the accessibility tree — only the window's three traffic
+lights are — so it could not be driven from a script. The sequence that button
+triggers was verified by hand instead, against the real 130 MB archive. What
+remains untested is the Tauri glue between them: `resource_dir()` resolving and
+`ensure_unpacked` being reached from a click.
+
+**Not verified: a machine that has never seen the source.** Everything above ran
+on the build machine.
+
+---
+
 ## Bugs this verification actually found
 
 Recorded because they are the argument for doing it at all. Every one was found
 by running the thing, not by reading it.
+
+**The screen output's window, released twice, which took the process down on the
+second remove/add cycle.** `NSWindow.isReleasedWhenClosed` defaults to **YES**
+for a window built with `initWithContentRect:`, so `-close` already released it
+and the explicit `-release` beside it was one too many. Over-releases do not
+fault where they happen: the first cycle survived, the second died on the main
+thread inside `objc_autoreleasePoolPop`, with a backtrace consisting entirely of
+CEF and AppKit frames and nothing of ours in it. It reads exactly like a CEF
+bug. Found only because the add/remove test was run twice rather than once —
+a single cycle passes cleanly. Section 20.
 
 **The profile lock, which shipped in every release up to v0.5.1.** Not found by
 verification at all — found by an operator double-clicking the installed app and
@@ -942,4 +1092,11 @@ merely flipping the flag produced no frames at all. The rebuild is implemented
 and compiles; it has not been exercised on air, and it is not a mid-show
 operation.
 
-**The tray launcher end to end.** See section 14.
+**The tray launcher end to end.** See sections 14, 18 and 21. The unpack the
+Start button triggers is verified by hand and by test; the click itself is not.
+
+**A second display.** This machine has one, so `--screen=1`, multi-head
+selection and anything about a projector are untested. Section 20.
+
+**The screen output on Windows and Linux.** Written, compile-targeted, never
+run — like AJA and OMT before them.
