@@ -24,9 +24,9 @@ weblinked --config show.json
 
 ---
 
-[![Watch it running — 54 seconds](docs/video-thumb.png)](https://www.youtube.com/watch?v=kYVqPqA-u9I)
+[![Watch it running — 63 seconds](docs/video-thumb.png)](https://www.youtube.com/watch?v=3qG3wPPjUjY)
 
-*A 54-second tour of the real app, driven over its own HTTP control API. The output is
+*A 63-second tour of the real app, driven over its own HTTP control API. The output is
 NDI, picked up by a separate receiver (`tools/ndi_probe`) — no DeckLink or AJA card
 appears, because none has ever been connected. See
 [docs/04-verification.md](docs/04-verification.md) for what is verified and what is not.*
