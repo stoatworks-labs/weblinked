@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.7.0 — 2026-08-01
 
 Two things, both about WebLinked being usable somewhere other than a terminal.
 
