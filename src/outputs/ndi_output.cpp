@@ -3,11 +3,17 @@
 // libndi is opened with dlopen and its flat C entry points resolved by name.
 // Two reasons, both practical:
 //
-//   * NDI's licence does not allow redistributing the library, so it cannot be
-//     linked at build time and shipped. Resolving at run time means one binary
-//     works whether the operator has the SDK, the redistributable runtime, or
-//     neither — in the last case the output simply reports itself unavailable
-//     instead of the whole application failing to launch.
+//   * NDI's licence *does* permit redistributing the library inside an
+//     application — it is royalty-free — but only if the receiving licence
+//     forbids modifying, reverse-engineering and decompiling the SDK. MIT
+//     grants exactly those rights, so this repository cannot carry NDI
+//     binaries without contradicting its own LICENSE. (A signed installer
+//     with its own EULA can, and may also bundle the redistributable
+//     installer: see docs/06-ndi-distribution.md.) Resolving at run time
+//     means one binary works whether the operator has the SDK, the
+//     redistributable runtime, or neither — in the last case the output
+//     simply reports itself unavailable instead of the whole application
+//     failing to launch.
 //
 //   * The flat symbols (NDIlib_send_create and friends) exist in every NDI 5
 //     and 6 runtime. The alternative, NDIlib_v6_load(), returns a versioned
@@ -45,6 +51,19 @@ namespace {
 #define NDI_LIBRARY_NAME "libndi.so.6"
 #endif
 #endif
+
+/// Where to send an operator who has no runtime. The SDK defines
+/// NDILIB_REDIST_URL for exactly this purpose, but leaves it empty on Linux
+/// (there is no one-click redistributable there), so fall back to the SDK
+/// download page rather than printing a bare "".
+constexpr const char* redistUrl() {
+#if defined(NDILIB_REDIST_URL)
+  return NDILIB_REDIST_URL[0] != '\0' ? NDILIB_REDIST_URL
+                                      : "https://ndi.video/for-developers/ndi-sdk/";
+#else
+  return "https://ndi.video/for-developers/ndi-sdk/";
+#endif
+}
 
 /// The entry points we need, and no more.
 struct NdiApi {
@@ -111,8 +130,10 @@ class NdiRuntime {
 
     if (!library_.open(candidates)) {
       ok_ = false;
-      error_ = "NDI runtime not found (" NDI_LIBRARY_NAME "). Install the NDI "
-               "redistributable, or set " NDILIB_REDIST_FOLDER ".";
+      error_ = std::string("NDI runtime not found (" NDI_LIBRARY_NAME "). "
+                           "Install the NDI runtime from ") +
+               redistUrl() + ", or set " NDILIB_REDIST_FOLDER
+               " to the directory containing it.";
       error = error_;
       return nullptr;
     }

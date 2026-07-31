@@ -215,6 +215,8 @@ who can reach the port can change what is on air.
 - [docs/diagnostics.md](docs/diagnostics.md) — logs, crash reports, bundles
 - [docs/05-settings.md](docs/05-settings.md) — the settings page and the file it
   writes
+- [docs/06-ndi-distribution.md](docs/06-ndi-distribution.md) — why NDI is loaded
+  at run time, what the licence permits, and the attribution every project owes
 - [launcher/README.md](launcher/README.md) — the menu-bar tray launcher
 - [AGENTS.md](AGENTS.md) — orientation for an AI assistant or a new contributor
 
@@ -227,8 +229,14 @@ Third-party components keep their own licences. `third_party/omt/libomt.h` is MI
 the DeckLink SDK and libajantv2 are each obtained separately under their own
 terms; none of them are redistributed here.
 
-**NDI® is a registered trademark of Vizrt NDI AB.** This project is not
-affiliated with or endorsed by Vizrt, Blackmagic Design, or AJA Video Systems.
+**NDI® is a registered trademark of Vizrt NDI AB.** See <https://ndi.video>. The
+NDI runtime is loaded at run time and is not redistributed here — see
+[docs/06-ndi-distribution.md](docs/06-ndi-distribution.md) for why, and for what
+the licence does and does not permit. NDI Tools are not redistributed either;
+get them from <https://ndi.video/tools>.
+
+This project is not affiliated with or endorsed by Vizrt, Blackmagic Design, or
+AJA Video Systems.
 
 ---
 
