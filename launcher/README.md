@@ -26,22 +26,21 @@ WebLinked is [`src-tauri/launcher.toml`](src-tauri/launcher.toml).
 [`scripts/screenshot.sh`](scripts/screenshot.sh) (headless Chrome), themed from
 WebLinked's own palette.*
 
-## Why a launcher when WebLinked already has a window
+## Why a launcher
 
-WebLinked's operator window *is* its control page, served over HTTP by the
-process itself. That is the right thing when you run it from a terminal or a
-show-control system. It is the wrong thing on a machine where WebLinked should
-come up at login, sit quietly in the menu bar, and be reachable from a browser
-on another machine — which is what a rack PC in a facility actually needs.
-
-So the launcher runs it `--headless` and takes over the lifecycle:
+WebLinked has no window. It is a render host and a control server, and its UI is
+the control page it serves over HTTP — which is exactly right when you run it
+from a terminal or a show-control system, and no help at all on a machine where
+it should come up at login, sit quietly in the menu bar and be reachable from a
+browser elsewhere. That is what a rack PC in a facility actually needs, and it is
+what this provides: the launcher owns the lifecycle, the browser owns the view.
 
 | | WebLinked on its own | Under the launcher |
 |---|---|---|
-| UI | its own window, the control page | your browser, the same page |
+| UI | a URL you open yourself | one click, on a chosen interface |
 | bind address | `--bind`, defaults to loopback | picked from a list of interfaces |
-| lifetime | as long as the terminal | tray, survives closing the window |
-| stopping | Ctrl-C or the red button | Stop, or Quit |
+| lifetime | as long as the terminal | tray, survives closing the browser |
+| stopping | Ctrl-C | Stop, or Quit |
 
 Both paths serve the same control page with the same settings and diagnostics.
 

@@ -5,10 +5,9 @@ namespace weblinked::assets {
 /// The control page, compiled in.
 ///
 /// Embedded rather than served from disk so the application is one file to
-/// deploy and cannot be broken by a missing directory. It is also loaded into a
-/// normal windowed CEF browser as the app's own UI, which is why there is no
-/// separate GUI toolkit anywhere in this project: CEF is already a dependency,
-/// so the operator window and the remote control surface are the same page.
+/// deploy and cannot be broken by a missing directory. It is the *whole* UI —
+/// WebLinked opens no window of its own, so this page in a browser is the app's
+/// only front end, which is why there is no GUI toolkit anywhere in this project.
 ///
 /// Deliberately plain: no framework, no build step, no external requests. A
 /// broadcast tool that cannot open its own control panel because a CDN is
@@ -148,8 +147,8 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
   #toast.bad { border-color: var(--bad); color: #ffd9d6; }
 
   /* --- tabs ---------------------------------------------------------------
-     Three views on one page rather than three pages: the operator window loads
-     this once and must not lose the preview stream to a navigation. */
+     Three views on one page rather than three pages: switching must not cost
+     the preview stream or the state poll to a navigation. */
   nav { display: flex; gap: 2px; }
   nav button {
     background: none; border: 1px solid transparent; border-radius: 5px;

@@ -53,7 +53,8 @@ class ControlApi {
   bool start(const Config& config, std::string& error);
   void stop();
 
-  /// The URL to open in the operator window.
+  /// The address the control page is reachable at, printed at startup and used
+  /// by the tray launcher's "Launch GUI" button.
   std::string controlUrl() const;
 
   const HttpServer& http() const { return http_; }

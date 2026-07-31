@@ -58,7 +58,6 @@ struct Options {
   std::vector<OutputSpec> outputs;
   ControlApi::Config control;
   bool audio = true;
-  bool openWindow = true;
   bool verbose = false;
   ColourMatrix matrix = ColourMatrix::kAuto;
   BrowserSource::Pacing pacing = BrowserSource::Pacing::kExternalBeginFrame;
@@ -135,7 +134,9 @@ Control
   --token <secret>         Require this token on every HTTP request
   --osc-port <n>           OSC listen port. Default: 7655
   --no-osc                 Do not listen for OSC
-  --headless               Do not open the operator window
+  --headless               Accepted and ignored; there is no window to suppress.
+                           The control page is served over HTTP — open it in a
+                           browser, or use the tray launcher in launcher/
   --no-interactive         Do not arm the preview for input on load
   --verbose                Verbose logging
   --help                   This text
@@ -149,7 +150,7 @@ Several sources at once
   --config <file>          Run every source the file describes, each with its
                            own browser, clock and outputs. Cannot be combined
                            with the source flags above — the file replaces
-                           them. --port, --token and --headless still apply.
+                           them. --port and --token still apply.
                            The file is the same shape the settings page saves,
                            so the quickest way to write one is to configure a
                            source, save, and copy the entry.
@@ -232,7 +233,10 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
       continue;
     }
     if (argument == "--no-audio") { options.audio = false; continue; }
-    if (argument == "--headless") { options.openWindow = false; continue; }
+    // Accepted and ignored. There is no window to suppress any more, but the
+    // shipped launcher.toml passes it and so does every script written against
+    // an older build; rejecting it would break both for no gain.
+    if (argument == "--headless") { continue; }
     if (argument == "--verbose") { options.verbose = true; continue; }
     if (argument == "--no-preview") { options.wantPreview = false; continue; }
     if (argument == "--alpha") { nextAlpha = true; continue; }
@@ -515,90 +519,18 @@ bool resolveSources(Options& options, std::string& error) {
   return true;
 }
 
-/// The operator window's client.
-///
-/// It exists for one reason: shutdown. CefQuitMessageLoop() does *not* end
-/// CefRunMessageLoop() while a real browser window is still open — the loop
-/// simply carries on, so the process survives a SIGTERM having logged that it
-/// was shutting down. That was missed during verification because every test
-/// run used --headless, where there is no window and quitting works directly.
-///
-/// The CEF-idiomatic sequence is to close the browsers and quit the loop when
-/// the last one has gone, which is what OnBeforeClose does here. It also makes
-/// closing the window with the red button quit the application, instead of
-/// leaving an invisible process holding the control port and the NDI name.
-/// It also has to survive popups. The control page can link outwards — to the
-/// documentation, or to whatever the operator has just loaded — and a
-/// `target="_blank"` gets CEF to open a second window against this same client.
-/// Before the browser count below existed, that second window's OnAfterCreated
-/// replaced browser_, so closeWindow() then closed the popup and left the real
-/// window open, and its OnBeforeClose called CefQuitMessageLoop() — so closing a
-/// popup quit the whole application, taking the outputs with it.
-class ControlWindowClient : public CefClient, public CefLifeSpanHandler {
- public:
-  CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
-
-  void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
-    browsers_.push_back(browser);
-  }
-
-  void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
-    browsers_.erase(std::remove_if(browsers_.begin(), browsers_.end(),
-                                   [&](const CefRefPtr<CefBrowser>& held) {
-                                     return held->IsSame(browser);
-                                   }),
-                    browsers_.end());
-    // Only once the last window has gone. Quitting on the first close would end
-    // the message loop while other browsers are still alive, and CefShutdown()
-    // then blocks forever waiting for them.
-    if (browsers_.empty()) {
-      CefQuitMessageLoop();
-    }
-  }
-
-  /// UI thread only. Closes every window this client owns, popups included —
-  /// a popup left open would otherwise keep the message loop running after a
-  /// SIGTERM.
-  void closeWindow() {
-    if (browsers_.empty()) {
-      CefQuitMessageLoop();
-      return;
-    }
-    // A copy: CloseBrowser can reach OnBeforeClose synchronously, which mutates
-    // browsers_ underneath the loop.
-    const auto open = browsers_;
-    for (const auto& browser : open) {
-      // force_close: a beforeunload dialog would wait for a click nobody is
-      // going to give it.
-      browser->GetHost()->CloseBrowser(true);
-    }
-  }
-
- private:
-  std::vector<CefRefPtr<CefBrowser>> browsers_;
-  IMPLEMENT_REFCOUNTING(ControlWindowClient);
-};
-
-CefRefPtr<ControlWindowClient> g_controlWindow;
 
 std::atomic<bool> g_quitRequested{false};
 
-/// UI thread. Ends the message loop, whether or not a window is open.
 /// UI thread. Begins an orderly shutdown.
 ///
-/// Only the *window* is closed here. CefRunMessageLoop() will not return while a
-/// real browser window is open, so quitting the loop directly does nothing —
-/// but closing the offscreen browser this early is equally wrong: its
-/// destruction then never gets pumped, and CefShutdown() waits for it forever.
-/// The offscreen browser is closed after the loop returns, in engine.stop(),
-/// which is where it was already being done and which works.
-void beginShutdown() {
-  if (g_controlWindow != nullptr) {
-    g_controlWindow->closeWindow();
-  } else {
-    CefQuitMessageLoop();
-  }
-}
+/// Quitting the loop directly is correct now that this process never owns a
+/// browser *window*: CefRunMessageLoop() returns as soon as it is asked to.
+/// Closing the offscreen browsers here would be wrong — their destruction then
+/// never gets pumped and CefShutdown() waits for them forever. They are closed
+/// after the loop returns, in engine.stop(), which is where it was already being
+/// done and which works.
+void beginShutdown() { CefQuitMessageLoop(); }
 
 void requestQuit(int) {
   // Only a flag: the watchdog below does the real work, because CefPostTask is
@@ -629,8 +561,7 @@ void installSignalHandlers() {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     weblinked::diag::info("shutdown requested by signal");
-    // Must run on the UI thread, and must close the window rather than just
-    // quitting the loop — see ControlWindowClient.
+    // Must run on the UI thread.
     CefPostTask(TID_UI, base::BindOnce(&beginShutdown));
   }).detach();
 }
@@ -836,34 +767,22 @@ int main(int argc, char** argv) {
   std::printf("Control: %s\n", control.controlUrl().c_str());
   std::printf("Log:     %s\n", weblinked::diag::logFilePath().c_str());
 
-  if (options.openWindow) {
-    // The operator window is the same control page, in an ordinary windowed
-    // browser. This is why there is no GUI toolkit in this project.
-    CefWindowInfo windowInfo;
-    CefRect bounds(0, 0, 1180, 900);
-#if defined(_WIN32)
-    windowInfo.SetAsPopup(nullptr, "WebLinked");
-    windowInfo.bounds = bounds;
-#else
-    windowInfo.bounds = bounds;
-#endif
-    CefBrowserSettings browserSettings;
-    g_controlWindow = new ControlWindowClient();
-    CefBrowserHost::CreateBrowser(windowInfo, g_controlWindow,
-                                  control.controlUrl(), browserSettings, nullptr,
-                                  nullptr);
-  }
-
-  // Blocks until the last browser closes. Everything else runs on its own
+  // No window is ever created here. This process is a render host and a control
+  // server; the operator's view is a browser pointed at the address above, and
+  // the tray launcher in launcher/ is what puts that on a desktop.
+  //
+  // It used to open the control page in a CEF window of its own. That could not
+  // work: every source browser is windowless, windowless always means Alloy
+  // runtime style, and a windowed browser defaults to Chrome style — so the
+  // process ran two runtime styles at once, the GPU process segfaulted on
+  // startup, and the window came up correctly sized and completely empty. It
+  // also never had a menu bar, so it could not be quit from one.
+  //
+  // Blocks until beginShutdown() quits it. Everything else runs on its own
   // thread: the engine's clock, the HTTP connections, the OSC receiver.
   CefRunMessageLoop();
   control.stop();
   sources.stop();
-  // Every CefRefPtr must be released before CefShutdown(). This one is a global
-  // holding the operator window's client; leaving it alive hangs CefShutdown()
-  // silently, which presents as a process that logs a clean exit and then never
-  // exits.
-  g_controlWindow = nullptr;
   CefShutdown();
   weblinked::diag::info("WebLinked exiting cleanly");
   weblinked::diag::shutdown();

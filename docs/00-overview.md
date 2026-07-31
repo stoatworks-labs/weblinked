@@ -68,8 +68,8 @@ lets a graphic that already exposes its own functions be driven with no
 integration work at all.
 
 **Small.** One binary. No service to install, no database, no framework in the
-browser, no GUI toolkit — the operator window is a CEF window showing the same
-control page the HTTP server already serves.
+browser, no GUI toolkit and no window of its own — the UI is the control page the
+HTTP server already serves, opened in whatever browser you like.
 
 ## Where to go next
 

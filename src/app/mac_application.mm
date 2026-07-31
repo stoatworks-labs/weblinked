@@ -9,13 +9,14 @@
 //   reason: '-[NSApplication isHandlingSendEvent]: unrecognized selector sent
 //   to instance ...'
 //
-// This is easy to miss: an offscreen-only, --headless run never drives NSApp
-// this way and works perfectly, so the crash only appears once somebody opens
-// the operator window — and then only on the way out, which reads like a
-// shutdown bug rather than a missing application class.
+// Kept even though this process no longer opens any window at all. Providing
+// the subclass is the documented requirement for *every* CEF macOS application,
+// not only windowed ones — CefInitialize instantiates NSApp regardless, and
+// anything that later pumps a real event through it would hit the selector
+// above. It costs one class and removes a whole category of crash, so it stays.
 //
-// Providing the subclass is the documented requirement for every CEF macOS
-// application; cefsimple ships the same code.
+// It was originally added for the operator window, which is gone; see
+// docs/04-verification.md section 9.
 
 #import <Cocoa/Cocoa.h>
 

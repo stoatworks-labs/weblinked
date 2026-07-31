@@ -75,8 +75,7 @@ Base: `http://127.0.0.1:7654`
 
 ### GET `/`
 
-The control page. The operator window loads this same URL, so a browser on the
-same network is a remote panel.
+The control page — the whole UI. A browser on the same network is a remote panel.
 
 ### GET `/api/state`
 

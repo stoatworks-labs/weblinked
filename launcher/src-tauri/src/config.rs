@@ -477,9 +477,10 @@ mod tests {
         let tmp = std::env::temp_dir().join("weblinked-launcher-test-shipped");
         let launch = build_launch(&cfg, "10.0.0.7", 7654, &tmp, None).unwrap();
 
-        // --headless matters: without it WebLinked opens its own operator
-        // window and the tray is supervising a process that has already put a
-        // second, unmanaged copy of the UI on screen.
+        // --headless is a no-op in current WebLinked, which no longer has an
+        // operator window to suppress. It stays in the argv so this config also
+        // drives an older build, where it was the difference between the tray
+        // owning the UI and a second unmanaged copy of it appearing on screen.
         assert!(launch.args.contains(&"--headless".to_string()));
         assert_eq!(
             launch.args,

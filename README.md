@@ -33,9 +33,8 @@ appears, because none has ever been connected. See
 
 ![The WebLinked control page, rendering github.com to NDI at 1080p50](docs/images/control-page.png)
 
-*The control page, driving two sources. It is both the operator window and a
-remote panel — the app opens this same page in its own window, and any browser
-on the network can reach it. The strip along the top carries a live thumbnail per
+*The control page, driving two sources. It is the whole UI — WebLinked serves it
+over HTTP and any browser on the network can reach it. The strip along the top carries a live thumbnail per
 source and only appears when there is more than one, so a single-source launch
 looks exactly as it always did. The preview is fed by the same frame pipeline as
 the SDI and NDI outputs, so if the preview is right, the outputs are right.*
@@ -212,17 +211,18 @@ Then:
   --ndi=Graphic
 ```
 
-The operator window opens on the control page — the same page the HTTP server
-serves, which is why there is no GUI toolkit anywhere in this project. Add
-`--headless` to run it as a service and drive it over HTTP or OSC instead, or
-use the [tray launcher](launcher/) to do that with a menu-bar icon.
+WebLinked opens no window of its own. It is a render host and a control server:
+the UI is the control page it serves, which you open in a browser, drive over
+HTTP or OSC, or reach from the [tray launcher](launcher/) — a menu-bar icon that
+starts and stops the process and opens the page for you. That is why there is no
+GUI toolkit anywhere in this project.
 
 `--help` lists every option and reports which backends this build contains.
 
 ## Control
 
-The control page is served at `http://127.0.0.1:7654/` and is the same page the
-operator window shows — so a phone on the same network is a remote panel.
+The control page is served at `http://127.0.0.1:7654/`, so a phone on the same
+network is a remote panel.
 
 ```bash
 curl -X POST -d '{"url":"https://example.com/next"}' http://127.0.0.1:7654/api/url

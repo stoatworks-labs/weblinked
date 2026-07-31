@@ -112,10 +112,14 @@ crash; see [04-verification.md](04-verification.md).
 
 ## Why there is no GUI toolkit
 
-CEF is already a dependency, so the operator window is a normal windowed CEF
-browser pointed at the control page the HTTP server already serves. One UI, two
-ways in — the app window and any browser on the network — and no Qt, no JUCE, no
-platform windowing code.
+The UI is a web page this process already serves, opened in a browser you already
+have. No Qt, no JUCE, no platform windowing code — and no window of our own.
+
+It did briefly have one: a windowed CEF browser on the same control page. That
+cannot work in this process. Windowless rendering always uses Alloy runtime style
+and a windowed browser defaults to Chrome style, so hosting both meant two
+runtime styles at once, a GPU process that segfaulted on startup, and an empty
+window. See docs/04-verification.md section 9.
 
 The preview it shows is modelled as an *output*, so it travels the same frame
 path as SDI and NDI. If the preview is wrong, the outputs are wrong. That is the
@@ -123,8 +127,7 @@ property you want from a confidence monitor, and it is why the preview is not
 simply tapped off the browser.
 
 The same page carries the settings and diagnostics views, as tabs rather than
-separate pages: switching must not cost the preview stream or the state poll,
-and the operator window loads the page exactly once.
+separate pages: switching must not cost the preview stream or the state poll.
 
 For a machine where WebLinked should come up at login and sit in the menu bar
 instead of a terminal, [`launcher/`](../launcher/) wraps it in the fleet's

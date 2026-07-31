@@ -137,12 +137,11 @@ deliver, and what Chromium's own timer does not.
 ## 6. Clean shutdown — verified, in both modes
 
 `SIGTERM` produces `shutdown requested by signal` → `audio stream stopped` →
-`WebLinked exiting cleanly`, with the NDI sender destroyed rather than abandoned,
-**with and without the operator window**.
+`WebLinked exiting cleanly`, with the NDI sender destroyed rather than abandoned.
 
-Both modes matter, and that is the point: for a long time only `--headless` was
-ever tested, and the windowed path was badly broken in a way headless could not
-show. See the bugs below.
+There is only one mode now that the operator window is gone (section 9), and the
+shutdown path is correspondingly simpler: `beginShutdown()` quits the message
+loop directly rather than closing a window first. Re-verified after that change.
 
 This is not cosmetic. Killing an earlier build without a handler left a stale
 source advertised on the network, and the next run was undiscoverable for
@@ -215,11 +214,38 @@ Two things this turned up, both now in the API docs:
 **DeckLink key + fill is implemented but unverified**, like the rest of the
 DeckLink backend — see below.
 
-## 9. The operator window — verified
+## 9. The operator window — removed in v0.5.3
 
-The window opens, shows the control page, and its preview updates live. Verified
-by the window server reporting a top-level window owned by the process, and by
-capturing the page.
+This section used to claim the window opened and showed the control page. That
+claim did not survive contact with a released build: on macOS the window came up
+correctly sized, titled `WebLinked - Chromium`, and **completely empty**, with
+the GPU process segfaulting on startup every time.
+
+The cause is structural rather than a bug to patch. Every source browser here is
+windowless, windowless rendering *always* uses Alloy runtime style, and a
+windowed browser defaults to Chrome style — so the process ran two runtime styles
+at once. Measured, not assumed: a headless run crashes the GPU process zero
+times, a windowed run crashes it every time.
+
+```
+grep -c "GPU process exited unexpectedly" headless.log   # 0
+grep -c "GPU process exited unexpectedly" windowed.log   # 1
+```
+
+It also never had a menu bar — `NSApp.mainMenu` was never set, so the
+application menu had zero items, ⌘Q did nothing, and there was no way to quit it
+from the UI.
+
+Forcing `CEF_RUNTIME_STYLE_ALLOY` on the window would likely have fixed the
+compositor, but the window was the wrong shape for the product regardless: this
+process is a render host and a control server, and the operator's view is a
+browser. It is now removed outright, and the tray launcher in `launcher/` is what
+puts that view on a desktop. `--headless` is accepted and ignored.
+
+Verified after removal: no top-level window exists (the window server reports
+zero for the process), the GPU process no longer crashes, the control page still
+serves, and `SIGTERM` still produces `shutdown requested by signal` →
+`WebLinked exiting cleanly`.
 
 ## 10. Popups and new tabs — verified
 

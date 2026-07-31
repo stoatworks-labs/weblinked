@@ -4,10 +4,11 @@
 # is no config file to patch and no environment to set. That is the simplest of
 # av-launcher's three modes and the one this app fits.
 #
-# --headless is deliberate. WebLinked opens its own operator window — the same
-# control page the launcher's "Launch GUI" button opens — and under the tray
-# that window would be a second, unmanaged copy of the UI with its own
-# lifecycle. The tray owns the process; the browser owns the view.
+# --headless is now a no-op and is passed only so this config keeps working
+# against older builds. WebLinked used to open an operator window of its own —
+# a second, unmanaged copy of the UI with its own lifecycle — and that window
+# has been removed outright: the tray owns the process, the browser owns the
+# view. Nothing here depends on the flag doing anything.
 #
 # --no-settings is deliberately NOT passed: the settings file is how an
 # operator's outputs survive a restart, and the launcher supplies only the bind
