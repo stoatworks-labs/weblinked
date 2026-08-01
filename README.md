@@ -73,16 +73,16 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 ## Download
 
-**[v0.6.0](https://github.com/stoatworks-labs/weblinked/releases/tag/v0.6.0)** — prebuilt for macOS, Windows and Linux. Pick your platform:
+**[v0.7.0](https://github.com/stoatworks-labs/weblinked/releases/tag/v0.7.0)** — prebuilt for macOS, Windows and Linux. Pick your platform:
 
 <details>
 <summary><b>macOS</b> — Apple Silicon</summary>
 
 | Build | Download | Size |
 | --- | --- | --- |
-| Apple Silicon · .dmg disk image | [`weblinked-0.6.0-macos-arm64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/weblinked-0.6.0-macos-arm64.dmg) | 159 MB |
-| Apple Silicon · .dmg disk image | [`WebLinked.Launcher_0.6.0_aarch64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/WebLinked.Launcher_0.6.0_aarch64.dmg) | 3.8 MB |
-| Apple Silicon · .pkg installer | [`weblinked-0.6.0-macos-arm64.pkg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/weblinked-0.6.0-macos-arm64.pkg) | 142 MB |
+| Apple Silicon · .dmg disk image | [`weblinked-0.7.0-macos-arm64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-macos-arm64.dmg) | 159 MB |
+| Apple Silicon · .dmg disk image | [`WebLinked.Launcher_0.7.0_aarch64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/WebLinked.Launcher_0.7.0_aarch64.dmg) | 145 MB |
+| Apple Silicon · .pkg installer | [`weblinked-0.7.0-macos-arm64.pkg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-macos-arm64.pkg) | 142 MB |
 
 </details>
 
@@ -91,9 +91,9 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 | Build | Download | Size |
 | --- | --- | --- |
-| x64 · .exe installer | [`weblinked-0.6.0-windows-x86_64-setup.exe`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/weblinked-0.6.0-windows-x86_64-setup.exe) | 133 MB |
-| x64 · .exe installer | [`WebLinked.Launcher_0.6.0_x64-setup.exe`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/WebLinked.Launcher_0.6.0_x64-setup.exe) | 2.5 MB |
-| x64 · .zip archive | [`weblinked-0.6.0-windows-x86_64.zip`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/weblinked-0.6.0-windows-x86_64.zip) | 178 MB |
+| x64 · .exe installer | [`weblinked-0.7.0-windows-x86_64-setup.exe`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-windows-x86_64-setup.exe) | 133 MB |
+| x64 · .exe installer | [`WebLinked.Launcher_0.7.0_x64-setup.exe`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/WebLinked.Launcher_0.7.0_x64-setup.exe) | 182 MB |
+| x64 · .zip archive | [`weblinked-0.7.0-windows-x86_64.zip`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-windows-x86_64.zip) | 179 MB |
 
 </details>
 
@@ -102,11 +102,16 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 | Build | Download | Size |
 | --- | --- | --- |
-| x64 · .deb package (Debian/Ubuntu) | [`WebLinked.Launcher_0.6.0_amd64.deb`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/WebLinked.Launcher_0.6.0_amd64.deb) | 5.1 MB |
-| x64 · .rpm package (Fedora/RHEL) | [`WebLinked.Launcher-0.6.0-1.x86_64.rpm`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/WebLinked.Launcher-0.6.0-1.x86_64.rpm) | 5.1 MB |
-| x64 · .tar.gz archive | [`weblinked-0.6.0-linux-x86_64.tar.gz`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.6.0/weblinked-0.6.0-linux-x86_64.tar.gz) | 356 MB |
+| x64 · .deb package (Debian/Ubuntu) | [`WebLinked.Launcher_0.7.0_amd64.deb`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/WebLinked.Launcher_0.7.0_amd64.deb) | 359 MB |
+| x64 · .rpm package (Fedora/RHEL) | [`WebLinked.Launcher-0.7.0-1.x86_64.rpm`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/WebLinked.Launcher-0.7.0-1.x86_64.rpm) | 374 MB |
+| x64 · .tar.gz archive | [`weblinked-0.7.0-linux-x86_64.tar.gz`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-linux-x86_64.tar.gz) | 356 MB |
 
 </details>
+
+Also in this release:
+
+- [`WebLinked.app.zip`](https://github.com/stoatworks-labs/weblinked/releases/latest/download/WebLinked.app.zip) — Source tarball, 142 MB
+- [`WebLinked.zip`](https://github.com/stoatworks-labs/weblinked/releases/latest/download/WebLinked.zip) — Source tarball, 356 MB
 
 All builds, checksums and release notes: [github.com/stoatworks-labs/weblinked/releases](https://github.com/stoatworks-labs/weblinked/releases).
 
