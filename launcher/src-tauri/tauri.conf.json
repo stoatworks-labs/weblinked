@@ -43,6 +43,13 @@
     "resources": [
       "launcher.toml",
       "resources/*"
-    ]
+    ],
+    "linux": {
+      "rpm": {
+        "compression": {
+          "type": "none"
+        }
+      }
+    }
   }
 }
