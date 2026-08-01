@@ -418,6 +418,19 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Drop the launcher's embed archives
+        # download-artifact takes *every* artifact when given no name, and the
+        # upload below globs artifacts/**/*, so the archives that exist only to
+        # feed the launcher job would otherwise be published as release assets.
+        # Naming them separately was not enough on its own — v0.7.0 shipped
+        # WebLinked.app.zip and WebLinked.zip next to the real installers, as
+        # 135 MB and 339 MB of duplicate nobody asked for.
+        run: |
+          rm -rf artifacts/weblinked-embed-*
+          echo "publishing:"
+          find artifacts -type f -printf '  %f\n' | sort
+
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*
@@ -430,22 +443,26 @@ jobs:
 
             **Linux** — portable `.tar.gz`, x86_64.
 
-            **WebLinked Launcher** — optional tray app (`WebLinked Launcher_*`). It starts and
-            stops WebLinked, lets you pick which network interface the control page binds to,
-            and opens it in your browser. WebLinked itself has no window: it is a render host
-            and a control server, and the control page is the whole UI. The launcher expects
-            WebLinked already installed — macOS `/Applications`, Windows `C:\Program Files\
-            WebLinked`, Linux on `PATH`.
+            **WebLinked Launcher** — tray app (`WebLinked Launcher_*`), and now the easiest
+            way to install. It **carries WebLinked inside it**, unpacking it on first run, so
+            this one download is all you need; the separate WebLinked installers above are for
+            a rack or CLI machine where a tray is no use. It starts and stops WebLinked, lets
+            you pick which network interface the control page binds to, and opens it in your
+            browser. WebLinked itself opens no window for an operator: it is a render host and
+            a control server, and the control page it serves is the whole UI.
 
-            **Output backends in these builds:** NDI, OMT and the preview. The NDI SDK headers
-            are vendored and the runtime is bundled into the artefact, so NDI works on a machine
-            that has never installed it. DeckLink and AJA are located with `find_package` and
-            silently disabled when their SDKs are absent, which they are on hosted runners —
-            build locally with those SDKs installed to get SDI out. See docs/02-building.md.
+            **Output backends in these builds:** NDI, OMT, the fullscreen screen output and the
+            preview. The NDI SDK headers are vendored and the runtime is bundled into the
+            artefact, so NDI works on a machine that has never installed it. DeckLink and AJA
+            are located with `find_package` and silently disabled when their SDKs are absent,
+            which they are on hosted runners — build locally with those SDKs installed to get
+            SDI out. See docs/02-building.md.
 
-            Verification status is in docs/04-verification.md: NDI has been confirmed
-            end-to-end against a real receiver; DeckLink, AJA and OMT compile against the real
-            SDKs but have never been run against hardware.
+            Verification status is in docs/04-verification.md, which is the authority: NDI is
+            confirmed end-to-end against a real receiver, DeckLink against a real Duo 2, and the
+            screen output across two displays on the author's Mac. AJA and OMT compile against
+            the real SDKs and have never met hardware or a receiver, and the screen output's
+            Windows and Linux backends have never been run.
 
             Builds are unsigned. On macOS, after installing:
 
