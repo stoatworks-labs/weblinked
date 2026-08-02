@@ -316,6 +316,21 @@ who can reach the port can change what is on air.
 - [launcher/README.md](launcher/README.md) — the menu-bar tray launcher
 - [AGENTS.md](AGENTS.md) — orientation for an AI assistant or a new contributor
 
+## Control it from Companion
+
+[**companion-module-weblinked**](https://github.com/stoatworks-labs/companion-module-weblinked) is a [Bitfocus Companion](https://bitfocus.io/companion) connection module for this app.
+
+Navigate, reload, **run JavaScript in the page**, mute, change format, and
+enable or disable any output — plus the pacing and receiver numbers that say
+whether the graphic is actually going out.
+
+It uses the HTTP API rather than OSC, because OSC here has no feedback path: a
+button could act but never light. If you only need to fire buttons, the generic
+OSC module works fine — see [docs/03-control-api.md](docs/03-control-api.md).
+
+It is not in the official Companion module store — install it via
+**Settings → Developer modules path**.
+
 ## Licence
 
 MIT — see [LICENSE](LICENSE).
