@@ -7,6 +7,7 @@
 #include <fstream>
 #include <sstream>
 
+#include "control/about_assets.h"
 #include "control/web_assets.h"
 #include "core/json.h"
 #include "core/settings_store.h"
@@ -217,6 +218,15 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
   if (path == "/" || path == "/index.html") {
     response.contentType = "text/html; charset=utf-8";
     response.body = assets::kControlPage;
+    return;
+  }
+
+  // The About dialog, compiled in for the same reason the control page is: this
+  // tool must be able to open its own front end with no network beyond the box
+  // it runs on. See about_assets.h, generated from stoatworks-backend/about.
+  if (path == "/about.js" || path == "/about-data.js") {
+    response.contentType = "application/javascript; charset=utf-8";
+    response.body = path == "/about.js" ? assets::kAboutScript : assets::kAboutData;
     return;
   }
 
@@ -479,6 +489,45 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
     return;
   }
 
+  if (path == "/api/output/background") {
+    const std::string name = body["name"].asString();
+    if (name.empty()) {
+      response.error(400,
+                     "expected {\"name\": \"...\", \"background\": "
+                     "\"transparent\"|\"colour\", \"colour\": \"#00b140\"}");
+      return;
+    }
+    // Parsed through OutputConfig so the endpoint, the settings file and the
+    // update path cannot drift on what counts as a colour.
+    json::Value shim = json::Value::object();
+    shim.set("kind", json::Value(std::string("preview")));
+    shim.set("background", body["background"]);
+    if (!body["colour"].isNull()) {
+      shim.set("background_colour", body["colour"]);
+    } else if (!body["color"].isNull()) {
+      shim.set("background_colour", body["color"]);
+    }
+    std::string parseError;
+    const auto parsed = OutputConfig::fromJson(shim, &parseError);
+    if (!parsed) {
+      response.error(400, parseError);
+      return;
+    }
+    std::string error;
+    bool applied = true;
+    if (!withRequestSource(request, response, [&](Engine& engine) {
+          applied = engine.setOutputBackground(name, parsed->background, error);
+        })) {
+      return;
+    }
+    if (!applied) {
+      response.error(404, error);
+      return;
+    }
+    ok(response);
+    return;
+  }
+
   if (path == "/api/output/add") {
     OutputSpec spec;
     spec.kind = body["kind"].asString();
@@ -491,6 +540,15 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
       response.error(400, "expected {\"kind\": \"ndi\", \"name\": \"...\"}");
       return;
     }
+    // Through OutputConfig rather than by hand, so add, update and the settings
+    // file cannot disagree about what counts as a colour.
+    std::string backgroundError;
+    const auto parsed = OutputConfig::fromJson(body, &backgroundError);
+    if (!parsed) {
+      response.error(400, backgroundError);
+      return;
+    }
+    spec.background = parsed->background;
     if (spec.name.empty()) {
       spec.name = spec.kind;
     }

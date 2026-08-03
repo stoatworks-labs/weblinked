@@ -57,6 +57,10 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--off); }
   .dot.on { background: var(--live); }
   .dot.bad { background: var(--bad); }
+  .swatch {
+    display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+    vertical-align: baseline; border: 1px solid var(--line);
+  }
   /* The source strip. Each chip carries its own thumbnail, because the id and
      the raster are not enough to tell two scoreboards apart at a glance — the
      picture is. */
@@ -175,6 +179,12 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
     font: inherit;
   }
   .field { margin-bottom: 10px; }
+  /* A colour well the same height as the selects beside it — the UA default is
+     a small swatch that sits oddly in a grid row of full-width controls. */
+  input[type=color] {
+    width: 100%; height: 33px; padding: 2px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 5px; cursor: pointer;
+  }
   .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
   .check {
     display: flex; align-items: center; gap: 6px; color: var(--text);
@@ -218,6 +228,9 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
     <button data-view="control" class="on">Control</button>
     <button data-view="settings">Settings</button>
     <button data-view="diagnostics">Diagnostics</button>
+    <!-- Opens the shared About dialog; about.js delegates this attribute from
+         the document, so the script below wires up no handler for it. -->
+    <button type="button" data-stoatworks-about>About</button>
   </nav>
   <span class="spacer"></span>
   <span class="pill"><span class="dot" id="engine-dot"></span><span id="engine-text">connecting</span></span>
@@ -584,6 +597,18 @@ function errorHtml(text) {
     url => '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + '</a>');
 }
 
+// A dot in the output's background colour, so a feed that has been left on
+// green is obvious from the monitor view rather than only from its editor.
+// The hex is re-checked here before it reaches a style attribute: it arrives
+// from the engine, which builds it from three bytes, but a value going into
+// markup should never be trusted on the strength of where it came from.
+function backgroundSwatch(output) {
+  if (output.background !== 'colour') return '';
+  const colour = output.background_colour || '';
+  if (!/^#[0-9a-f]{6}$/i.test(colour)) return '';
+  return ' &middot; <span class="swatch" style="background:' + colour + '"></span>';
+}
+
 function renderOutputs(outputs) {
   const body = document.querySelector('#outputs tbody');
   body.innerHTML = '';
@@ -596,7 +621,8 @@ function renderOutputs(outputs) {
       '" style="display:inline-block;margin-right:6px"></span>' +
       output.name + '<div class="kind">' + output.kind +
       (output.device ? ' &middot; ' + output.device : '') +
-      (output.pixel_format ? ' &middot; ' + output.pixel_format : '') + '</div>' +
+      (output.pixel_format ? ' &middot; ' + output.pixel_format : '') +
+      backgroundSwatch(output) + '</div>' +
       (output.error ? '<div class="err">' + errorHtml(output.error) + '</div>' : '');
     row.appendChild(nameCell);
 
@@ -708,6 +734,17 @@ function outputEditor(output, isNew) {
           '<option value="fill">Fill (crop)</option>' +
           '<option value="stretch">Stretch</option>' +
         '</select></div>' +
+      // Not in OUTPUT_FIELDS: the background is composited by the engine before
+      // a backend sees the frame, so it applies to every kind including the
+      // preview — which is the point, since the preview is how you check it.
+      '<div class="field"><label>Background</label>' +
+        '<select data-f="background">' +
+          '<option value="transparent">Transparent</option>' +
+          '<option value="colour">Solid colour</option>' +
+        '</select></div>' +
+      '<div class="field" data-bg><label>Colour</label>' +
+        '<input type="color" data-f="background_colour" value="' +
+        ((output.background_colour || '#00b140').replace(/"/g, '')) + '"></div>' +
     '</div>' +
     '<p class="hint" data-when="display">' +
       'Paced by the display, not by the video format &mdash; a 50 Hz page on a ' +
@@ -718,6 +755,11 @@ function outputEditor(output, isNew) {
       'separate SDI connectors. Overlay composites over the input the card is ' +
       'already receiving, using its internal keyer. Never run against hardware ' +
       '&mdash; see docs/04-verification.md.</p>' +
+    '<p class="hint" data-bg>' +
+      'The page is composited over this colour on its way to this output only, ' +
+      'and leaves fully opaque &mdash; for a downstream chroma keyer. Leave it ' +
+      'transparent to send the key itself, which is what a keyed SDI fill or an ' +
+      'NDI feed with alpha wants.</p>' +
     '<label class="check" data-when="alpha">' +
       '<input type="checkbox" data-f="alpha"' + (options.alpha ? ' checked' : '') + '>' +
       'Carry alpha (BGRA, straight)</label>' +
@@ -731,14 +773,22 @@ function outputEditor(output, isNew) {
   const field = (name) => node.querySelector('[data-f="' + name + '"]');
   field('keying').value = options.keying || '';
   field('scaling').value = options.scaling || 'fit';
+  field('background').value = output.background === 'colour' ? 'colour' : 'transparent';
 
   const applyVisibility = () => {
     const shown = OUTPUT_FIELDS[field('kind').value] || [];
     for (const element of node.querySelectorAll('[data-when]')) {
       element.hidden = !shown.includes(element.dataset.when);
     }
+    // Separate from the kind-driven fields above: the colour well follows the
+    // background select, not the backend.
+    const opaque = field('background').value === 'colour';
+    for (const element of node.querySelectorAll('[data-bg]')) {
+      element.hidden = !opaque;
+    }
   };
   field('kind').onchange = applyVisibility;
+  field('background').onchange = applyVisibility;
   applyVisibility();
 
   const collect = () => {
@@ -749,6 +799,10 @@ function outputEditor(output, isNew) {
       name: field('name').value.trim() || kindValue,
       device_index: shown.includes('device') ? Number(field('device_index').value) : 0,
       options: {},
+      background: field('background').value,
+      // Always sent, transparent or not, so toggling the background off and on
+      // again comes back to the colour that was picked rather than the default.
+      background_colour: field('background_colour').value,
     };
     if (shown.includes('alpha') && field('alpha').checked) body.options.alpha = true;
     if (shown.includes('keying') && field('keying').value) {
@@ -826,6 +880,8 @@ document.getElementById('apply-settings').onclick = async () => {
       name: output.name,
       device_index: output.device_index || 0,
       options: output.options || {},
+      background: output.background || 'transparent',
+      background_colour: output.background_colour || '#00b140',
     })),
   };
   if (await post('/api/settings/apply', { source })) {
@@ -1425,6 +1481,14 @@ setInterval(pullSources, 1000);
 // costs nothing while somebody is watching the preview.
 setInterval(pullLog, 2000);
 </script>
+<!--
+  About dialog. Served by this binary from control/about_assets.h, which is
+  generated from stoatworks-backend/about by its sync-about.py - edit it there
+  and re-run the sync, never here. Compiled in for the same reason this page is:
+  the tool must open its own front end with no network beyond this box.
+-->
+<script src="/about-data.js" defer></script>
+<script src="/about.js" defer></script>
 </body>
 </html>
 )WEBLINKED";
