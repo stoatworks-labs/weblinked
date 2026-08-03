@@ -108,11 +108,6 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 </details>
 
-Also in this release:
-
-- [`WebLinked.app.zip`](https://github.com/stoatworks-labs/weblinked/releases/latest/download/WebLinked.app.zip) — Source tarball, 142 MB
-- [`WebLinked.zip`](https://github.com/stoatworks-labs/weblinked/releases/latest/download/WebLinked.zip) — Source tarball, 356 MB
-
 All builds, checksums and release notes: [github.com/stoatworks-labs/weblinked/releases](https://github.com/stoatworks-labs/weblinked/releases).
 
 <!-- downloads:end -->
@@ -142,6 +137,11 @@ All builds, checksums and release notes: [github.com/stoatworks-labs/weblinked/r
   its own input). Chromium composites premultiplied and every destination here
   expects straight alpha, so WebLinked un-premultiplies — without that, soft
   edges, drop shadows and fades all render too dark on a keyer.
+- **A background colour, per output.** The same page can leave twice: as a key
+  down an SDI keyer or an NDI feed with alpha, and composited over flat green
+  for a switcher that only has a chroma keyer. The colour is chosen per output
+  and toggles against transparent from the settings page, so one browser paint
+  feeds both. Changing it does not restart the output.
 - **An interactive preview.** The control page's preview forwards clicks,
   scrolling and typing to the live page, which is the only practical way to
   dismiss a cookie banner, close a modal or sign in on a machine whose browser
