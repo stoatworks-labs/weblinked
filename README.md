@@ -1,5 +1,14 @@
 # WebLinked
 
+> **AI-assisted project.** This codebase was created with [Claude](https://claude.com/claude-code)
+> (Anthropic), directed and reviewed by a human author. NDI is verified end to
+> end including alpha, and DeckLink against a real Duo 2 with colour confirmed by
+> an SDI loopback capture. **OMT and AJA have never been tested against a
+> receiver or a card**, and Windows and Linux are written for but have never been
+> run. [Status, honestly](#status-honestly) says which is which, and
+> [docs/04-verification.md](docs/04-verification.md) records exactly what was
+> measured and how.
+
 **A URL in. SDI and video-over-IP out.**
 
 WebLinked renders a web page offscreen at a broadcast raster and frame rate, then
@@ -353,6 +362,5 @@ AJA Video Systems.
 
 ---
 
-*Built with AI assistance (Claude). The NDI path is verified against real
-software; the SDI and OMT paths have never touched hardware or a receiver.
-Review it before you trust it with a show.*
+*Review it before you trust it with a show — [Status, honestly](#status-honestly)
+is the list of what has and has not been measured.*
