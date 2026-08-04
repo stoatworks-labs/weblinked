@@ -35,6 +35,7 @@ bool Engine::start(const Config& config, std::string& error) {
   uyvyPool_ = FramePool::create(config.format, PixelFormat::kUYVY, 4);
   blackPool_ = FramePool::create(config.format, PixelFormat::kBGRA, 2);
   straightPool_ = FramePool::create(config.format, PixelFormat::kBGRA, 4);
+  backgroundPool_ = FramePool::create(config.format, PixelFormat::kBGRA, 4);
   blackFrame_ = blackPool_->acquire();
   fillBlackBgra(blackFrame_->data(), blackFrame_->rowBytes(), config.format.width,
                 config.format.height);
@@ -177,6 +178,69 @@ const VideoFrame* Engine::unpremultiplied(const VideoFramePtr& source) {
   return straightScratch_.get();
 }
 
+Engine::BackgroundVariant& Engine::backgroundVariant(uint32_t colour) {
+  const auto it = std::find_if(backgrounds_.begin(), backgrounds_.end(),
+                               [&](const BackgroundVariant& variant) {
+                                 return variant.colour == colour;
+                               });
+  if (it != backgrounds_.end()) {
+    return *it;
+  }
+  BackgroundVariant variant;
+  variant.colour = colour;
+  backgrounds_.push_back(std::move(variant));
+  return backgrounds_.back();
+}
+
+const VideoFrame* Engine::compositedBgra(const VideoFramePtr& source,
+                                         uint32_t colour, int64_t tick) {
+  // Same guard as frameInFormat and unpremultiplied: the pool is sized for the
+  // current raster, and a paint still in flight from before a format change is
+  // the wrong shape.
+  if (!(backgroundPool_->format() == source->format())) {
+    return nullptr;
+  }
+  BackgroundVariant& variant = backgroundVariant(colour);
+  if (variant.bgraTick == tick && variant.bgra) {
+    return variant.bgra.get();
+  }
+  if (!variant.bgra || !(variant.bgra->format() == source->format())) {
+    variant.bgra = backgroundPool_->acquire();
+  }
+  compositeOverBgra(source->data(), source->rowBytes(), variant.bgra->data(),
+                    variant.bgra->rowBytes(), source->format().width,
+                    source->format().height,
+                    static_cast<uint8_t>(colour & 0xff),
+                    static_cast<uint8_t>((colour >> 8) & 0xff),
+                    static_cast<uint8_t>((colour >> 16) & 0xff));
+  variant.bgra->setSequence(source->sequence());
+  variant.bgra->setCaptureNanos(source->captureNanos());
+  variant.bgraTick = tick;
+  return variant.bgra.get();
+}
+
+const VideoFrame* Engine::compositedUyvy(const VideoFramePtr& source,
+                                         uint32_t colour, int64_t tick) {
+  const VideoFrame* bgra = compositedBgra(source, colour, tick);
+  if (bgra == nullptr) {
+    return nullptr;
+  }
+  BackgroundVariant& variant = backgroundVariant(colour);
+  if (variant.uyvyTick == tick && variant.uyvy) {
+    return variant.uyvy.get();
+  }
+  if (!variant.uyvy || !(variant.uyvy->format() == bgra->format())) {
+    variant.uyvy = uyvyPool_->acquire();
+  }
+  bgraToUyvy(bgra->data(), bgra->rowBytes(), variant.uyvy->data(),
+             variant.uyvy->rowBytes(), bgra->format().width,
+             bgra->format().height, matrix_.load());
+  variant.uyvy->setSequence(bgra->sequence());
+  variant.uyvy->setCaptureNanos(bgra->captureNanos());
+  variant.uyvyTick = tick;
+  return variant.uyvy.get();
+}
+
 void Engine::pauseClock() {
   std::unique_lock<std::mutex> lock(pauseMutex_);
   pauseRequested_ = true;
@@ -292,18 +356,37 @@ void Engine::clockLoop() {
 
     // Convert lazily: only the formats an enabled output actually asked for,
     // and each of them at most once however many outputs want it.
+    //
+    // An output compositing over a background needs neither of these: the
+    // composite is opaque by definition, which makes un-premultiplying a no-op
+    // and gives the UYVY converter a different source frame to work from.
     bool needUyvy = false;
     bool needStraight = false;
+    backgroundKeys_.clear();
     for (const auto& entry : outputs_) {
       if (!entry.enabled || entry.output == nullptr || !entry.output->isRunning()) {
         continue;
       }
-      if (entry.output->pixelFormat() == PixelFormat::kUYVY) {
+      if (entry.spec.background.opaque) {
+        const uint32_t key = entry.spec.background.packed();
+        if (std::find(backgroundKeys_.begin(), backgroundKeys_.end(), key) ==
+            backgroundKeys_.end()) {
+          backgroundKeys_.push_back(key);
+        }
+      } else if (entry.output->pixelFormat() == PixelFormat::kUYVY) {
         needUyvy = true;
       } else if (entry.output->wantsStraightAlpha()) {
         needStraight = true;
       }
     }
+
+    // Forget the buffers for any colour nothing wants any more. Cheap — the
+    // list is one or two entries — and it is what stops a colour picker being
+    // dragged from parking a raster-sized pair of frames per shade it passed.
+    std::erase_if(backgrounds_, [this](const BackgroundVariant& variant) {
+      return std::find(backgroundKeys_.begin(), backgroundKeys_.end(),
+                       variant.colour) == backgroundKeys_.end();
+    });
 
     const VideoFrame* uyvy =
         needUyvy ? frameInFormat(frame, PixelFormat::kUYVY) : nullptr;
@@ -321,7 +404,15 @@ void Engine::clockLoop() {
         continue;
       }
       const VideoFrame* payload = frame.get();
-      if (entry.output->pixelFormat() == PixelFormat::kUYVY) {
+      if (entry.spec.background.opaque) {
+        // The composite comes out opaque, so a keyed output gets a solid key
+        // and a straight-alpha one needs no un-premultiplying: at alpha 255 the
+        // two representations are the same bytes.
+        const uint32_t colour = entry.spec.background.packed();
+        payload = entry.output->pixelFormat() == PixelFormat::kUYVY
+                      ? compositedUyvy(frame, colour, tick)
+                      : compositedBgra(frame, colour, tick);
+      } else if (entry.output->pixelFormat() == PixelFormat::kUYVY) {
         payload = uyvy;
       } else if (entry.output->wantsStraightAlpha()) {
         payload = straight;
@@ -467,9 +558,12 @@ bool Engine::applyConfiguration(const SourceConfig& config, std::string& error) 
                                        return candidate.name == spec.name;
                                      });
       if (same->kind == spec.kind && same->deviceIndex == spec.deviceIndex &&
+          same->background == spec.background &&
           same->options.serialize() == spec.options.serialize()) {
         continue;
       }
+      // A background-only difference falls through to updateOutput, which
+      // recognises it and assigns rather than reopening the device.
       if (!updateOutput(spec.name, spec, outputError)) {
         note(outputError);
       }
@@ -554,6 +648,23 @@ bool Engine::addOutput(const OutputSpec& spec, std::string& error) {
   return true;
 }
 
+bool Engine::setOutputBackground(const std::string& name,
+                                 const OutputBackground& background,
+                                 std::string& error) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (auto& entry : outputs_) {
+    if (entry.spec.name != name) {
+      continue;
+    }
+    entry.spec.background = background;
+    diag::info("output '%s' background now %s", name.c_str(),
+               background.opaque ? background.toHex().c_str() : "transparent");
+    return true;
+  }
+  error = "no output named '" + name + "'";
+  return false;
+}
+
 bool Engine::updateOutput(const std::string& name, const OutputSpec& spec,
                           std::string& error) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -564,6 +675,26 @@ bool Engine::updateOutput(const std::string& name, const OutputSpec& spec,
   if (it == outputs_.end()) {
     error = "no output named '" + name + "'";
     return false;
+  }
+
+  // Nothing the device cares about has moved. Assigning the background and
+  // returning is not an optimisation: reopening a DeckLink to change a colour
+  // the engine composites in software would drop frames on air, and pressing
+  // Apply having changed nothing at all would do the same.
+  //
+  // Only for an output that is actually running, though — on a broken one,
+  // Apply is how an operator retries a card that was not plugged in yet, and
+  // that has to keep reaching the code below.
+  if (it->output != nullptr && it->output->isRunning() && spec.name == name &&
+      spec.kind == it->spec.kind && spec.deviceIndex == it->spec.deviceIndex &&
+      spec.options.serialize() == it->spec.options.serialize()) {
+    if (it->spec.background != spec.background) {
+      diag::info("output '%s' background now %s", name.c_str(),
+                 spec.background.opaque ? spec.background.toHex().c_str()
+                                        : "transparent");
+    }
+    it->spec.background = spec.background;
+    return true;
   }
   if (spec.name != name) {
     for (const auto& entry : outputs_) {
@@ -664,8 +795,13 @@ bool Engine::setFormat(const VideoFormat& format, std::string& error) {
   uyvyPool_ = FramePool::create(format, PixelFormat::kUYVY, 4);
   blackPool_ = FramePool::create(format, PixelFormat::kBGRA, 2);
   straightPool_ = FramePool::create(format, PixelFormat::kBGRA, 4);
+  backgroundPool_ = FramePool::create(format, PixelFormat::kBGRA, 4);
   uyvyScratch_.reset();
   straightScratch_.reset();
+  // Every composited frame belongs to the old raster. Dropping the variants
+  // rather than the buffers inside them keeps the "wrong shape" case impossible
+  // instead of merely guarded.
+  backgrounds_.clear();
   blackFrame_ = blackPool_->acquire();
   fillBlackBgra(blackFrame_->data(), blackFrame_->rowBytes(), format.width,
                 format.height);
@@ -760,6 +896,12 @@ json::Value Engine::state() const {
       // without keeping a second copy of what it asked for.
       value.set("device_index", json::Value(entry.spec.deviceIndex));
       value.set("options", entry.spec.options);
+      value.set("background", json::Value(std::string(
+                                  entry.spec.background.opaque ? "colour"
+                                                               : "transparent")));
+      // Reported even while transparent, so the editor's colour well shows what
+      // turning the background on would give rather than resetting to green.
+      value.set("background_colour", json::Value(entry.spec.background.toHex()));
       if (!entry.lastError.empty()) {
         value.set("error", json::Value(entry.lastError));
       }

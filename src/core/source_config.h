@@ -10,6 +10,53 @@
 
 namespace weblinked {
 
+/// What fills the parts of the raster the page has not painted, on the way to
+/// one output.
+///
+/// Per output rather than per source, because the same page usually wants to
+/// leave here twice: transparent down an SDI keyer or an NDI feed with alpha,
+/// and composited over a flat colour for a switcher that only has a chroma
+/// keyer. The browser is left painting transparent either way — the composite
+/// happens in the frame path, so one paint still serves every output.
+///
+/// The colour is kept even while `opaque` is false, so an operator who toggles
+/// back to transparent to check a key does not lose the green they picked.
+struct OutputBackground {
+  /// False keeps the page's own transparency, which is what every output did
+  /// before this existed and remains the default.
+  bool opaque = false;
+  /// Chroma green (#00b140) — the value most switchers' keyers are set up for,
+  /// so an operator who turns the background on and changes nothing else gets
+  /// something usable rather than black.
+  uint8_t red = 0x00;
+  uint8_t green = 0xb1;
+  uint8_t blue = 0x40;
+
+  bool operator==(const OutputBackground& other) const {
+    return opaque == other.opaque && red == other.red && green == other.green &&
+           blue == other.blue;
+  }
+  bool operator!=(const OutputBackground& other) const {
+    return !(*this == other);
+  }
+
+  /// 0x00RRGGBB. The engine keys its composited frames on this, so two outputs
+  /// asking for the same green share one composite.
+  uint32_t packed() const {
+    return (static_cast<uint32_t>(red) << 16) |
+           (static_cast<uint32_t>(green) << 8) | blue;
+  }
+
+  /// "#rrggbb", lower case — what an <input type="color"> both emits and
+  /// expects, so the control page needs no conversion of its own.
+  std::string toHex() const;
+
+  /// Accepts "#rrggbb" or "rrggbb", either case. Returns false and leaves the
+  /// colour untouched on anything else, so a typo in a settings file does not
+  /// silently turn an output black.
+  bool setHex(const std::string& text);
+};
+
 /// How a single output is configured, as pure data.
 ///
 /// Mirrors OutputSpec, which lives in the outputs layer. Kept separate because
@@ -20,6 +67,10 @@ struct OutputConfig {
   std::string name;
   int deviceIndex = 0;
   json::Value options = json::Value::object();
+  /// Not in `options`: `options` is backend-specific and a change to it
+  /// reopens the device, whereas the background is composited by the engine and
+  /// must be changeable on air without dropping a frame.
+  OutputBackground background;
 
   json::Value toJson() const;
   static std::optional<OutputConfig> fromJson(const json::Value& value,

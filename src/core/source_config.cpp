@@ -21,6 +21,53 @@ ColourMatrix colourMatrixFromString(const std::string& text) {
   return ColourMatrix::kAuto;
 }
 
+// --- OutputBackground -------------------------------------------------------
+
+namespace {
+
+int hexDigit(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+}  // namespace
+
+std::string OutputBackground::toHex() const {
+  static const char* kDigits = "0123456789abcdef";
+  std::string out = "#";
+  for (const uint8_t channel : {red, green, blue}) {
+    out += kDigits[channel >> 4];
+    out += kDigits[channel & 0x0f];
+  }
+  return out;
+}
+
+bool OutputBackground::setHex(const std::string& text) {
+  const std::string digits = (!text.empty() && text.front() == '#')
+                                 ? text.substr(1)
+                                 : text;
+  if (digits.size() != 6) {
+    return false;
+  }
+  int channels[3] = {};
+  for (int i = 0; i < 3; ++i) {
+    const int high = hexDigit(digits[static_cast<size_t>(i) * 2]);
+    const int low = hexDigit(digits[static_cast<size_t>(i) * 2 + 1]);
+    if (high < 0 || low < 0) {
+      return false;
+    }
+    channels[i] = high * 16 + low;
+  }
+  // Assigned only once every digit has parsed, so a half-valid string leaves
+  // the previous colour alone rather than producing a mixture of the two.
+  red = static_cast<uint8_t>(channels[0]);
+  green = static_cast<uint8_t>(channels[1]);
+  blue = static_cast<uint8_t>(channels[2]);
+  return true;
+}
+
 // --- OutputConfig -----------------------------------------------------------
 
 json::Value OutputConfig::toJson() const {
@@ -32,6 +79,15 @@ json::Value OutputConfig::toJson() const {
   }
   if (options.isObject() && options.size() > 0) {
     value.set("options", options);
+  }
+  // Written only when it says something: a file that has never heard of
+  // backgrounds parses to transparent, which is what every output did before.
+  // The two are independent so that a chosen colour survives being toggled off.
+  if (background.opaque) {
+    value.set("background", json::Value(std::string("colour")));
+  }
+  if (background.packed() != OutputBackground{}.packed()) {
+    value.set("background_colour", json::Value(background.toHex()));
   }
   return value;
 }
@@ -56,6 +112,31 @@ std::optional<OutputConfig> OutputConfig::fromJson(const json::Value& value,
   out.deviceIndex = value["device_index"].asInt(0);
   if (value["options"].isObject()) {
     out.options = value["options"];
+  }
+
+  // The colour is read first so that "background": "#00b140" — the shorthand
+  // anyone writing this by hand reaches for — can set both at once.
+  if (const std::string colour = value["background_colour"].asString();
+      !colour.empty() && !out.background.setHex(colour)) {
+    if (error != nullptr) {
+      *error = "\"background_colour\" must be #rrggbb, not \"" + colour + "\"";
+    }
+    return std::nullopt;
+  }
+  if (const std::string mode = value["background"].asString(); !mode.empty()) {
+    if (mode == "transparent") {
+      out.background.opaque = false;
+    } else if (mode == "colour" || mode == "color") {
+      out.background.opaque = true;
+    } else if (out.background.setHex(mode)) {
+      out.background.opaque = true;
+    } else {
+      if (error != nullptr) {
+        *error = "\"background\" must be \"transparent\", \"colour\" or "
+                 "#rrggbb, not \"" + mode + "\"";
+      }
+      return std::nullopt;
+    }
   }
   return out;
 }

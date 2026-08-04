@@ -23,7 +23,7 @@ CEF is downloaded on first configure into `third_party/cef/current` (gitignored)
 ## Test
 
 ```bash
-./build/tests/weblinked_tests          # all (74 tests)
+./build/tests/weblinked_tests          # all (89 tests)
 ./build/tests/weblinked_tests uyvy     # substring filter
 ```
 

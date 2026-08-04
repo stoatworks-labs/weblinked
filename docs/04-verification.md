@@ -17,7 +17,7 @@ CEF 150.0.17 / Chromium 150.0.7871.187.
 
 ```bash
 cmake --build build && ./build/tests/weblinked_tests
-# 74 tests, 25063 checks, 0 failures
+# 89 tests, 25225 checks, 0 failures
 ```
 
 The two that carry real weight:
@@ -915,6 +915,81 @@ remains untested is the Tauri glue between them: `resource_dir()` resolving and
 
 **Not verified: a machine that has never seen the source.** Everything above ran
 on the build machine.
+
+---
+
+## 22. Per-output background colour — verified over NDI
+
+The same page leaving one process twice: transparent for a keyer, composited
+over a flat colour for a switcher that only has a chroma keyer. Measured off the
+wire with `ndi_probe --save`, against a reference computed here from the
+definition of the `over` operator rather than from anything in the app.
+
+`tools/alphabars.html` at 1080p50 — opaque red, 50% green, 25% blue, and nothing
+at all — with the background switched at run time through
+`POST /api/output/background`.
+
+Transparent, the baseline, which is what every output did before this existed:
+
+```
+  band          sampled R/G/B     expected R/G/B
+  opaque red     191    0    1      192    0    0
+  50% green        1   96    0        0   96    0
+  25% blue         0    0   48        0    0   48
+  nothing          0    0    0        0    0    0
+```
+
+The same page on the same output, composited over `#00b140`:
+
+```
+  band          sampled R/G/B     expected R/G/B
+  opaque red     191    0    1      192    0    0
+  50% green        0  184   33        0  184   32
+  25% blue         0  133   96        0  133   96
+  nothing          1  177   64        0  177   64
+```
+
+Everything within one code value, which is the 4:2:2 round trip and studio-swing
+quantisation, not the composite. The band that matters most is the last one:
+nothing painted comes back as **exactly `#00b140`**, not a shade off it — a
+keyer set to a nominal green and fed 0x00b03f leaves a fringe round every
+graphic.
+
+**Per output, not per source — verified with two senders at once.** A second NDI
+output added on `#0000ff` while the first stayed on green, both fed by one
+browser paint:
+
+```
+  band          sampled R/G/B     expected R/G/B
+  opaque red     191    0    1      192    0    0
+  50% green        1   96  127        0   96  127
+  25% blue         0    0  239        0    0  239
+  nothing          1    0  255        0    0  255
+```
+
+**Changing it does not restart the output.** The reason it is a field on the spec
+rather than an entry in `options`: nothing in a backend acts on it, so the change
+is an assignment under the lock the clock thread already reads specs under.
+Driving it from the settings page, the sender's own frame counter ran 8923 →
+9751 straight through the change, and the log records the assignment rather than
+a reopen. Reopening a DeckLink to nudge a green would drop frames on air.
+
+**Pacing is unaffected.** 4,687 ticks with three outputs, two of them
+compositing: **0 dropped ticks**. The composite is one pass over the frame with
+a fast path for opaque pixels, and it is cached per colour per tick, so four
+feeds on the same green cost one composite between them.
+
+**The control page.** Asserted from the DOM rather than a screenshot, per the
+`[hidden]` trap in section 13: the colour well and its hint are `display: none`
+while the background is transparent, appear on the toggle, and every editor
+populates from `/api/state`. No console errors.
+
+**Not verified:** the composite reaching a real chroma keyer — no switcher has
+consumed one of these feeds. That it is the right *colour* on the wire is
+measured above; that a given keyer likes it is a question about the keyer.
+DeckLink and AJA were not compiled into this build, so the composite has only
+been measured down the NDI path — the same frame path serves all of them, but
+"the same code" is not "was run".
 
 ---
 

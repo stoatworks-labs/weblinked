@@ -17,7 +17,10 @@ to NDI and OMT over the network. C++20, CMake, CEF. Public repo, MIT.
 The domain in one paragraph: a **page** is rendered offscreen at a **format**
 (raster + exact rational rate + scan type). A **clock** ticks at that rate and
 asks the browser for exactly one paint per tick. Each tick, the newest frame is
-converted at most once per pixel format and handed to every enabled **output**.
+converted at most once per pixel format — and, for outputs that composite over a
+background colour, at most once per colour — and handed to every enabled
+**output**. There is still only ever one paint: a background is a property of an
+output, not of the page.
 The page's audio rides along, sliced into each frame's exact share of samples.
 
 ## 2. The five ideas that explain most of the code
@@ -234,7 +237,9 @@ black the first time the strip was built.
 
 **Verified:** the NDI path end to end, against a real receiver, including colour
 correctness against an independent BT.709 reference, audio cadence at 59.94, and
-pacing over a three-minute soak with zero dropped ticks. The unit tests. The
+pacing over a three-minute soak with zero dropped ticks. Per-output background
+colours, measured off the wire against a reference computed from the `over`
+operator, with two senders on different colours from one browser paint. The unit tests. The
 control surface, OSC included. Clean shutdown. The settings page and its file,
 including that command-line flags override it across a restart. The diagnostics
 endpoints. The popup fix, against both `target="_blank"` and `window.open`, and

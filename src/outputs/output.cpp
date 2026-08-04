@@ -23,6 +23,7 @@ OutputSpec outputSpecFromConfig(const OutputConfig& config) {
   spec.name = config.name;
   spec.deviceIndex = config.deviceIndex;
   spec.options = config.options;
+  spec.background = config.background;
   return spec;
 }
 
@@ -32,6 +33,7 @@ OutputConfig outputConfigFromSpec(const OutputSpec& spec) {
   config.name = spec.name;
   config.deviceIndex = spec.deviceIndex;
   config.options = spec.options;
+  config.background = spec.background;
   return config;
 }
 

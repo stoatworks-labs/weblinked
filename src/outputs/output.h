@@ -4,28 +4,13 @@
 #include <string>
 #include <vector>
 
+#include "core/audio_block.h"
 #include "core/frame.h"
 #include "core/json.h"
 #include "core/source_config.h"
 #include "core/video_format.h"
 
 namespace weblinked {
-
-/// One tick's worth of audio, offered in both layouts.
-///
-/// The engine prepares planar and interleaved once per tick rather than making
-/// each backend convert: NDI and OMT want planar float, DeckLink and AJA want
-/// interleaved integers, and doing it per-output would mean up to four copies
-/// of the same 1920 samples.
-struct AudioBlock {
-  const float* const* planes = nullptr;  ///< [channel][frame]
-  const float* interleaved = nullptr;    ///< frame-major, channels interleaved
-  int frames = 0;
-  int channels = 0;
-  int sampleRate = 0;
-
-  bool valid() const { return frames > 0 && channels > 0 && sampleRate > 0; }
-};
 
 /// What to open. `kind` selects the backend; the rest is backend-specific and
 /// deliberately loose, because a DeckLink needs a device index and keying mode
@@ -35,6 +20,11 @@ struct OutputSpec {
   std::string name;              ///< NDI/OMT source name, or a label for SDI
   int deviceIndex = 0;           ///< DeckLink/AJA device ordinal
   json::Value options = json::Value::object();
+  /// What the page is composited over on the way to this output. Held here
+  /// rather than in `options` because no backend acts on it — the engine does,
+  /// before the frame ever reaches one — and because changing it must not
+  /// reopen the device. See OutputBackground.
+  OutputBackground background;
 
   std::string optionString(const std::string& key, const std::string& fallback = {}) const;
   int optionInt(const std::string& key, int fallback) const;

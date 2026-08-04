@@ -13,6 +13,13 @@ a device index and keying, the preview gets its scale factor. Offering a
 DeckLink keying mode on an NDI output would invite an operator to set something
 that is then silently ignored.
 
+Every output also gets a **background**, because that one is not a backend
+setting: the engine composites before a frame reaches a backend, so it applies
+to all of them including the preview — which is how you check it. Transparent
+keeps the page's own alpha, for a keyed SDI fill or an NDI feed with alpha;
+a colour composites the page over it and leaves fully opaque, for a switcher
+that only has a chroma keyer. Changing it does not restart the output.
+
 Each editor applies on its own. **Apply** replaces that output in place rather
 than removing and re-adding it: if the new settings cannot open — a card already
 claimed, an NDI name in use — the previous output is restarted and the reason is
@@ -55,7 +62,9 @@ somebody would think to back it up.
       "popups": "navigate",
       "outputs": [
         { "kind": "preview", "name": "preview", "options": { "factor": 4 } },
-        { "kind": "ndi", "name": "Graphic", "options": { "alpha": true } }
+        { "kind": "ndi", "name": "Graphic", "options": { "alpha": true } },
+        { "kind": "ndi", "name": "Graphic on green",
+          "background": "colour", "background_colour": "#00b140" }
       ]
     }
   ]
@@ -66,6 +75,13 @@ It is the same shape `GET /api/settings` returns, so a file can be written by
 hand and what the API gives back can be pasted into one. `sources` is an array
 because the configuration format already allows for several pipelines in one
 process; the engine runs the first.
+
+An output with no `background` is transparent, which is what every output did
+before backgrounds existed, so a file written by an older build means exactly
+what it used to. `"background"` also takes a colour on its own —
+`"background": "#00b140"` — which is the short form to write by hand; the
+two-field form exists so the page can keep a chosen colour while the background
+is toggled off.
 
 ### Two things it does on purpose
 

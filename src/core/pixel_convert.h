@@ -60,6 +60,22 @@ void unpremultiplyBgra(const uint8_t* src, int srcStride,
                        uint8_t* dst, int dstStride,
                        int width, int height);
 
+/// Composites premultiplied BGRA over an opaque background colour.
+///
+/// Takes Chromium's buffer as it arrives — premultiplied — because that is
+/// exactly the form the `over` operator wants: `dst = src + bg * (1 - alpha)`,
+/// with no divide and no round trip through straight alpha. Un-premultiplying
+/// first and then compositing would give the same answer having lost precision
+/// on every soft edge on the way.
+///
+/// The result is fully opaque, which is the point: it is what makes a page
+/// usable by a downstream chroma keyer, and what stops a keyed output from
+/// punching a hole where the page has no content.
+void compositeOverBgra(const uint8_t* src, int srcStride,
+                       uint8_t* dst, int dstStride,
+                       int width, int height,
+                       uint8_t blue, uint8_t green, uint8_t red);
+
 /// Fills a BGRA buffer with opaque black. Used to pre-roll outputs before the
 /// first paint arrives, so a card is never handed uninitialised memory.
 void fillBlackBgra(uint8_t* dst, int stride, int width, int height);

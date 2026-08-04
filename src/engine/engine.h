@@ -117,6 +117,17 @@ class Engine {
   bool addOutput(const OutputSpec& spec, std::string& error);
   bool removeOutput(const std::string& name);
 
+  /// Changes what one output composites the page over, without restarting it.
+  ///
+  /// Nothing in a backend acts on the background — the engine composites before
+  /// the frame is handed over — so this is a field assignment under the same
+  /// lock the clock thread reads the specs under, and takes effect on the next
+  /// tick. An operator nudging a green while a keyer watches must not cost a
+  /// dropped frame, which reopening the device would.
+  bool setOutputBackground(const std::string& name,
+                           const OutputBackground& background,
+                           std::string& error);
+
   /// Replaces the output called `name` with `spec`, keeping its position in the
   /// list.
   ///
@@ -179,6 +190,30 @@ class Engine {
   /// Null if the source is the wrong raster, exactly as frameInFormat.
   const VideoFrame* unpremultiplied(const VideoFramePtr& source);
 
+  /// One background colour composited under the page, in whichever pixel
+  /// formats the outputs asking for that colour want.
+  ///
+  /// Keyed by colour rather than held per output so that four SDI feeds on the
+  /// same green cost one composite between them, and computed at most once per
+  /// tick per format — `bgraTick` and `uyvyTick` are what make the second
+  /// output asking a lookup rather than a second pass over eight megabytes.
+  struct BackgroundVariant {
+    uint32_t colour = 0;  ///< 0x00RRGGBB
+    VideoFramePtr bgra;   ///< the composite, opaque
+    VideoFramePtr uyvy;   ///< converted from the composite, on demand
+    int64_t bgraTick = -1;
+    int64_t uyvyTick = -1;
+  };
+
+  /// `source` over `colour`, as opaque BGRA. Null on a raster mismatch, exactly
+  /// as frameInFormat.
+  const VideoFrame* compositedBgra(const VideoFramePtr& source, uint32_t colour,
+                                   int64_t tick);
+  /// The same composite, converted to UYVY.
+  const VideoFrame* compositedUyvy(const VideoFramePtr& source, uint32_t colour,
+                                   int64_t tick);
+  BackgroundVariant& backgroundVariant(uint32_t colour);
+
   struct Entry {
     OutputSpec spec;
     std::unique_ptr<IOutput> output;
@@ -234,9 +269,16 @@ class Engine {
   FramePoolPtr uyvyPool_;
   FramePoolPtr blackPool_;
   FramePoolPtr straightPool_;
+  FramePoolPtr backgroundPool_;
   VideoFramePtr uyvyScratch_;
   VideoFramePtr straightScratch_;
   VideoFramePtr blackFrame_;
+  /// One entry per background colour any enabled output is currently asking
+  /// for. Pruned every tick rather than allowed to grow: an operator dragging a
+  /// colour picker would otherwise leave a raster-sized pair of buffers behind
+  /// for every shade they passed through.
+  std::vector<BackgroundVariant> backgrounds_;
+  std::vector<uint32_t> backgroundKeys_;
   std::vector<float> audioInterleaved_;
   std::vector<std::vector<float>> audioPlanes_;
   std::vector<float*> audioPlanePointers_;

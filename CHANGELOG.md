@@ -30,6 +30,28 @@ Two things, both about WebLinked being usable somewhere other than a terminal.
   (X11 + EGL) are written and have never been run. `state.displays` is new, and
   `weblinked_tests` is 81 tests, up from 74.
 
+- **A background colour, per output.** Each output now composites the page over
+  either its own transparency — unchanged, and still the default — or a flat
+  colour, chosen per output and toggled from the settings page, the settings
+  file, or `POST /api/output/background`. The same graphic can therefore leave
+  one process twice: as a key down an SDI keyer or an NDI feed with alpha, and
+  over green for a switcher that only has a chroma keyer.
+
+  One browser paint still serves every output. The composite happens in the frame
+  path, cached per colour per tick, so four feeds on the same green cost one
+  composite between them; it takes premultiplied BGRA straight from Chromium,
+  which is exactly what the `over` operator wants.
+
+  Changing a background does **not** restart the output — the background is a
+  field on the spec rather than an entry in `options` for that reason, since
+  nothing in a backend acts on it and reopening a DeckLink to nudge a green
+  would drop frames on air. Measured off the wire with `ndi_probe`: every band
+  of `tools/alphabars.html` within one code value of an independently computed
+  reference, and unpainted areas landing on exactly the colour asked for rather
+  than a shade off it. Two senders on different colours from one paint, and 4,687
+  ticks with two of them compositing at zero dropped ticks. See section 22 of
+  `docs/04-verification.md`. `weblinked_tests` is 89 tests, up from 81.
+
 - **The launcher now carries WebLinked inside it**, so the macOS download is one
   install rather than two applied in the right order. It ships as an archive the
   launcher expands to Application Support on first run — never nested, because an

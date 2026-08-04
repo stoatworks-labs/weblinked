@@ -157,6 +157,45 @@ void unpremultiplyBgra(const uint8_t* src, int srcStride,
   }
 }
 
+void compositeOverBgra(const uint8_t* src, int srcStride,
+                       uint8_t* dst, int dstStride,
+                       int width, int height,
+                       uint8_t blue, uint8_t green, uint8_t red) {
+  const uint8_t background[3] = {blue, green, red};
+  for (int y = 0; y < height; ++y) {
+    const uint8_t* srcRow = src + static_cast<size_t>(y) * srcStride;
+    uint8_t* dstRow = dst + static_cast<size_t>(y) * dstStride;
+    for (int x = 0; x < width; ++x) {
+      const uint8_t alpha = srcRow[3];
+      if (alpha == 255) {
+        // The common case on a full-frame graphic: nothing of the background
+        // shows through, so skip the arithmetic entirely.
+        dstRow[0] = srcRow[0];
+        dstRow[1] = srcRow[1];
+        dstRow[2] = srcRow[2];
+      } else if (alpha == 0) {
+        dstRow[0] = background[0];
+        dstRow[1] = background[1];
+        dstRow[2] = background[2];
+      } else {
+        const uint32_t inverse = 255U - alpha;
+        for (int c = 0; c < 3; ++c) {
+          // src is already multiplied by its own alpha, so this is the whole of
+          // the `over` operator. Rounded rather than truncated: truncation
+          // leaves a background at 50% alpha a shade darker than the same
+          // colour at 0%, which shows as a faint edge on a soft-keyed graphic.
+          const uint32_t value =
+              srcRow[c] + (background[c] * inverse + 127U) / 255U;
+          dstRow[c] = static_cast<uint8_t>(std::min<uint32_t>(value, 255));
+        }
+      }
+      dstRow[3] = 255;  // opaque: the background has filled everything in
+      srcRow += 4;
+      dstRow += 4;
+    }
+  }
+}
+
 void fillBlackBgra(uint8_t* dst, int stride, int width, int height) {
   for (int y = 0; y < height; ++y) {
     uint8_t* row = dst + static_cast<size_t>(y) * stride;

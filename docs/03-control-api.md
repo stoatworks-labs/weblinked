@@ -92,6 +92,7 @@ Everything, as one JSON object. The shape:
   "outputs": [
     { "kind": "ndi", "name": "Graphic", "running": true, "enabled": true,
       "device_index": 0, "options": { "alpha": true },
+      "background": "transparent", "background_colour": "#00b140",
       "pixel_format": "UYVY", "frames": 10464, "audio_frames": 10460,
       "receivers": 1, "library": "/Library/NDI SDK for Apple/lib/macOS/libndi.dylib",
       "sdk_version": "NDI SDK APPLE ... 6.3.2.0" },
@@ -142,9 +143,12 @@ Object key order is stable, so two responses can be diffed by eye mid-show.
 | `outputs[].renderer` | Screen only. The GPU path in use, e.g. `Metal, Apple M4 Max`. |
 | `source.popups` | How many times the page has tried to open a new tab or window. A page doing this repeatedly is usually about to behave oddly on air. |
 
-`outputs[].device_index` and `outputs[].options` are the spec **as configured**,
-not what the backend is doing — that is the rest of the object. The settings
-page populates its editors from them.
+`outputs[].device_index`, `outputs[].options` and `outputs[].background` are the
+spec **as configured**, not what the backend is doing — that is the rest of the
+object. The settings page populates its editors from them.
+`background_colour` is reported even while the background is `transparent`, so
+the editor's colour well shows what turning it on would give rather than
+resetting to the default.
 
 ### GET `/api/preview`
 
@@ -228,6 +232,7 @@ All take a JSON body and return `{"ok":true}` or `{"error":"..."}`.
 | `/api/output/remove` | `{"name": "Second"}` | |
 | `/api/output/add` (screen) | `{"kind":"screen","name":"Wall","options":{"display":1,"scaling":"fit"}}` | `display` indexes `state.displays`; `scaling` is `fit` (default), `fill` or `stretch`. On macOS the window is created on the main thread however the request arrived |
 | `/api/output/update` | `{"name":"Second","output":{"kind":"ndi","name":"Renamed"}}` | Replaces an output in place, keeping its position. On failure the previous one is restarted — see below |
+| `/api/output/background` | `{"name":"Second","background":"colour","colour":"#00b140"}` | What this output composites the page over. `transparent` keeps the page's own alpha. Applies on the next tick without restarting the output — see below |
 | `/api/pacing` | `{"pacing": "internal"}` | Rebuilds the browser at the same URL |
 | `/api/settings/apply` | `{"source": { ... }}` | Applies a whole source configuration; see below |
 | `/api/settings/save` | `{}` | Writes the live configuration to the settings file. Returns `{"ok":true,"path":"..."}` |
@@ -254,6 +259,32 @@ so honestly beats one that refuses wholesale because a card is missing.
 
 The `source` body is validated before anything is touched: an unparseable
 format or a duplicate output name is a 400 and changes nothing.
+
+### Backgrounds
+
+Each output carries its own background: either the page's own transparency —
+which is what a keyed SDI fill or an NDI feed with alpha wants — or a flat
+colour the page is composited over, for a switcher that only has a chroma keyer.
+One browser paint serves both, so the same graphic can leave as a key down one
+path and over green down another.
+
+`background` is `"transparent"` or `"colour"`, and `background_colour` is
+`#rrggbb`. The two are separate so that toggling the background off and back on
+returns to the colour that was picked rather than the default. `"background"`
+also accepts a colour directly — `{"background": "#00b140"}` means both at once,
+which is the shorthand to reach for when writing a settings file by hand. An
+unreadable colour is a 400 rather than a silent fallback: an output quietly on a
+colour nobody asked for looks like a broken feature rather than a wrong file.
+
+Backgrounds are accepted by `/api/output/add`, `/api/output/update` and
+`/api/settings/apply` as well, and all three change one **without restarting the
+output**. That is why the background is not part of `options`: nothing in a
+backend acts on it — the engine composites before a frame reaches one — and
+reopening a DeckLink to nudge a green would drop frames on air.
+
+A composited output is fully opaque by definition, so an NDI output with both
+`options.alpha` and a background sends a solid key. That is not a conflict to
+resolve, it is what a chroma-key feed is.
 
 ### `/api/input`
 

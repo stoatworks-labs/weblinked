@@ -308,6 +308,74 @@ WEBLINKED_TEST(unpremultiply_stays_inside_its_destination) {
   CHECK(dst[active - 1] != 0xCD);
 }
 
+WEBLINKED_TEST(composite_puts_the_background_where_the_page_is_not) {
+  // The `over` operator on a premultiplied source, which is what Chromium
+  // hands us: dst = src + bg * (1 - alpha). Compositing chroma green under a
+  // page is the whole point of the feature, so the untouched case — a fully
+  // transparent pixel — has to come out as exactly the colour asked for, not
+  // one code value off it. A keyer set to a nominal green and fed 0x00b03f
+  // leaves a fringe.
+  struct Case {
+    uint8_t b, g, r, a;           // premultiplied input
+    uint8_t wantB, wantG, wantR;  // over #00b140 (B=0x40, G=0xb1, R=0x00)
+  };
+  const Case cases[] = {
+      {0, 0, 0, 0, 0x40, 0xb1, 0x00},      // nothing painted: pure background
+      {10, 20, 30, 255, 10, 20, 30},       // opaque: the page, untouched
+      {0, 128, 0, 128, 32, 216, 0},        // half-opaque green over the green
+      {255, 255, 255, 255, 255, 255, 255}, // opaque white does not overflow
+  };
+
+  for (const auto& test : cases) {
+    uint8_t src[4] = {test.b, test.g, test.r, test.a};
+    uint8_t dst[4] = {};
+    compositeOverBgra(src, 4, dst, 4, 1, 1, 0x40, 0xb1, 0x00);
+    CHECK_EQ(static_cast<int>(dst[0]), static_cast<int>(test.wantB));
+    CHECK_EQ(static_cast<int>(dst[1]), static_cast<int>(test.wantG));
+    CHECK_EQ(static_cast<int>(dst[2]), static_cast<int>(test.wantR));
+    // Opaque, always. An output composited over a colour has no key left to
+    // send, and a keyer downstream of it must see a solid fill.
+    CHECK_EQ(static_cast<int>(dst[3]), 255);
+  }
+}
+
+WEBLINKED_TEST(composite_over_black_matches_what_a_key_less_output_showed) {
+  // The behaviour a UYVY output already had — transparency reads as black,
+  // because UYVY has nowhere to put alpha and Chromium's premultiplied buffer
+  // is already src * a. Compositing over black must therefore change nothing,
+  // which is what makes the background a strictly additive feature.
+  for (int alpha = 0; alpha <= 255; alpha += 17) {
+    const uint8_t a = static_cast<uint8_t>(alpha);
+    const uint8_t premultiplied = static_cast<uint8_t>(200 * alpha / 255);
+    uint8_t src[4] = {premultiplied, premultiplied, premultiplied, a};
+    uint8_t dst[4] = {};
+    compositeOverBgra(src, 4, dst, 4, 1, 1, 0, 0, 0);
+    CHECK_EQ(static_cast<int>(dst[0]), static_cast<int>(premultiplied));
+    CHECK_EQ(static_cast<int>(dst[1]), static_cast<int>(premultiplied));
+    CHECK_EQ(static_cast<int>(dst[2]), static_cast<int>(premultiplied));
+  }
+}
+
+WEBLINKED_TEST(composite_stays_inside_its_destination) {
+  // Same guard-band contract as the UYVY converter and unpremultiply.
+  const int width = 32, height = 4;
+  const int stride = width * 4;
+  const size_t active = static_cast<size_t>(stride) * height;
+  std::vector<uint8_t> src(active, 0x40);
+  std::vector<uint8_t> dst(active + 2048, 0xCD);
+
+  compositeOverBgra(src.data(), stride, dst.data(), stride, width, height,
+                    0x40, 0xb1, 0x00);
+
+  for (size_t i = active; i < dst.size(); ++i) {
+    if (dst[i] != 0xCD) {
+      CHECK(false);
+      break;
+    }
+  }
+  CHECK(dst[active - 1] != 0xCD);
+}
+
 WEBLINKED_TEST(downscale_preserves_a_solid_colour) {
   const int width = 8, height = 8, stride = width * 4;
   std::vector<uint8_t> src(static_cast<size_t>(stride) * height);

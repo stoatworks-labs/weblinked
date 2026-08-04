@@ -194,3 +194,118 @@ WEBLINKED_TEST(app_config_rejects_malformed_files_clearly) {
 
   CHECK(!AppConfig::parse(R"({"sources":{}})", &error).has_value());
 }
+
+// --- output backgrounds -----------------------------------------------------
+
+WEBLINKED_TEST(output_background_defaults_to_the_page_own_transparency) {
+  // Everything that existed before backgrounds did must keep behaving as it
+  // did: a config that has never heard of the field means transparent.
+  auto parsed = json::parse(R"({"kind":"ndi","name":"Graphics"})");
+  CHECK(parsed.has_value());
+  if (!parsed) return;
+
+  const auto config = OutputConfig::fromJson(*parsed);
+  CHECK(config.has_value());
+  if (!config) return;
+  CHECK(!config->background.opaque);
+  // And the colour is a usable green rather than black, so turning the
+  // background on without picking anything gives something a keyer can work
+  // with.
+  CHECK_STR(config->background.toHex(), "#00b140");
+}
+
+WEBLINKED_TEST(output_background_parses_both_spellings) {
+  struct Case {
+    const char* json;
+    bool opaque;
+    const char* hex;
+  };
+  const Case cases[] = {
+      {R"({"kind":"ndi","background":"transparent"})", false, "#00b140"},
+      {R"({"kind":"ndi","background":"colour"})", true, "#00b140"},
+      // American spelling, because someone will write it and being pedantic
+      // about it here helps nobody.
+      {R"({"kind":"ndi","background":"color"})", true, "#00b140"},
+      // The shorthand: a colour on its own means "use it".
+      {R"({"kind":"ndi","background":"#1020FF"})", true, "#1020ff"},
+      {R"({"kind":"ndi","background":"0000ff"})", true, "#0000ff"},
+      // The two-field form, which is what the control page sends: the colour
+      // is carried even while the background is off, so toggling it back on
+      // returns to what was picked.
+      {R"({"kind":"ndi","background":"transparent","background_colour":"#123456"})",
+       false, "#123456"},
+      {R"({"kind":"ndi","background":"colour","background_colour":"#123456"})",
+       true, "#123456"},
+  };
+
+  for (const auto& test : cases) {
+    auto parsed = json::parse(test.json);
+    CHECK(parsed.has_value());
+    if (!parsed) continue;
+    std::string error;
+    const auto config = OutputConfig::fromJson(*parsed, &error);
+    CHECK(config.has_value());
+    if (!config) continue;
+    CHECK_EQ(static_cast<int>(config->background.opaque),
+             static_cast<int>(test.opaque));
+    CHECK_STR(config->background.toHex(), test.hex);
+  }
+}
+
+WEBLINKED_TEST(output_background_refuses_a_colour_it_cannot_read) {
+  // Silently falling back to a default would put an output on a colour nobody
+  // asked for, which on air looks like the feature is broken rather than like
+  // the file is wrong.
+  const char* bad[] = {
+      R"({"kind":"ndi","background":"greenish"})",
+      R"({"kind":"ndi","background":"#12345"})",
+      R"({"kind":"ndi","background_colour":"#nothex"})",
+      R"json({"kind":"ndi","background_colour":"rgb(0,177,64)"})json",
+  };
+  for (const char* text : bad) {
+    auto parsed = json::parse(text);
+    CHECK(parsed.has_value());
+    if (!parsed) continue;
+    std::string error;
+    CHECK(!OutputConfig::fromJson(*parsed, &error).has_value());
+    CHECK(!error.empty());
+  }
+}
+
+WEBLINKED_TEST(output_background_survives_a_round_trip) {
+  OutputConfig config;
+  config.kind = "decklink";
+  config.name = "SDI 1";
+  config.background.opaque = true;
+  CHECK(config.background.setHex("#0b1e2f"));
+
+  std::string error;
+  const auto again = OutputConfig::fromJson(config.toJson(), &error);
+  CHECK(again.has_value());
+  if (!again) return;
+  CHECK(again->background.opaque);
+  CHECK_STR(again->background.toHex(), "#0b1e2f");
+  CHECK(again->background == config.background);
+
+  // A transparent output at the default colour writes neither field, so files
+  // that do not use the feature stay exactly as they were.
+  const OutputConfig plain{.kind = "ndi", .name = "Graphics"};
+  CHECK(plain.toJson()["background"].isNull());
+  CHECK(plain.toJson()["background_colour"].isNull());
+}
+
+WEBLINKED_TEST(output_background_hex_parsing_is_all_or_nothing) {
+  OutputBackground background;
+  CHECK(background.setHex("#ff8000"));
+  CHECK_EQ(static_cast<int>(background.red), 255);
+  CHECK_EQ(static_cast<int>(background.green), 128);
+  CHECK_EQ(static_cast<int>(background.blue), 0);
+  CHECK_EQ(static_cast<int>(background.packed()), 0xff8000);
+
+  // A rejected string must leave the previous colour intact rather than a
+  // half-written mixture of the two.
+  CHECK(!background.setHex("#ff80zz"));
+  CHECK_STR(background.toHex(), "#ff8000");
+  CHECK(!background.setHex(""));
+  CHECK_STR(background.toHex(), "#ff8000");
+}
