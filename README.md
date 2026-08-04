@@ -80,9 +80,9 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 | Build | Download | Size |
 | --- | --- | --- |
-| Apple Silicon · .dmg disk image | [`weblinked-0.7.0-macos-arm64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-macos-arm64.dmg) | 159 MB |
-| Apple Silicon · .dmg disk image | [`WebLinked.Launcher_0.7.0_aarch64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/WebLinked.Launcher_0.7.0_aarch64.dmg) | 145 MB |
-| Apple Silicon · .pkg installer | [`weblinked-0.7.0-macos-arm64.pkg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-macos-arm64.pkg) | 142 MB |
+| Apple Silicon · .dmg disk image | [`weblinked-0.7.0-macos-arm64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-macos-arm64.dmg) | 140 MB |
+| Apple Silicon · .dmg disk image | [`WebLinked.Launcher_0.7.0_aarch64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/WebLinked.Launcher_0.7.0_aarch64.dmg) | 144 MB |
+| Apple Silicon · .pkg installer | [`weblinked-0.7.0-macos-arm64.pkg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-macos-arm64.pkg) | 140 MB |
 
 </details>
 
@@ -109,6 +109,8 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 </details>
 
 All builds, checksums and release notes: [github.com/stoatworks-labs/weblinked/releases](https://github.com/stoatworks-labs/weblinked/releases).
+
+macOS builds are signed and notarised and open normally. The Windows builds are unsigned, so SmartScreen warns once.
 
 <!-- downloads:end -->
 
