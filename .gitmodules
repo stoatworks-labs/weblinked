@@ -1,0 +1,4 @@
+[submodule "plugin/external/ffgl"]
+	path = plugin/external/ffgl
+	url = https://github.com/resolume/ffgl
+	branch = master
