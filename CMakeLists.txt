@@ -67,7 +67,19 @@ option(WEBLINKED_WITH_OMT      "Build the OMT output backend"      ON)
 option(WEBLINKED_WITH_DECKLINK "Build the DeckLink output backend" ON)
 option(WEBLINKED_WITH_AJA      "Build the AJA NTV2 output backend" OFF)
 option(WEBLINKED_WITH_SCREEN   "Build the fullscreen GPU output backend" ON)
+option(WEBLINKED_WITH_SHARED   "Build the Syphon/Spout shared-surface output backend" ON)
 option(WEBLINKED_BUILD_TESTS   "Build the unit tests"              ON)
+
+# Syphon on macOS, Spout on Windows. Linux has no equivalent either of them
+# would recognise — there is no protocol to target, not merely no code — so it
+# disables itself there rather than failing the build, the same way the screen
+# output does for a missing X11.
+if(WEBLINKED_WITH_SHARED AND NOT APPLE AND NOT WIN32)
+  message(STATUS
+    "Shared-surface output: disabled — Syphon is macOS-only and Spout is "
+    "Windows-only, and Linux has no equivalent to target")
+  set(WEBLINKED_WITH_SHARED OFF)
+endif()
 
 # The screen output is the one backend with no SDK to find: macOS and Windows
 # both ship everything it needs. Linux does not — X11 and EGL are separate dev
@@ -177,6 +189,10 @@ if(WEBLINKED_WITH_SCREEN)
   list(APPEND WEBLINKED_BACKENDS screen)
 endif()
 
+if(WEBLINKED_WITH_SHARED)
+  list(APPEND WEBLINKED_BACKENDS shared)
+endif()
+
 message(STATUS "WebLinked output backends: preview ${WEBLINKED_BACKENDS}")
 
 # ----------------------------------------------------------------------------
@@ -265,6 +281,47 @@ if(WEBLINKED_WITH_SCREEN)
     list(APPEND WEBLINKED_ENGINE_SOURCES src/outputs/screen_window_linux.cpp)
   endif()
 endif()
+if(WEBLINKED_WITH_SHARED)
+  list(APPEND WEBLINKED_ENGINE_SOURCES
+    src/outputs/shared_output.cpp
+    src/outputs/shared_output.h
+    src/outputs/shared_surface.h)
+  if(APPLE)
+    # The same .mm-as-CXX arrangement as the screen output above, plus the
+    # vendored Syphon server sources. Those are ARC and expect Syphon's prefix
+    # header for SYPHONLOG, neither of which is true of anything else here, so
+    # both are set per-file rather than on the target.
+    list(APPEND WEBLINKED_ENGINE_SOURCES src/outputs/shared_surface_mac.mm)
+    set(WEBLINKED_SYPHON_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/syphon/Syphon)
+    file(GLOB WEBLINKED_SYPHON_OBJC ${WEBLINKED_SYPHON_DIR}/*.m)
+    file(GLOB WEBLINKED_SYPHON_C    ${WEBLINKED_SYPHON_DIR}/*.c)
+    list(APPEND WEBLINKED_ENGINE_SOURCES
+      ${WEBLINKED_SYPHON_OBJC} ${WEBLINKED_SYPHON_C})
+    # -w because this is upstream code we do not modify, and it uses
+    # kIOSurfaceIsGlobal — which is how Syphon shares a surface between
+    # processes at all, and is deprecated with no replacement. Left as a
+    # warning it would be noise in every build forever.
+    #
+    # The prefix header is where Syphon defines SYPHONLOG; its .m files do not
+    # compile without it. ARC is Syphon's own setting and applies only to the
+    # Objective-C files — SyphonDispatch.c is plain C, where the flag is not
+    # merely unnecessary but rejected.
+    set_source_files_properties(${WEBLINKED_SYPHON_OBJC} PROPERTIES
+      COMPILE_OPTIONS
+        "-fobjc-arc;-include;${WEBLINKED_SYPHON_DIR}/Syphon_Prefix.pch;-w")
+    set_source_files_properties(${WEBLINKED_SYPHON_C} PROPERTIES
+      COMPILE_OPTIONS "-w")
+  elseif(WIN32)
+    list(APPEND WEBLINKED_ENGINE_SOURCES src/outputs/shared_surface_win.cpp)
+    set(WEBLINKED_SPOUT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/spout/Spout)
+    file(GLOB WEBLINKED_SPOUT_SOURCES ${WEBLINKED_SPOUT_DIR}/*.cpp)
+    list(APPEND WEBLINKED_ENGINE_SOURCES ${WEBLINKED_SPOUT_SOURCES})
+    # /w because this is upstream code we do not modify. Spout builds cleanly
+    # at its own warning level, not at the one CEF imposes here.
+    set_source_files_properties(${WEBLINKED_SPOUT_SOURCES} PROPERTIES
+      COMPILE_OPTIONS "/w")
+  endif()
+endif()
 
 # ----------------------------------------------------------------------------
 # weblinked_core — everything that does not need CEF
@@ -315,7 +372,32 @@ target_compile_definitions(weblinked_engine PUBLIC
   $<$<BOOL:${WEBLINKED_WITH_DECKLINK}>:WEBLINKED_WITH_DECKLINK=1>
   $<$<BOOL:${WEBLINKED_WITH_AJA}>:WEBLINKED_WITH_AJA=1>
   $<$<BOOL:${WEBLINKED_WITH_SCREEN}>:WEBLINKED_WITH_SCREEN=1>
+  $<$<BOOL:${WEBLINKED_WITH_SHARED}>:WEBLINKED_WITH_SHARED=1>
 )
+
+if(WEBLINKED_WITH_SHARED)
+  if(APPLE)
+    # third_party/syphon is the include root, not .../syphon/Syphon: the
+    # vendored sources import <Syphon/SyphonServerBase.h> framework-style, and
+    # that layout is what makes those resolve without editing upstream files.
+    target_include_directories(weblinked_engine PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/syphon)
+    # IOSurface is the shared buffer itself. No Metal and no OpenGL: this
+    # backend writes the surface with the CPU, which is where CEF's pixels
+    # already are.
+    target_link_libraries(weblinked_engine PUBLIC
+      "-framework IOSurface" "-framework Foundation")
+  elseif(WIN32)
+    # Flat include root: the vendored Spout files sit in one directory, which
+    # upstream supports explicitly — SpoutDX.h picks its include prefix with
+    # __has_include("SpoutCommon.h"), so no file needed editing.
+    target_include_directories(weblinked_engine PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/spout/Spout)
+    # d3d11 and dxgi only. spoutDX is the DirectX half of the SDK and pulls in
+    # no OpenGL; psapi arrives through a #pragma comment(lib) in SpoutDX.h.
+    target_link_libraries(weblinked_engine PUBLIC d3d11 dxgi)
+  endif()
+endif()
 
 if(WEBLINKED_WITH_SCREEN)
   if(APPLE)
@@ -345,7 +427,17 @@ target_link_libraries(weblinked_engine PUBLIC
 
 # CEF's flag lists must be applied verbatim: a mismatch against a prebuilt
 # Chromium surfaces as a link error, or as a crash inside CefInitialize.
-target_compile_options(weblinked_engine PRIVATE ${CEF_COMPILER_FLAGS} ${CEF_CXX_COMPILER_FLAGS})
+#
+# The C++ list is scoped to C++ because it genuinely is C++-only — it carries
+# -std=c++20, which clang rejects outright on an Objective-C translation unit.
+# That was harmless while every file here was .cpp or .mm (both compiled as
+# CXX; see the note at the head of this file), and stopped being harmless when
+# the vendored Syphon .m files arrived. CEF_COMPILER_FLAGS stays unscoped: it
+# is the language-neutral half, and CEF's ABI depends on it applying
+# everywhere.
+target_compile_options(weblinked_engine PRIVATE
+  ${CEF_COMPILER_FLAGS}
+  $<$<COMPILE_LANGUAGE:CXX>:${CEF_CXX_COMPILER_FLAGS}>)
 
 if(WEBLINKED_WITH_NDI)
   target_include_directories(weblinked_engine PRIVATE ${NDI_INCLUDE_DIRS})

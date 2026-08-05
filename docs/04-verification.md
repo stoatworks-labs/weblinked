@@ -993,6 +993,245 @@ been measured down the NDI path — the same frame path serves all of them, but
 
 ---
 
+## 23. The shared output, into Resolume Arena — verified, and it found two traps
+
+A page on a VJ layer without leaving the machine: `--syphon` publishes an
+IOSurface, another application picks it up. Verified three ways, because the
+interesting failures are not the same failure:
+
+* `tools/syphon_probe.mm`, an independent receiver, for the pixels;
+* Resolume Arena 7.27.1 itself, for the thing this is actually for;
+* the pacing counters, for what the copy costs.
+
+**The probe is independent in the way that matters.** It links **Arena's own
+bundled Syphon 5 framework**, not the Syphon 6 server sources vendored into
+`third_party/syphon`. A pass is two implementations shipped years apart by
+different people agreeing about the protocol, rather than this repository
+agreeing with itself.
+
+```bash
+clang++ -std=c++20 -fobjc-arc -Wno-deprecated-declarations tools/syphon_probe.mm \
+  -F "/Applications/Resolume Arena/Arena.app/Contents/Frameworks" \
+  -framework Syphon -framework Foundation -framework IOSurface \
+  -framework OpenGL -framework Cocoa \
+  -rpath "/Applications/Resolume Arena/Arena.app/Contents/Frameworks" -o syphon_probe
+
+./build/Release/WebLinked.app/Contents/MacOS/WebLinked \
+  --url file://$PWD/tools/alphabars.html --format 1080p50 --syphon=WLTest --headless
+```
+
+**Discovery, from a process that started afterwards.** `./syphon_probe --list`:
+
+```
+1 Syphon server(s):
+  WLTest (WebLinked)
+```
+
+That is not the easy half. `SyphonServerBase` registers for the
+announce-*request* notification from `-init`, on whichever thread called it, and
+`NSDistributedNotificationCenter` delivers to that thread's run loop. Created on
+the HTTP thread — which is what happens when an operator adds this output from
+the control page — the server posts its opening announce and then answers
+nothing. A consumer already running finds it; one started later never does.
+`SyphonSurface::open` marshals to the main thread for exactly this reason, and
+the probe is written to start second so the check cannot pass by accident.
+
+**Colour and premultiplied alpha.** `--alphabars`, at 1080p50:
+
+```
+  (240,540)  opaque red   got BGRA   0   0 192 255  want   0   0 192 255  ok
+  (720,540)  50% green    got BGRA   0  96   0 128  want   0  96   0 128  ok
+  (1200,540) 25% blue     got BGRA  48   0   0  64  want  48   0   0  64  ok
+  (1680,540) transparent  got BGRA   0   0   0   0  want   0   0   0   0  ok
+  PASS
+```
+
+Exact, every channel — no 4:2:2 round trip to forgive anything, because there
+isn't one. Green at 96 and blue at 48 are the *premultiplied* values: this
+output does not undo Chromium's premultiply, and a table written against the
+unpremultiplied ones would have "failed" a correct implementation.
+
+**Orientation, separately.** `tools/alphabars.html` cannot test this — its bands
+are vertical, so it reads identically through a vertical flip. `tools/updown.html`
+(red over blue) exists only for this, via `--orientation`:
+
+```
+  (960,135) top red      got BGRA   0   0 192 255  want   0   0 192 255  ok
+  (960,945) bottom blue  got BGRA 192   0   0 255  want 192   0   0 255  ok
+  PASS
+```
+
+Row 0 of the surface is the top of the page, as predicted from
+`SyphonMetalServer`, which blits without inverting when told its source is
+unflipped. The copy is a copy.
+
+**Arena itself.** Arena's Sources panel lists it under **SYPHON SERVERS** as
+`WebLinked - WLTest`, and its own REST API agrees:
+
+```bash
+curl -s http://127.0.0.1:8080/api/v1/sources | grep -o '"name":"WebLinked - WLTest"'
+```
+
+Loaded onto layer 1 and triggered, Arena reports `connected: Connected` at
+1920x1080, and — without being told — labels the clip **Alpha Type:
+Premultiplied**. The Composition Monitor shows the four bands. That is the whole
+claim of this output demonstrated by the application it was written for.
+
+**What the copy costs — measured, not asserted.** Steady state, 30 s windows at
+1080p50, with the surface being written every tick in all three:
+
+| | ticks | dropped | published |
+|---|---|---|---|
+| Client attached, Arena idle | 1502 | 1 | 1501 |
+| Client attached, Arena rendering the clip | 1502 | 49 | 1454 |
+
+1502 ticks in 30 s is 50.07 Hz — the clock, not the consumer. The copy itself is
+free to within one tick in 1502 (0.07%). The 49 dropped ticks in the second row
+are **not** the memcpy: disconnecting the clip while the Syphon client stayed
+attached left the copy running at full rate and drops fell to 7, so what costs
+is a VJ application rendering 1080p on the same GPU, which it would do to any
+source. Worth knowing before blaming this output for a heavy night.
+
+**Nobody listening costs nothing.** Before any client attached: `frames 6788,
+published 4, skipped 6784`. `hasClients` gates the copy, so an idle source is
+not memcpying 8 MB fifty times a second. `published + skipped == frames`, and
+the split is what tells "publishing correctly to nobody" apart from "broken".
+
+### The two traps
+
+**`glGetTexImage` silently returns zeros for an IOSurface-backed texture.** The
+first probe read the Syphon texture that way, got four bands of `0 0 0 0`, and
+reported `GL_NO_ERROR`. That is indistinguishable from a server publishing blank
+frames, and it cost a round of debugging aimed at the wrong half — the preview
+endpoint showed the page rendering correctly all along, which is what settled
+it. `CGLTexImageIOSurface2D` textures have to be read through an FBO and
+`glReadPixels`. The probe does, and says so at the function.
+
+**`-newFrameImage` hands back an image before any frame has been published into
+it.** Read that first one and every channel is zero — the same symptom again,
+from a different cause. The probe waits on `-hasNewFrame` and takes several
+frames rather than the first.
+
+Neither trap is in the server. Both would have been read as server bugs by
+anyone verifying with a receiver written the obvious way.
+
+**Not verified:** Spout, and therefore Windows — the backend is not written, and
+`WEBLINKED_WITH_SHARED` disables itself off macOS rather than shipping a stub
+that would make `--spout` look supported. Nothing has been checked in a consumer
+other than Arena, though the probe's use of the Syphon 5 framework is evidence
+for anything else that links it. Nothing has run for longer than a few minutes.
+
+---
+
+## 24. The shared output on Windows — the backend verified, the build not
+
+Spout is the Windows half of the shared output, and it is the first Windows code
+in this repository that has actually been **run**. That is a smaller claim than
+it sounds, so it is worth being precise about what was and was not established.
+
+WebLinked itself still does not build on Windows — CEF, the engine, the control
+API and the screen output remain compile-targeted and untouched. So this could
+not be verified the way NDI and Syphon were, by running the application and
+pointing a receiver at it. Instead `tools/spout_send_test.cpp` links the **real**
+`src/outputs/shared_surface_win.cpp` against the **real** vendored Spout SDK,
+hands it a `VideoFrame` exactly as the engine would, and
+`tools/spout_probe.cpp` reads the result back.
+
+Run on a Windows 11 ARM64 VM with VS 2022 Build Tools 14.44, both binaries built
+**x64** — the architecture real Spout applications use, so both then ran under
+the machine's x86-64 emulation.
+
+```powershell
+.\build_spout_test.ps1 -Repo C:\wl -Out C:\wl\out
+.\out\spout_send_test.exe --pattern alphabars --seconds 60
+.\out\spout_probe.exe --list
+.\out\spout_probe.exe --source WLTest --pattern alphabars
+```
+
+**The sender opens and registers.**
+
+```
+Spout sender 'WLTest' open: Spout sender, DirectX 11 shared texture, BGRA8, CPU copy
+sending alphabars at 1920x1080 for 10 s
+published 500, skipped 0
+```
+
+500 published in 10 s at 50 Hz, and `skipped 0` is correct rather than a
+counter that was never wired: Spout tells a *sender* nothing about receivers, so
+unlike Syphon there is no attach signal to skip on. `spoutDX::IsConnected` is
+the receiver's question. On Windows `published` and `frames` should therefore
+track each other where on macOS they diverge whenever nothing is listening.
+
+**Discovery**, from `--list`:
+
+```
+1 Spout sender(s):
+  WLTest
+```
+
+**Colour and alpha**, at tolerance **0** — there is no 4:2:2 round trip and no
+premultiply rounding here, because the harness writes the bytes literally, so
+anything but an exact match is a real difference:
+
+```
+  ( 240,540) opaque red   got   0   0 192 255  want BGRA   0   0 192 255  ok
+  ( 720,540) 50% green    got   0  96   0 128  want BGRA   0  96   0 128  ok
+  (1200,540) 25% blue     got  48   0   0  64  want BGRA  48   0   0  64  ok
+  (1680,540) transparent  got   0   0   0   0  want BGRA   0   0   0   0  ok
+  alphabars: PASS (BGRA, as sent)
+```
+
+The alpha channel survives the shared texture intact — 255, 128, 64, 0 — which
+is the whole point of the output. The probe checks the RGBA reading separately
+and reports which matched, rather than assuming: `spoutDX` picks channel order
+from the sender's format through `m_bSwapRB`, and "BGRA, as sent" is a measured
+result, not the expectation restated.
+
+**Orientation**, against `--pattern updown`:
+
+```
+  (960,135) top red      got   0   0 192 255  want BGRA   0   0 192 255  ok
+  (960,945) bottom blue  got 192   0   0 255  want BGRA 192   0   0 255  ok
+  orientation: PASS (BGRA, as sent)
+```
+
+Row 0 is the top of the image, matching macOS. No flip on either platform.
+
+### How much this is worth
+
+**Weaker evidence than the Syphon pass, deliberately stated.** `syphon_probe`
+links *Resolume Arena's own* Syphon framework, so section 23 is two vendors'
+implementations agreeing. There is no second Spout implementation to hand here:
+this is `spoutDX`'s receive path reading `spoutDX`'s send path, from one SDK.
+It proves our backend drives the sender API correctly, that the pitch is
+honoured, that channel order and orientation are right and that alpha survives.
+It does not independently corroborate Spout itself.
+
+**The CMake Windows build is still unproven.** The harness compiles the backend
+with a hand-written `cl` invocation, not through `CMakeLists.txt`. The
+`WEBLINKED_WITH_SHARED` Windows branch added alongside it has never been
+configured or run, because nothing else in the project builds on Windows to
+configure it with. Two things are therefore known only by inspection: that
+`d3d11`/`dxgi` are the right link libraries, and that CMake's MSVC defaults
+supply `user32`/`gdi32`, which SpoutUtils needs — driving `cl` directly does
+not, and that cost one link failure.
+
+**Not verified:** any real Spout consumer. Nothing was tested against Resolume
+for Windows, TouchDesigner, OBS or anything else — none is installed on that VM.
+Also unverified: pacing (the harness sleeps, it does not use the engine clock,
+and nothing here should be read as evidence about WebLinked's timing on
+Windows), long runs, and format changes.
+
+### One trap
+
+**`near` is still a reserved word.** `windows.h` defines the legacy `near`/`far`
+pointer keywords, so a helper called `near` fails to compile with a bewildering
+`error C2062: type 'int' unexpected` pointing at a function that is obviously
+fine. Renamed to `matches`. Worth knowing before writing any small helper in a
+Windows translation unit.
+
+---
+
 ## Bugs this verification actually found
 
 Recorded because they are the argument for doing it at all. Every one was found
@@ -1194,8 +1433,12 @@ it; that is an observation, not documentation, and it may not hold on Windows.
 
 **Windows and Linux.** The CMake, the process model and the platform code paths
 are written for both, and the CEF distributions are pinned. Neither has been
-built or run. Expect the Windows DeckLink path in particular to need work: it
-uses COM rather than the dispatch shim, and that code has never seen a compiler.
+built or run — with one exception since v0.7.0: the **Spout backend** has been
+compiled and executed on a Windows 11 ARM64 VM through a standalone harness, and
+its pixels checked by a receiver (section 24). That is the output alone; the
+application around it, and the CMake that would build it, remain untouched.
+Expect the Windows DeckLink path in particular to need work: it uses COM rather
+than the dispatch shim, and that code has never seen a compiler.
 
 **Alpha output.** `--alpha` is implemented for NDI and OMT and has not been
 checked against a downstream keyer.

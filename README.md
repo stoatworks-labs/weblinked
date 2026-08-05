@@ -2,10 +2,12 @@
 
 > **AI-assisted project.** This codebase was created with [Claude](https://claude.com/claude-code)
 > (Anthropic), directed and reviewed by a human author. NDI is verified end to
-> end including alpha, and DeckLink against a real Duo 2 with colour confirmed by
-> an SDI loopback capture. **OMT and AJA have never been tested against a
-> receiver or a card**, and Windows and Linux are written for but have never been
-> run. [Status, honestly](#status-honestly) says which is which, and
+> end including alpha, DeckLink against a real Duo 2 with colour confirmed by an
+> SDI loopback capture, and Syphon against Resolume Arena. **OMT and AJA have
+> never been tested against a receiver or a card.** Linux has never been run, and
+> on Windows only the Spout output has — through a standalone harness; the
+> application itself does not yet build there.
+> [Status, honestly](#status-honestly) says which is which, and
 > [docs/04-verification.md](docs/04-verification.md) records exactly what was
 > measured and how.
 
@@ -30,6 +32,9 @@ weblinked --url https://example.com/lower-third --alpha --ndi=LowerThird --key -
 
 # Fullscreen on the second display, alongside SDI
 weblinked --url https://example.com/wall --screen=1 --decklink=0
+
+# An overlay for Resolume, with the page's alpha intact (macOS)
+weblinked --url https://example.com/lower-third --syphon=LowerThird
 
 # Several at once, each with its own browser, clock, raster and outputs
 weblinked --config show.json
@@ -130,9 +135,18 @@ macOS builds are signed and notarised and open normally. The Windows builds are 
   raster like `3840x600p60` for an LED strip.
 - **Carries the page's audio** — WebAudio, `<video>`, anything Chromium plays —
   as 48 kHz float, embedded in SDI or sent alongside the IP video.
-- **Outputs to five kinds of destination at once**: DeckLink, AJA, NDI, OMT and
-  a fullscreen GPU display. Every output takes the same frame, so what NDI sees
-  is what SDI sees.
+- **Outputs to six kinds of destination at once**: DeckLink, AJA, NDI, OMT, a
+  fullscreen GPU display, and a Syphon source other applications on the same
+  machine can pick up. Every output takes the same frame, so what NDI sees is
+  what SDI sees.
+- **Straight into a VJ application** (`--syphon` on macOS, `--spout` on
+  Windows). The page appears as a source in Resolume Arena, VDMX,
+  TouchDesigner or anything else that speaks either protocol — on the same
+  machine, over shared memory, with the page's own alpha intact so an HTML
+  overlay lands on a layer already keyed. Verified against Arena 7.27.1, which
+  identifies it as premultiplied without being told; the Spout backend is
+  verified against its own receiver, since WebLinked does not yet build on
+  Windows.
 - **Fullscreen on a display** (`--screen`), for a projector, a confidence monitor
   or an LED processor fed from a GPU head. Not a second browser window — it puts
   the frames the engine already produced straight onto the glass with Metal
@@ -216,12 +230,15 @@ macOS builds are signed and notarised and open normally. The Windows builds are 
 | **OMT** | Compiles against `libomt.h` 1.0.0.16. **Never tested against an OMT receiver.** |
 | **DeckLink** | **Verified against a real card** (DeckLink Duo 2): output, pre-roll and buffer level, colour confirmed by an SDI loopback capture, and key + fill measured — the fill carries straight alpha. The key channel itself and audio over SDI are still unmeasured. |
 | **AJA** | Compiles against libajantv2 18.1. **Never run against a card.** Off by default. |
+| **Shared surface (Syphon / Spout)** | **Syphon verified against Resolume Arena 7.27.1**: it lists the source, loads it on a layer at 1920x1080 and labels it premultiplied unaided. Colour, alpha and orientation are exact through a receiver linking *Arena's own* Syphon framework. **Spout is verified only through a harness** — the real backend and SDK, its pixels checked by a Spout receiver, but WebLinked itself does not build on Windows and no real Spout application was involved. |
 
 Read [docs/04-verification.md](docs/04-verification.md) before trusting any of
 this on air. It records exactly what was measured, how, and what was not.
 
 Verified on macOS 26.4 / Apple Silicon. Windows and Linux are written for and
-build-configured, but have not been built or run — see
+build-configured, but have not been built or run — the sole exception is the
+Spout output, compiled and executed on Windows 11 through the harness in
+`tools/`, which does not build the application around it. See
 [docs/02-building.md](docs/02-building.md).
 
 ---
@@ -341,6 +358,10 @@ OSC module works fine — see [docs/03-control-api.md](docs/03-control-api.md).
 
 It is not in the official Companion module store — install it via
 **Settings → Developer modules path**.
+
+<!-- attributions:start -->
+This project is built on other people's work — see [ATTRIBUTIONS.md](ATTRIBUTIONS.md).
+<!-- attributions:end -->
 
 ## Licence
 

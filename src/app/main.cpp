@@ -127,6 +127,13 @@ Outputs (repeatable; without any, only the preview runs)
                            page on a 60 Hz monitor repeats frames rather than
                            tearing. Not a second browser — the frames are the
                            same ones the SDI and NDI outputs get.
+  --syphon[=name]          Publish to other applications on this machine as a
+                           Syphon source (macOS) or Spout sender (Windows) —
+                           Resolume, VDMX, TouchDesigner and the rest.
+                           --spout and --shared are the same output. Default
+                           name: WebLinked. The page's own alpha survives unless
+                           a background is set, which is what makes this the one
+                           to reach for when the page is an overlay.
   --scaling <fit|fill|stretch>
                            Applies to the next --screen. fit (default) shows the
                            whole frame with bars; fill crops to the display;
@@ -294,6 +301,25 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
       options.given.outputs = true;
       continue;
     }
+    // --syphon and --spout are the words on the other application's source
+    // menu, so both are accepted and both mean the one "shared" kind — see
+    // SharedOutput for why there is only one. Not guarded by
+    // WEBLINKED_WITH_SHARED, exactly as --screen is not: the factory already
+    // tells "unknown output kind" apart from "not compiled into this build",
+    // and the second is the more useful message.
+    if (argument.rfind("--syphon", 0) == 0 || argument.rfind("--spout", 0) == 0 ||
+        argument.rfind("--shared", 0) == 0) {
+      OutputSpec spec;
+      spec.kind = "shared";
+      spec.name = inlineValue(argument);
+      if (spec.name.empty()) {
+        spec.name = "WebLinked";
+      }
+      options.outputs.push_back(spec);
+      options.given.outputs = true;
+      continue;
+    }
+
     if (argument == "--no-osc") { options.control.oscEnabled = false; continue; }
     if (argument == "--no-interactive") {
       options.interactive = false;

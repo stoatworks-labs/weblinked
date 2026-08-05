@@ -56,6 +56,39 @@ clang++ -std=c++20 -I"/Library/NDI SDK for Apple/include" tools/ndi_probe.cpp \
 
 `--bars` checks the rendered colour bars against an independent BT.709 reference.
 
+The shared (Syphon) output has its own receiver, which links **Resolume Arena's
+bundled Syphon 5 framework** rather than the Syphon 6 sources this repo vendors
+— so a pass is two implementations agreeing, not one agreeing with itself:
+
+```bash
+clang++ -std=c++20 -fobjc-arc -Wno-deprecated-declarations tools/syphon_probe.mm \
+  -F "/Applications/Resolume Arena/Arena.app/Contents/Frameworks" \
+  -framework Syphon -framework Foundation -framework IOSurface \
+  -framework OpenGL -framework Cocoa \
+  -rpath "/Applications/Resolume Arena/Arena.app/Contents/Frameworks" -o syphon_probe
+
+./syphon_probe --list                             # discovery
+./syphon_probe --source WLTest --alphabars        # colour + premultiplied alpha
+./syphon_probe --source WLTest --orientation      # needs tools/updown.html
+```
+
+Start the probe *after* the server — a server that only answers its opening
+announce is the failure this catches. `--alphabars` and `--orientation` are
+separate checks and neither covers the other.
+
+The Windows half (Spout) has its own pair, because WebLinked does not build on
+Windows and so cannot be the sender. `tools/spout_send_test.cpp` drives the real
+backend directly; run from a PowerShell prompt on the Windows machine:
+
+```powershell
+.\tools\build_spout_test.ps1 -Repo C:\wl -Out C:\wl\out
+.\out\spout_send_test.exe --pattern alphabars --seconds 60
+.\out\spout_probe.exe --source WLTest --pattern alphabars
+```
+
+This verifies the *output* and nothing above it. See `docs/04-verification.md`
+section 24 for exactly what that does and does not establish.
+
 ## Settings and the launcher
 
 ```bash
@@ -71,13 +104,15 @@ AV_LAUNCHER_CONFIG=launchers/dev.toml npm run tauri dev   # against ./build
 
 ## Rules
 
-1. **Never claim a backend works because it compiles.** NDI, preview and now
-   DeckLink are verified against real receivers or hardware. AJA and OMT compile
-   against real SDKs and have never touched either. `docs/04-verification.md` is
-   the authority — update it with commands and output, not ticks. There are two
-   independent receivers for exactly this: `tools/ndi_probe.cpp` and
-   `tools/sdi_probe.mm`, both carrying their own BT.709 reference so a check is
-   not a restatement of the code under test.
+1. **Never claim a backend works because it compiles.** NDI, preview, DeckLink
+   and now the shared/Syphon output are verified against real receivers,
+   hardware or Resolume Arena itself. AJA and OMT compile against real SDKs and
+   have never touched either. `docs/04-verification.md` is the authority —
+   update it with commands and output, not ticks. There are three independent
+   receivers for exactly this: `tools/ndi_probe.cpp`, `tools/sdi_probe.mm` and
+   `tools/syphon_probe.mm` — the first two carrying their own BT.709 reference,
+   the third linking a *different vendor's* Syphon, so a check is not a
+   restatement of the code under test.
 2. **Frame rates stay exact rationals.** No `double` rates, no accumulated
    periods. 59.94 is `60000/1001`.
 3. **`weblinked_core` must not depend on CEF.** It is also compiled without CEF's
@@ -123,7 +158,9 @@ AV_LAUNCHER_CONFIG=launchers/dev.toml npm run tauri dev   # against ./build
 | `src/diag/` | logging, crash reports, diagnostics bundles |
 | `src/browser/` | CefApp, CefClient (paint + audio), BrowserSource |
 | `src/engine/` | the clock loop |
-| `src/outputs/` | IOutput + preview, ndi, omt, decklink, aja, screen |
+| `src/outputs/` | IOutput + preview, ndi, omt, decklink, aja, screen, shared |
+| `third_party/syphon/` | vendored Syphon server subset (BSD-2) — see its README |
+| `third_party/spout/` | vendored Spout DirectX sender subset (BSD-2) — see its README |
 | `src/control/` | HTTP server, OSC receiver, embedded control page |
 | `src/app/` | entry points, Info.plists, entitlements |
 | `launcher/` | av-launcher tray shell (Rust/Tauri); separate build |

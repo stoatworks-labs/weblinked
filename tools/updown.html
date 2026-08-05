@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8">
+<style>
+  /* An orientation reference, because tools/alphabars.html cannot be one: its
+     bands are vertical, so it reads identically whether or not the frame has
+     been flipped on the way out. Top half red, bottom half blue — a flip is
+     then a swap the probe can simply assert against. */
+  html,body{margin:0;height:100%}
+  .h{height:50%}
+  .top{background:rgb(192,0,0)}
+  .bottom{background:rgb(0,0,192)}
+</style>
+<div class="h top"></div><div class="h bottom"></div>

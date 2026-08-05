@@ -64,11 +64,12 @@ src/core/     formats, frames, pools, clock, FIFO, JSON, dlopen  ─ NO CEF
 src/diag/     logging, crash reports, bundles                    ─ NO CEF
 src/browser/  CefApp, CefClient (paint + audio), BrowserSource
 src/engine/   the clock loop and everything it owns
-src/outputs/  IOutput + preview | ndi | omt | decklink | aja | screen
+src/outputs/  IOutput + preview | ndi | omt | decklink | aja | screen | shared
 src/control/  HTTP server, OSC receiver, embedded control page
 src/app/      entry points, Info.plists, entitlements
 launcher/     the av-launcher tray shell, configured for WebLinked (Rust/Tauri)
-tools/        ndi_probe — an independent receiver, for verification
+third_party/  cef, ndi, omt headers, and the vendored Syphon server subset
+tools/        ndi_probe, syphon_probe — independent receivers, for verification
 tests/        unit tests; link core only
 ```
 
@@ -103,6 +104,17 @@ the GPU process never crashes. The UI is the control page, in a browser; the tra
 launcher in `launcher/` is what puts it on a desktop. If you ever add a window
 back, `CefWindowInfo::runtime_style = CEF_RUNTIME_STYLE_ALLOY` is the thing you
 will need, and a menu bar, because CEF sets neither for you.
+
+**A Syphon server must be created on the main thread.** `SyphonServerBase`
+registers for the announce-*request* notification from `-init`, on whichever
+thread called it, and `NSDistributedNotificationCenter` delivers to that
+thread's run loop. Created on the HTTP thread — which is what happens the moment
+an operator adds the output from the control page rather than the command line —
+the server broadcasts its opening announce and then answers no discovery request
+ever again. A consumer already running finds it; one started later never does,
+and nothing logs anything. `SyphonSurface::open` marshals to the main thread,
+where `CefRunMessageLoop` guarantees a run loop, and `tools/syphon_probe.mm` is
+written to start *after* the server so the check cannot pass by accident.
 
 **`root_cache_path` is not optional.** Left unset, CEF picks a default profile
 directory shared by *every* CEF application on the machine, and Chromium allows
@@ -252,6 +264,23 @@ and that a **keyed fill carries straight alpha** — 50%-alpha green measures 13
 off the wire where premultiplied would be ~95, the exact value NDI produced
 before `unpremultiplyBgra`. Not measured on DeckLink: the key channel itself,
 the internal-keying composite, audio over SDI, genlock over hours.
+
+**Also verified, against Resolume Arena:** the shared (Syphon) output. Arena
+7.27.1 lists it, loads it on a layer, reports it at 1920x1080 and labels it
+Premultiplied of its own accord. Colour, premultiplied alpha and orientation are
+exact through `tools/syphon_probe.mm`, which links *Arena's* Syphon 5 framework
+rather than the Syphon 6 sources vendored here — two implementations agreeing,
+not one agreeing with itself. The copy costs one dropped tick in 1502.
+
+**The Spout half is the first Windows code here that has been run** — but only
+the output, and only through a harness. `tools/spout_send_test.cpp` links the
+real backend against the real SDK on a Windows 11 ARM64 VM (x64 binaries), and
+`tools/spout_probe.cpp` reads the pixels back: colour, alpha and orientation
+exact at tolerance zero. Weaker evidence than the Syphon pass and the doc says
+so — there is no second Spout implementation to check against, so it is one
+SDK's receiver reading its own sender. Still unproven: the CMake Windows branch
+(never configured, because nothing else builds there), and any real consumer —
+no Resolume for Windows, TouchDesigner or OBS was involved.
 
 Keying has a ceiling worth knowing: alpha needs RGBA, RGBA costs about twice the
 link rate of the same raster in 4:2:2, and a Duo 2 therefore refuses a keyed

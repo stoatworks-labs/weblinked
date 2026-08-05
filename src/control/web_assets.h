@@ -675,6 +675,11 @@ const OUTPUT_FIELDS = {
   // The display list comes from state.displays, so this offers real monitors
   // rather than an index the operator has to count out for themselves.
   screen: ['display', 'scaling'],
+  // Nothing but a name, which every output already has: the consumer picks the
+  // source out of a list by that name, and there is nothing else to choose.
+  // Listed explicitly rather than left to the `|| []` fallback so that "no
+  // fields" reads as a decision instead of an omission.
+  shared: [],
   preview: ['factor'],
 };
 
