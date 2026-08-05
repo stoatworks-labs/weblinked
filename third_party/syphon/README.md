@@ -1,9 +1,16 @@
 # Syphon (vendored, server subset)
 
-From <https://github.com/Syphon/Syphon-Framework>, BSD 2-clause — see
+From <https://github.com/Syphon/Syphon-Framework>, **BSD 3-clause** — see
 `LICENSE.txt`, which is upstream's `License.txt` unmodified. That licence
 requires the copyright notice be retained, which is why every file here still
-carries its original header and why none of them have been edited.
+carries its original header and why none of them have been edited. The third
+clause forbids using the authors' names to endorse or promote anything derived
+from it, so do not put Syphon's authors in WebLinked's marketing.
+
+Worth stating because it is an easy mistake: the copy Resolume Arena ships at
+`/Applications/Resolume Arena/Licenses/syphon.md` carries only two clauses.
+Upstream's has three, and upstream's is the one governing what is vendored
+here. Spout, next door, genuinely is BSD-2.
 
 Used by `src/outputs/shared_surface_mac.mm`.
 
@@ -15,7 +22,7 @@ things:
 * **No nested binary to sign and notarise.** A framework inside the app bundle
   is another thing for `SignMacBundle.cmake` to get right, and approving an app
   does not unquarantine its nested binaries.
-* **BSD-2 permits it and MIT is compatible with it**, unlike the NDI SDK — see
+* **BSD-3 permits it and MIT is compatible with it**, unlike the NDI SDK — see
   the long note at the head of `src/outputs/ndi_output.cpp` for the case where
   that is *not* true and why NDI is therefore `dlopen`ed instead.
 

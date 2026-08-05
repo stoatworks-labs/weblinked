@@ -159,7 +159,7 @@ AV_LAUNCHER_CONFIG=launchers/dev.toml npm run tauri dev   # against ./build
 | `src/browser/` | CefApp, CefClient (paint + audio), BrowserSource |
 | `src/engine/` | the clock loop |
 | `src/outputs/` | IOutput + preview, ndi, omt, decklink, aja, screen, shared |
-| `third_party/syphon/` | vendored Syphon server subset (BSD-2) — see its README |
+| `third_party/syphon/` | vendored Syphon server subset (BSD-3) — see its README |
 | `third_party/spout/` | vendored Spout DirectX sender subset (BSD-2) — see its README |
 | `src/control/` | HTTP server, OSC receiver, embedded control page |
 | `src/app/` | entry points, Info.plists, entitlements |
