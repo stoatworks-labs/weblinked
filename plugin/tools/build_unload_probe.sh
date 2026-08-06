@@ -59,3 +59,18 @@ echo "built:"
 echo "  $out/unload_probe"
 echo "  $out/BadCategory.bundle   (the control — this one must crash)"
 echo "  $out/helper_probe         (needs WEBLINKED_BINARY or an installed WebLinked)"
+
+# --- the render probe -------------------------------------------------------
+# Drives the built bundle through plugMain into an offscreen framebuffer and
+# checks the pixels. Answers "does it actually draw the page" without a GUI.
+# Links Syphon so that one is LOADED in the process. The plugin deliberately
+# ships no Syphon of its own and looks the classes up with NSClassFromString,
+# so a host without Syphon gives it nothing to attach to — which is correct
+# behaviour, and means this probe has to stand in for Resolume by having the
+# framework present.
+clang++ -std=c++17 -fno-objc-arc -Wno-deprecated-declarations \
+  -o "$out/render_probe" "$here/render_probe.mm" \
+  -F "$syphon" -framework Syphon -framework Foundation -framework OpenGL \
+  -rpath "$syphon"
+
+echo "  $out/render_probe         (needs WEBLINKED_BINARY)"

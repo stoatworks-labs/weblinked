@@ -92,6 +92,14 @@ unit — giving a bundle that loads, exports `plugMain`, and contains no plugins
 the shader takes `sampler2DRect` and multiplies by the texture size. A
 `sampler2D` here samples one texel.
 
+**6. The host must already have Syphon loaded.** A direct consequence of rule
+2: the plugin ships no Syphon, so `NSClassFromString(@"SyphonServerDirectory")`
+returns nil in a host that has none, and the plugin draws nothing. That is
+correct behaviour rather than a bug — Resolume always bundles Syphon — but it
+means any harness standing in for a host has to link the framework to be
+meaningful. `render_probe` does; the first version did not, and reported a
+working plugin as drawing nothing.
+
 ## Build and install
 
 ```bash
@@ -121,6 +129,7 @@ cd plugin/tools
 ./out/unload_probe --bundle ../build/WebLinked.bundle/Contents/MacOS/WebLinked
 
 WEBLINKED_BINARY=/path/to/WebLinked ./out/helper_probe
+WEBLINKED_BINARY=/path/to/WebLinked ./out/render_probe   # does it draw the page?
 ```
 
 The control has to keep failing. A probe that passes everything proves nothing.

@@ -1410,6 +1410,91 @@ not that a picture arrives on a layer.
 
 ---
 
+## 27. The plugin draws the page — verified, and Arena loads it
+
+Two separate things, and the second is the smaller of them.
+
+### Arena loads it
+
+With the fixed bundle in `~/Documents/Resolume Arena/Extra Effects/`, Arena
+7.27.1 starts, scans, and lists it through its own REST API:
+
+```
+WebLinked source entries: 1
+   'WebLinked' | category: Video Sources | id: WL01
+```
+
+No crash. Section 25's fault is fixed in the real application, not only against
+the probe. What is still **not** established is a picture on an actual Resolume
+layer: driving Arena's clip grid was not completed, and the machine's owner was
+using it. So the next check answers the same question a different way.
+
+### It draws the page
+
+`plugin/tools/render_probe.mm` drives the built bundle through `plugMain`
+exactly as a host does — instantiate, set the URL, `ProcessOpenGL` into an
+offscreen framebuffer — then reads the pixels back. That exercises the entire
+chain in one go: the helper is spawned, WebLinked renders `tools/alphabars.html`,
+publishes over Syphon, the plugin's client picks it up and the rectangle-texture
+shader draws it.
+
+```
+render:
+  (first picture on frame 9)
+  the plugin drew something                            ok
+  the picture settled to a steady state                ok
+  (steady from frame 20)
+
+alphabars through the plugin:
+  ( 160,360) opaque red   got RGBA 192   0   0 255  want 192   0   0 255  ok
+  ( 480,360) 50% green    got RGBA   0  96   0 128  want   0  96   0 128  ok
+  ( 800,360) 25% blue     got RGBA   0   0  48  64  want   0   0  48  64  ok
+  (1120,360) transparent  got RGBA   0   0   0   0  want   0   0   0   0  ok
+
+teardown:
+  deinstantiateGL returned                             ok
+  no WebLinked process left behind                     ok
+
+PASS
+```
+
+Run twice, identical both times, settling on the same frame. The alpha is
+intact — 255, 128, 64, 0 — and the values match the Syphon and Spout tables in
+sections 23 and 24 exactly, which is the point of using one test page
+throughout: a number that disagrees says *where* in the chain it went wrong.
+
+### Three things this cost
+
+**A harness with no Syphon reports a working plugin as broken.** The first
+version of `render_probe` linked only Foundation and OpenGL, so
+`NSClassFromString(@"SyphonServerDirectory")` returned nil, the plugin had
+nothing to attach to and drew nothing. That is the plugin behaving correctly —
+it ships no Syphon by design (section 25) — and it means a stand-in for the
+host has to link the framework. Now recorded as rule 6 in
+`docs/07-resolume-plugin.md`.
+
+**"Something arrived" is not "the page arrived".** Rendering until the picture
+stopped being the clear colour sampled a blank document that WebLinked had
+published before the page painted, and read black. Exactly the mistake
+`syphon_probe` made with `-newFrameImage` in section 23, in a new place. The
+probe now waits for the sampled pixels to hold steady for ten consecutive
+frames. Steady is deliberately not the same as correct: it settles on whatever
+the plugin actually produces and the assertions then judge it, because a loop
+that waited until the pixels matched would be a test that cannot fail.
+
+**A running WebLinked is six processes, not one.** `pgrep -f "MacOS/WebLinked"`
+matches the browser *and* five CEF subprocesses under
+`Contents/Frameworks/WebLinked Helper.app/Contents/MacOS/…`, which outlive
+their parent by a moment. That made the leak check fail against a plugin
+shutting down perfectly well. It now excludes `Frameworks` and polls rather
+than sleeping.
+
+**Not verified:** a picture on a Resolume layer, driven through Resolume's own
+clip grid and composited by Resolume. Everything up to and including the
+plugin's own draw is measured; what Arena does with the result is inferred.
+
+---
+
 ## Bugs this verification actually found
 
 Recorded because they are the argument for doing it at all. Every one was found
