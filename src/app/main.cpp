@@ -15,6 +15,13 @@
 #if defined(_WIN32)
 // For GetModuleHandle below. NOMINMAX comes from CMakeLists.
 #include <windows.h>
+// ShellExecuteA, for openInDefaultBrowser. windows.h pulls this in only when
+// WIN32_LEAN_AND_MEAN is unset, which is not a thing to depend on.
+#include <shellapi.h>
+#elif !defined(__APPLE__)
+// fork, execlp, _exit and waitpid, likewise.
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 #include <algorithm>
@@ -48,6 +55,43 @@
 #include "engine/source_manager.h"
 #include "outputs/output.h"
 
+#if !defined(__APPLE__)
+namespace weblinked {
+
+/// The non-Apple half of the declaration in app/mac_application.h — see the
+/// comment there for why this hands the URL to another application rather than
+/// opening a browser of our own.
+void openInDefaultBrowser(const std::string& url) {
+#if defined(_WIN32)
+  ::ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+  // Deliberately not system(): the URL would go through a shell, and the
+  // control address carries a token often enough to make that worth avoiding.
+  //
+  // Forked twice so the grandchild is orphaned and init reaps it. A single fork
+  // leaves a zombie in the table for as long as this process runs, and this one
+  // is meant to run for the length of a show. Only async-signal-safe calls
+  // happen between the fork and the exec, which is what makes forking from a
+  // process this heavily threaded survivable.
+  const pid_t child = ::fork();
+  if (child == 0) {
+    if (::fork() == 0) {
+      ::execlp("xdg-open", "xdg-open", url.c_str(), nullptr);
+      // No xdg-open on this box — a headless server is a normal place for that.
+      // The address is on stdout and in the log either way.
+    }
+    ::_exit(127);
+  }
+  if (child > 0) {
+    int status = 0;
+    ::waitpid(child, &status, 0);
+  }
+#endif
+}
+
+}  // namespace weblinked
+#endif
+
 namespace {
 
 using namespace weblinked;
@@ -71,6 +115,14 @@ struct Options {
   /// command line still wins — see applySavedSettings().
   bool useSavedSettings = true;
   bool wantPreview = true;
+  /// Whether to hand the control page to the user's default browser once it is
+  /// listening. Defaults to on only when the process was started with no
+  /// arguments at all, which in practice means someone double-clicked it in
+  /// Finder: this opens no window of its own, so without this a double-click
+  /// produces a Dock icon and nothing else, and reads as a broken build. Anyone
+  /// who typed a command line asked for something specific and gets no browser
+  /// unless they ask; --open and --no-open force it either way.
+  bool openControlPage = false;
   /// A configuration file describing several sources. Mutually exclusive with
   /// the per-source flags — see resolveSources().
   std::string configPath;
@@ -154,6 +206,11 @@ Control
   --headless               Accepted and ignored; there is no window to suppress.
                            The control page is served over HTTP — open it in a
                            browser, or use the tray launcher in launcher/
+  --open                   Show the control page in your default browser once it
+                           is listening. This is the default when the app is
+                           started with no arguments at all, as it is by a
+                           double-click; a command line gets it only on request
+  --no-open                Never open a browser, whatever the launch looked like
   --no-interactive         Do not arm the preview for input on load
   --verbose                Verbose logging
   --help                   This text
@@ -183,6 +240,18 @@ Backends compiled into this build: )", WEBLINKED_VERSION);
 std::string inlineValue(const std::string& argument) {
   const auto equals = argument.find('=');
   return equals == std::string::npos ? std::string{} : argument.substr(equals + 1);
+}
+
+/// Whether nobody typed anything — a Finder double-click rather than a command
+/// line. The process serial number LaunchServices sometimes prepends is not an
+/// argument the operator chose, so it does not count as one.
+bool launchedWithNoArguments(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]).rfind("-psn_", 0) != 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
@@ -404,9 +473,26 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
       continue;
     }
 
+    if (argument == "--open") {
+      options.openControlPage = true;
+      continue;
+    }
+    if (argument == "--no-open") {
+      options.openControlPage = false;
+      continue;
+    }
+
     // CEF and Chromium switches pass straight through; they are consumed from
     // the command line CEF builds for itself.
     if (argument.rfind("--", 0) == 0) {
+      continue;
+    }
+
+    // LaunchServices prepends a process serial number on some launch paths.
+    // It is not ours, it carries one dash rather than two so it misses the
+    // pass-through above, and rejecting it would make the app fail to start
+    // from Finder on exactly the machines that send it.
+    if (argument.rfind("-psn_", 0) == 0) {
       continue;
     }
 
@@ -699,6 +785,8 @@ int main(int argc, char** argv) {
 
   Options options;
   options.format = *VideoFormat::parse("1080p50");
+  // Set before parsing so that --no-open can turn it back off again.
+  options.openControlPage = launchedWithNoArguments(argc, argv);
   bool shouldExit = false;
   if (!parseArguments(argc, argv, options, shouldExit)) {
     return 2;
@@ -830,6 +918,13 @@ int main(int argc, char** argv) {
   }
   std::printf("Control: %s\n", control.controlUrl().c_str());
   std::printf("Log:     %s\n", weblinked::diag::logFilePath().c_str());
+
+  // Only once the server is actually listening, so the page the browser asks
+  // for is there to answer rather than racing the bind.
+  if (options.openControlPage) {
+    weblinked::diag::info("opening the control page in the default browser");
+    weblinked::openInDefaultBrowser(control.controlUrl());
+  }
 
   // No window is ever created here. This process is a render host and a control
   // server; the operator's view is a browser pointed at the address above, and

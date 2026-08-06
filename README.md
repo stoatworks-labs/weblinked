@@ -94,9 +94,9 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 | Build | Download | Size |
 | --- | --- | --- |
-| Apple Silicon · .dmg disk image | [`weblinked-0.7.0-macos-arm64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-macos-arm64.dmg) | 140 MB |
-| Apple Silicon · .dmg disk image | [`WebLinked.Launcher_0.7.0_aarch64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/WebLinked.Launcher_0.7.0_aarch64.dmg) | 144 MB |
-| Apple Silicon · .pkg installer | [`weblinked-0.7.0-macos-arm64.pkg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-macos-arm64.pkg) | 140 MB |
+| Apple Silicon · .dmg disk image (desktop app) | [`WebLinked.Launcher_0.7.0_aarch64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/WebLinked.Launcher_0.7.0_aarch64.dmg) | 144 MB |
+| Apple Silicon · .dmg disk image (engine only) | [`weblinked-0.7.0-macos-arm64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-macos-arm64.dmg) | 140 MB |
+| Apple Silicon · .pkg installer (engine only) | [`weblinked-0.7.0-macos-arm64.pkg`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-macos-arm64.pkg) | 140 MB |
 
 </details>
 
@@ -105,9 +105,9 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 | Build | Download | Size |
 | --- | --- | --- |
-| x64 · .exe installer | [`weblinked-0.7.0-windows-x86_64-setup.exe`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-windows-x86_64-setup.exe) | 133 MB |
-| x64 · .exe installer | [`WebLinked.Launcher_0.7.0_x64-setup.exe`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/WebLinked.Launcher_0.7.0_x64-setup.exe) | 182 MB |
-| x64 · .zip archive | [`weblinked-0.7.0-windows-x86_64.zip`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-windows-x86_64.zip) | 179 MB |
+| x64 · .exe installer (desktop app) | [`WebLinked.Launcher_0.7.0_x64-setup.exe`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/WebLinked.Launcher_0.7.0_x64-setup.exe) | 182 MB |
+| x64 · .exe installer (engine only) | [`weblinked-0.7.0-windows-x86_64-setup.exe`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-windows-x86_64-setup.exe) | 133 MB |
+| x64 · .zip archive (engine only) | [`weblinked-0.7.0-windows-x86_64.zip`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-windows-x86_64.zip) | 179 MB |
 
 </details>
 
@@ -116,9 +116,9 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 | Build | Download | Size |
 | --- | --- | --- |
-| x64 · .deb package (Debian/Ubuntu) | [`WebLinked.Launcher_0.7.0_amd64.deb`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/WebLinked.Launcher_0.7.0_amd64.deb) | 359 MB |
-| x64 · .rpm package (Fedora/RHEL) | [`WebLinked.Launcher-0.7.0-1.x86_64.rpm`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/WebLinked.Launcher-0.7.0-1.x86_64.rpm) | 374 MB |
-| x64 · .tar.gz archive | [`weblinked-0.7.0-linux-x86_64.tar.gz`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-linux-x86_64.tar.gz) | 356 MB |
+| x64 · .deb package (Debian/Ubuntu) (desktop app) | [`WebLinked.Launcher_0.7.0_amd64.deb`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/WebLinked.Launcher_0.7.0_amd64.deb) | 359 MB |
+| x64 · .rpm package (Fedora/RHEL) (desktop app) | [`WebLinked.Launcher-0.7.0-1.x86_64.rpm`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/WebLinked.Launcher-0.7.0-1.x86_64.rpm) | 374 MB |
+| x64 · .tar.gz archive (engine only) | [`weblinked-0.7.0-linux-x86_64.tar.gz`](https://github.com/stoatworks-labs/weblinked/releases/download/v0.7.0/weblinked-0.7.0-linux-x86_64.tar.gz) | 356 MB |
 
 </details>
 
@@ -271,7 +271,18 @@ HTTP or OSC, or reach from the [tray launcher](launcher/) — a menu-bar icon th
 starts and stops the process and opens the page for you. That is why there is no
 GUI toolkit anywhere in this project.
 
+Started with no arguments — by a double-click, say — it hands the control page to
+your default browser once the server is listening, so it does not look like
+nothing happened. A command line is assumed to know what it wants and gets no
+browser unless you add `--open`; `--no-open` suppresses it either way.
+
 `--help` lists every option and reports which backends this build contains.
+
+**Two downloads, and they are not the same thing.** The one marked *desktop app*
+is the whole product: a menu-bar launcher with the engine packaged inside it, and
+what you want unless you know otherwise. The ones marked *engine only* are the
+render host by itself, for a machine that starts it from a command line, a
+service manager or another program.
 
 ## Control
 

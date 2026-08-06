@@ -169,6 +169,10 @@ jobs:
         # never starting.
         run: |
           source scripts/release-lib.sh
+          # Published artefacts are named from scripts/release-file-slug, which
+          # rl_init reads. Deliberately not exported here as well: the variable
+          # beats the file, so a second copy of the value would silently win if
+          # the two ever drifted.
           rl_init "WebLinked" weblinked "${{ steps.ver.outputs.version }}" \
             com.stoatworks.weblinked "$GITHUB_WORKSPACE"
           app="build/Release/WebLinked.app"
@@ -202,10 +206,13 @@ jobs:
           rl_init "WebLinked" weblinked "${{ steps.ver.outputs.version }}" \
             com.stoatworks.weblinked "$RUNNER_TEMP"
           rl_ndi_bundle "${{ matrix.name }}" "out"
+          # Named by hand rather than through rl_zip/rl_tar, so RL_FILE_SLUG has
+          # to be spelled out here too or these two would keep the old name
+          # while the macOS artefacts changed.
           if [ "$RUNNER_OS" = "Windows" ]; then
-            7z a "weblinked-${{ steps.ver.outputs.version }}-${{ matrix.name }}.zip" ./out/*
+            7z a "$RL_FILE_SLUG-${{ steps.ver.outputs.version }}-${{ matrix.name }}.zip" ./out/*
           else
-            tar czf "weblinked-${{ steps.ver.outputs.version }}-${{ matrix.name }}.tar.gz" -C out .
+            tar czf "$RL_FILE_SLUG-${{ steps.ver.outputs.version }}-${{ matrix.name }}.tar.gz" -C out .
           fi
 
       - name: Pack WebLinked for embedding in the launcher
@@ -394,8 +401,11 @@ jobs:
             [0-9]*) ;;
             *) version="$(sed -n 's/^project(weblinked VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)" ;;
           esac
+          # RL_FILE_SLUG names the .exe and comes from scripts/release-file-slug.
+          # RL_SLUG stays `weblinked`, so the Add/Remove Programs key an existing
+          # install already wrote is the one this one updates.
           rl_init "WebLinked" weblinked "$version" com.stoatworks.weblinked "$PWD/installers"
-          zip="$(find artifacts -name "weblinked-*-windows-x86_64.zip" | head -1)"
+          zip="$(find artifacts -name "$RL_FILE_SLUG-*-windows-x86_64.zip" | head -1)"
           if [ -z "$zip" ]; then echo "no Windows artefact, nothing to do"; exit 0; fi
           stage="$RUNNER_TEMP/stage-win"
           rm -rf "$stage"; mkdir -p "$stage"

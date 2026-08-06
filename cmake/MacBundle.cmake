@@ -99,6 +99,17 @@ function(weblinked_add_mac_app)
       VERBATIM)
   endforeach()
 
+  # The icon has to land before the signing step below, or it is a file the
+  # signature does not cover and `codesign --verify` fails on the sealed
+  # resources. POST_BUILD commands run in the order they are added, so this
+  # block must stay above that one.
+  add_custom_command(TARGET weblinked POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_app_bundle}/Contents/Resources"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/app/${_app_name}.icns"
+            "${_app_bundle}/Contents/Resources/${_app_name}.icns"
+    VERBATIM)
+
   # Ad-hoc sign inside-out. See the Gatekeeper note at the top of this file.
   add_custom_command(TARGET weblinked POST_BUILD
     COMMAND ${CMAKE_COMMAND}

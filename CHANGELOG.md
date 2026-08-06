@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+Packaging. Nothing about how the engine renders changed; all of this is about
+which file you get and what happens when you open it.
+
+### Fixed
+
+- **A double-click no longer looks like a broken build.** The macOS bundle
+  carried no icon at all, so Finder drew the blank generic-document tile, and
+  the process opens no window by design — so double-clicking `WebLinked.app`
+  produced a nameless Dock icon and nothing else. It was running the whole time
+  and serving the control page on `:7654`, but nothing said so.
+
+  The bundle now carries `WebLinked.icns`, and a launch with **no arguments at
+  all** opens the control page in your default browser once the HTTP server is
+  listening. A command line is left alone — it asked for something specific —
+  and `--open` / `--no-open` force it either way. This is not a window of our
+  own and must not become one: every browser in this process is windowless,
+  which forces Alloy runtime style, and that is what removed the operator window
+  in v0.5.3. Another application's window has no such problem.
+
+- **The two macOS downloads were indistinguishable.** `weblinked-*.dmg` and
+  `WebLinked.Launcher_*.dmg` are different products — the bare render host and
+  the tray app with the engine packaged inside it — but the generated download
+  table labelled both "Apple Silicon · .dmg disk image" and offered the engine
+  first, on the website card as well as in this README. Anyone taking the
+  obvious download got the component rather than the product. The launcher now
+  leads on every platform and each row says which it is.
+
+### Changed
+
+- **The engine's published files are now `weblinked-engine-*`.** The launcher's
+  keep their name. The Windows uninstall registry key is deliberately unchanged,
+  so an existing install updates its own Add/Remove Programs entry instead of
+  growing a second one.
+
 ## v0.7.0 — 2026-08-01
 
 Two things, both about WebLinked being usable somewhere other than a terminal.

@@ -37,6 +37,16 @@ WebLinked **has no window of its own.** It is a render host and a control server
 page it serves is the entire UI. Open it in any browser, or let the tray launcher start it and
 open it for you.
 
+Double-click it and it opens the control page in your default browser once the server is up —
+a launch with no arguments at all is taken as "show me something". Type a command line and it
+stays quiet, because you asked for something specific; `--open` and `--no-open` decide it
+explicitly.
+
+There are **two downloads**. The one marked **desktop app** is the whole product — a menu-bar
+launcher with the engine packaged inside it — and is the one to take unless you have a reason
+not to. The ones marked **engine only** are the render host by itself, for a machine that
+starts it from a command line, a service manager or another program.
+
 ```bash
 WebLinked --url https://example.com --format 1080p50 --ndi=Test --headless
 ```

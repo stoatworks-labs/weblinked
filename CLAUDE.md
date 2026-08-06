@@ -102,6 +102,18 @@ cd launcher && npm install && npm run tauri dev     # needs the Tauri CLI
 AV_LAUNCHER_CONFIG=launchers/dev.toml npm run tauri dev   # against ./build
 ```
 
+## Release
+
+Two products come out of this repo and they are not interchangeable: the tray
+launcher, which carries the engine inside it and is what a person should
+download, and the engine on its own for a machine driven from a command line.
+
+Published engine artefacts are named from `scripts/release-file-slug`
+(`weblinked-engine`), which `rl_init` reads — do **not** also export
+`RL_FILE_SLUG`, because the variable beats the file. `RL_SLUG` stays `weblinked`
+and must: it is the Windows uninstall registry key, so changing it gives
+everyone who already installed a second Add/Remove Programs entry.
+
 ## Rules
 
 1. **Never claim a backend works because it compiles.** NDI, preview, DeckLink

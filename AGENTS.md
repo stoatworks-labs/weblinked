@@ -105,6 +105,15 @@ launcher in `launcher/` is what puts it on a desktop. If you ever add a window
 back, `CefWindowInfo::runtime_style = CEF_RUNTIME_STYLE_ALLOY` is the thing you
 will need, and a menu bar, because CEF sets neither for you.
 
+The cost of having no window is that a double-click looks like a build that does
+not start, which is exactly how v0.7.0 was read: a bundle with no icon either, so
+Finder drew the blank generic tile, and then nothing appeared. Both halves are
+fixed, and neither is a window — the bundle carries `WebLinked.icns`, and a
+launch with no arguments hands the control URL to `openInDefaultBrowser()` once
+the HTTP server is listening. *Another application's* window is not subject to
+the runtime-style trap above, which is the whole reason it is allowed to be a
+browser at all. Do not "improve" this into a window of our own.
+
 **A Syphon server must be created on the main thread.** `SyphonServerBase`
 registers for the announce-*request* notification from `-init`, on whichever
 thread called it, and `NSDistributedNotificationCenter` delivers to that

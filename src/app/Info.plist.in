@@ -14,6 +14,11 @@
   <string>6.0</string>
   <key>CFBundleName</key>
   <string>WebLinked</string>
+  <!-- Without this the bundle carries no icon at all and Finder falls back to
+       the blank generic-document tile, which — next to a process that opens no
+       window — is most of why v0.7.0 read as a build that did not work. -->
+  <key>CFBundleIconFile</key>
+  <string>WebLinked</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

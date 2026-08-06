@@ -58,4 +58,13 @@ void installMacApplication() {
   [WebLinkedApplication sharedApplication];
 }
 
+void openInDefaultBrowser(const std::string& url) {
+  @autoreleasepool {
+    NSURL* target = [NSURL URLWithString:@(url.c_str())];
+    if (target) {
+      [[NSWorkspace sharedWorkspace] openURL:target];
+    }
+  }
+}
+
 }  // namespace weblinked
