@@ -41,7 +41,7 @@ jobs:
           - { name: windows-x86_64, os: windows-latest }
           - { name: linux-x86_64,  os: ubuntu-22.04 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux CEF dependencies
         if: runner.os == 'Linux'
@@ -273,7 +273,7 @@ jobs:
           - { name: windows-x86_64, os: windows-latest, config: windows }
           - { name: linux-x86_64,   os: ubuntu-22.04,   config: linux }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux Tauri dependencies
         if: runner.os == 'Linux'
@@ -376,7 +376,7 @@ jobs:
     # Windows job uploaded rather than depending on whatever NSIS the Windows
     # image happens to carry.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v4
         with:
