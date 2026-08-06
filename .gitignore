@@ -22,3 +22,7 @@ ndi_probe.dSYM/
 compile_commands.json
 dist-release/
 build-release/
+
+# Plugin build output and probe binaries
+plugin/build/
+plugin/tools/out/

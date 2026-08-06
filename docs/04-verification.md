@@ -1232,6 +1232,184 @@ Windows translation unit.
 
 ---
 
+## 25. The Resolume plugin — it crashed Arena, and why
+
+The FFGL plugin in `plugin/` took Resolume down. Not while rendering: **while
+scanning the plugin folder**, before anything was placed on a layer. Worth
+recording in full, because the cause is not where anyone would look and the
+first fix was wrong in an instructive way.
+
+```
+EXC_BAD_ACCESS (SIGSEGV) at 0x13e52b150
+  getMethodNoSuper_nolock                     libobjc
+  lookUpImpOrForward                          libobjc
+  _objc_msgSend_uncached                      libobjc
+  +[NSArray arrayWithArray:]                  CoreFoundation
+  -[SyphonServerDirectory servers]            Syphon   <- Arena's, not ours
+```
+
+The crash is inside **Arena's own Syphon**, and our bundle does not appear in
+the report's image list at all. Both facts are the answer.
+
+**Resolume `dlclose`s a plugin after inspecting it.** The first version of the
+plugin vendored Syphon's client sources so it could receive WebLinked's feed.
+Knowing that Resolume already loads `Syphon.framework`, every Syphon class was
+renamed at compile time through `-D` macros — `WLSyphonClient` and so on — and
+that part worked: the built bundle contained no `_OBJC_CLASS_$_Syphon*` symbol.
+
+It made no difference, because **the problem was never the classes**. Syphon's
+sources add *categories to Foundation classes*:
+
+```
+NSArray      (SyphonServerDirectoryServerSearch)
+NSDictionary (SyphonServerDirectoryPimpMyDictionary)
+```
+
+A category attaches to its target whatever the contributing image is called.
+`NSArray` outlives the bundle, so unloading left a method list on it pointing
+into unmapped memory, and the next `objc_msgSend` on an `NSArray` that missed
+the method cache walked it. That the caller was Arena's Syphon rather than ours
+is incidental — anything touching `NSArray` could have been the one to die.
+
+**An Objective-C image that has extended somebody else's class is not safely
+unloadable.** Renaming does not help. Hiding symbols does not help — the
+runtime attaches categories from `__objc_catlist`, not from the symbol table.
+
+### The fix
+
+The plugin now contributes **no Objective-C metadata at all** and borrows the
+Syphon that Resolume already has, through `NSClassFromString` and typed
+`objc_msgSend` casts. No vendored client, no `@interface` (which would emit an
+undefined `_OBJC_CLASS_$_` and force linking a Syphon), no `@protocol`, no
+category. The built bundle has no `__objc_classlist`, `__objc_catlist` or
+`__objc_protolist` section, so there is nothing for `dlclose` to leave behind.
+
+### Verified, with a control
+
+`plugin/tools/unload_probe.mm` reproduces the whole sequence in under a second
+and with nothing to lose: load, drive `plugMain` as a scan does, unload, then
+hammer Syphon 200 times. `plugin/tools/build_unload_probe.sh` also builds a
+**control** — a nine-line bundle whose only content is a category on `NSArray`.
+
+```
+$ ./out/unload_probe --bundle ./out/BadCategory.bundle --control
+  objc metadata sections: 1
+  dlclose...
+  unloaded
+Syphon after unload (200 rounds):
+[exit 139 — SIGSEGV]
+
+$ ./out/unload_probe --bundle ../build/WebLinked.bundle/Contents/MacOS/WebLinked
+  objc metadata sections: 0
+  plugMain: found
+  parameters: 3
+    [0] URL
+    [1] Source Name
+    [2] Run
+  instantiateGL: ok
+  deinstantiateGL: ok
+  dlclose...
+  unloaded
+Syphon after unload (200 rounds):
+  survived
+PASS
+```
+
+The control has to keep failing. A probe that passes everything proves nothing,
+and this one was written after the fact — the discipline is to make it fail on
+the known-bad case before believing it about the good one.
+
+**`instantiateGL: ok` is a second check riding along**, and it is the one a
+class-level harness cannot make. The SDK sets every parameter's default on a
+fresh instance and deletes the instance if any set returns `FF_FAIL`, while the
+base `CFFGLPlugin::SetTextParameter` is a stub returning exactly that. A plugin
+declaring a text parameter without overriding it — and this one declares two —
+cannot be created by any real host, while a harness driving the C++ class
+directly carries on passing. Only a probe going through `plugMain` sees it.
+
+**Not verified:** that Arena lists the plugin, draws a WebLinked source, or
+behaves over a session. The probe covers load, scan, instantiate and unload —
+which is what crashed — and nothing above that.
+
+---
+
+## 26. The plugin's process supervision — verified without Resolume
+
+The plugin launches a WebLinked per instance and re-points it through the
+control API. That is the part with consequences an operator meets at the worst
+moment — a browser still running after its layer was deleted, two layers
+fighting over port 7654 — so it is checked directly rather than by loading the
+plugin into Arena and watching.
+
+`plugin/tools/helper_probe.mm` links `Helper.cpp` itself, so what runs is the
+shipping code rather than a restatement of it:
+
+```
+$ WEBLINKED_BINARY=…/WebLinked.app/Contents/MacOS/WebLinked ./out/helper_probe
+binary: …/WebLinked.app/Contents/MacOS/WebLinked
+
+start:
+  start() succeeded                                    ok
+  was given a control port                             ok
+  (port 50681)
+  process is alive                                     ok
+  published a Syphon source under its given name       ok
+
+second instance:
+  a second helper starts alongside the first           ok
+  the two got different control ports                  ok
+  the first is undisturbed                             ok
+
+re-point without restart:
+  setUrl() accepted by the running helper              ok
+  same process still running after setUrl()            ok
+
+stop:
+  second helper stopped                                ok
+  helper stopped                                       ok
+  its Syphon source retired rather than going stale    ok
+
+PASS
+```
+
+Four things worth drawing out.
+
+**Two instances do not collide.** Each helper asks the kernel for a free port
+by binding to 0 and reading back what it chose. That is a race — something else
+could take the port in the gap — and it is accepted because WebLinked refuses
+to start on a port already in use and says so, which turns the race into a
+clear message rather than two processes quietly sharing a control API.
+
+**A URL edit does not restart the browser.** `setUrl` goes to `/api/url` on the
+running helper, and the probe checks the process is the same one afterwards.
+Restarting would cost a browser launch and a black layer on every keystroke an
+operator typed into the URL box.
+
+**The source retires rather than going stale.** `stop()` sends SIGTERM, which
+WebLinked handles by shutting Chromium down in order; only after 2 s does it
+escalate to SIGKILL. The probe waits for the Syphon source to disappear, which
+is the observable difference between a clean shutdown and a killed one — a
+killed server leaves an entry in every consumer's source list until they time
+it out.
+
+**Nothing is left behind.** `pgrep -f "MacOS/WebLinked"` reports zero after the
+run. `alive()` reaps with `waitpid(WNOHANG)`, so a helper that crashed does not
+become a zombie, and the plugin restarts it on the next frame instead of showing
+a black layer for ever.
+
+**A plugin scan still launches nothing.** Re-running `unload_probe` after the
+supervision was added: four parameters enumerated, `instantiateGL: ok`, and
+zero WebLinked processes before and after. Instantiation does not reach
+`ProcessOpenGL`, and the empty-URL guard is what stops a scan starting a
+browser per installed plugin.
+
+**Not verified:** anything involving Resolume. The plugin has still never been
+seen to draw. What sections 25 and 26 establish is that loading it cannot take
+Arena down, that a host can create it, and that the processes it owns behave —
+not that a picture arrives on a layer.
+
+---
+
 ## Bugs this verification actually found
 
 Recorded because they are the argument for doing it at all. Every one was found
