@@ -295,7 +295,7 @@ jobs:
             launcher/src-tauri/target
           key: launcher-${{ matrix.name }}-${{ hashFiles('launcher/src-tauri/Cargo.lock') }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
 
