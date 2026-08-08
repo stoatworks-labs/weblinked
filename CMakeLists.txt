@@ -319,16 +319,20 @@ if(WEBLINKED_WITH_SHARED)
     # /w because this is upstream code we do not modify. Spout builds cleanly
     # at its own warning level, not at the one CEF imposes here.
     #
-    # /FI mmsystem.h for the same reason it is not an edit to the vendored file:
-    # SpoutFrameCount.cpp calls timeBeginPeriod/timeGetDevCaps and gets their
-    # declarations from <windows.h>, which only pulls in <mmsystem.h> when
-    # WIN32_LEAN_AND_MEAN is absent. This build defines it globally (see the
+    # The force-includes are for the same reason they are not an edit to the
+    # vendored file: SpoutFrameCount.cpp calls timeBeginPeriod/timeGetDevCaps and
+    # gets their declarations from <windows.h>, which only pulls in <mmsystem.h>
+    # when WIN32_LEAN_AND_MEAN is absent. This build defines it globally (see the
     # NOMINMAX note above), so upstream code that compiles everywhere else fails
-    # here with 'TIMECAPS': undeclared identifier. Force-including it for these
-    # sources restores what upstream assumes without touching third_party/ and
-    # without giving the rest of the build the full Windows surface back.
+    # here with 'TIMECAPS': undeclared identifier.
+    #
+    # Both headers, in this order, and the order is the whole point: /FI injects
+    # at the very top of the translation unit, so naming mmsystem.h alone puts it
+    # *before* windows.h and it fails inside mmsyscom.h instead — WINAPI and
+    # MMVERSION undeclared, which reads like a broken SDK rather than a missing
+    # prerequisite. windows.h first gives it the base types it assumes.
     set_source_files_properties(${WEBLINKED_SPOUT_SOURCES} PROPERTIES
-      COMPILE_OPTIONS "/w;/FImmsystem.h")
+      COMPILE_OPTIONS "/w;/FIwindows.h;/FImmsystem.h")
   endif()
 endif()
 
