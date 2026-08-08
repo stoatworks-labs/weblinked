@@ -5,8 +5,8 @@ that a claim in the README can be checked rather than believed.
 
 The distinction that matters throughout: **compiles against a real SDK** is not
 the same as **works against real hardware**. NDI and DeckLink have now been
-measured against real hardware (sections 2 and 19); OMT and AJA remain in the
-first category.
+measured against real hardware (sections 2, 19 and 19a); OMT and AJA remain in
+the first category.
 
 Everything below was run on macOS 26.4.1, Apple Silicon (M4 Max), against
 CEF 150.0.17 / Chromium 150.0.7871.187.
@@ -753,6 +753,123 @@ left to capture the keyed result on.
 - **Audio over SDI.** Not exercised at all.
 - **Genlock over hours**, rather than two minutes.
 - **AJA.** Still no card. Unchanged from "compiles and nothing more".
+
+---
+
+## 19a. The same card in a different profile — re-verified, and the map above is withdrawn
+
+Run at v0.7.0 on the same Duo 2, and the first thing it established is that
+**section 19's connector table describes a profile the card is no longer in**.
+Desktop Video profiles are persistent and change which sub-devices exist, so a
+connector map is only true for the profile it was measured in. This one was
+measured; do not carry either table across a profile change.
+
+`tools/dl_profile.mm` asks the card what it is rather than assuming:
+
+```
+index 0  DeckLink Duo (1)  half duplex  in:yes out:yes  ext key:no  int key:no
+index 1  DeckLink Duo (2)  half duplex  in:yes out:yes  ext key:no  int key:no
+index 2  DeckLink Duo (3)  half duplex  in:yes out:yes  ext key:no  int key:no
+index 3  DeckLink Duo (4)  half duplex  in:yes out:yes  ext key:no  int key:no
+           output modes: 1080p50/YUV=yes 1080p25/YUV=yes
+                         1080p50/BGRA=no 1080p25/BGRA=yes
+```
+
+Against section 19's two full-duplex sub-devices with two inactive, this profile
+has **all four active, half duplex, and no keyer at all**. Half duplex is what
+makes the map unambiguous: each sub-device owns exactly one BNC, so the physical
+labels line up with the indices, which the loopback then confirmed.
+
+| Cable position | Transmit | Capture | Result |
+|---|---|---|---|
+| 1 to 4 | index 0 | index 3 | locks, all bars exact |
+
+### The round trip, at both rates
+
+Transmitted `tools/testcard.html`, captured with `sdi_probe` and its own BT.709
+reference — the receiver is not reading WebLinked's counters:
+
+```
+bar        sampled Y/Cb/Cr    expected Y/Cb/Cr   verdict
+grey        181  128  128       181  128  128       ok
+yellow      169   44  136       169   44  136       ok
+cyan        146  147   44       146  147   44       ok
+green       134   63   51       134   63   51       ok
+magenta      63  193  205        63  193  205       ok
+red          51  109  212        51  109  212       ok
+blue         28  212  120        28  212  120       ok
+black        16  128  128        16  128  128       ok
+
+frames received: 26  (1920x1080)   PASS
+```
+
+Identical at **1080p50 and 1080p25**, and identical to the values section 19
+recorded on the other profile — the colour path does not depend on which
+sub-device carries it.
+
+### The buffer, again
+
+Ninety seconds at 1080p50, sampling `/api/state`:
+
+```
+  t      frames   completed  buffered  late  dropped
+  0s      2635      2629         6       0       0
+ 30s      4137      4131         6       0       0
+ 60s      5638      5632         6       0       0
+ 90s      7139      7133         6       0       0
+```
+
+4504 frames in 90s = **50.04 fps**, `buffered_frames` pinned at 6 with no
+excursion at all, nothing late, nothing dropped. Section 19 saw one dip to 5;
+this run saw none.
+
+### Keying refused correctly — the case section 19 could not reach
+
+Section 19 noted that the `SupportsExternalKeying`/`SupportsInternalKeying`
+guard *passed* on that card and so proved nothing. This profile has no keyer, so
+the guard is finally exercised in the direction that matters, and it fires:
+
+```
+--key=external --format 1080p25 -> 'DeckLink Duo (1)' does not support external keying
+--key=internal --format 1080p25 -> 'DeckLink Duo (1)' does not support internal keying
+```
+
+In both cases the output reports `running: false` and the process stays up
+rather than dying — a refused output is not a crashed one.
+
+### A real defect this found: the wrong remedy at 1080p50
+
+Asking for keyed **1080p50** on this profile produces the *bandwidth* message
+instead:
+
+```
+'DeckLink Duo (1)' reports 1920x1080p50 as unsupported for 8-bit BGRA output.
+Keying carries alpha, which needs about twice the link rate ...; this card
+accepts a keyed 1920x1080 at 24000/1001, 24000/1000, 25000/1000, ...
+```
+
+Every rate it names is wrong **for this profile**, because the card has no keyer
+at any rate here. `configureOutput`'s mode check runs before `configureKeyer`
+(`decklink_output.cpp`), so the bandwidth explanation wins and sends the operator
+to 1080p25 — where they hit "does not support external keying" instead. The
+message's own code comment assumes the card "reports keying support and every
+rate as available", which was true of the full-duplex profile section 19 measured
+and is not true generally.
+
+Not a wrong refusal — the output correctly fails either way — but the advice
+attached to it is misleading, and only a profile without a keyer exposes it.
+
+### What this run did and did not settle
+
+Settled, on hardware, and now on **two different profiles**: the output path,
+the scheduled-playback sequence, pre-roll depth, buffer behaviour, the colour on
+the wire at 1080p50 and 1080p25, and the keyer capability guard in both
+directions.
+
+Still open, and now for a **profile** reason rather than a cabling one — key +
+fill content, the key channel, and the internal-keying composite all need a
+keying-capable (full-duplex) profile, which this card is not currently in.
+Audio over SDI and genlock over hours remain untouched.
 
 ---
 
@@ -1664,23 +1781,34 @@ Everything in this section is written against a real SDK header set and compiles
 Since section 19 that is no longer true of DeckLink, which has now moved real
 pixels down a real cable; the rest of this section still has never done so.
 
-**DeckLink — now largely verified; see section 19.** Output, pre-roll, the
-scheduled-playback sequence and the buffer level have all been measured against a
-real DeckLink Duo 2, and a loopback capture confirms the colour on the wire. What
-is still open on DeckLink is narrower than it was: the **content** of a keyed
-signal (that fill carries straight colour and key carries alpha, which needs a
-capture on a different sub-device), internal keying over a genuine external
-input, **audio over SDI**, and genlock behaviour over hours rather than minutes.
+**DeckLink output — verified, on two different card profiles.** Output, pre-roll,
+the scheduled-playback sequence and the buffer level have been measured against a
+real DeckLink Duo 2, and loopback captures confirm the colour on the wire at
+1080p50 and 1080p25 — in a two-sub-device full-duplex profile (section 19) and
+again in a four-sub-device half-duplex one (section 19a), with identical sampled
+values. The **output path is not a compile-only claim** and has not been one
+since section 19.
 
-**DeckLink key + fill.** `--key` enables the card's keyer through
-`IDeckLinkKeyer`, switching the output to 8-bit BGRA so the alpha survives. Both
-modes now **start on real hardware** — but only where the card can carry RGBA:
-a Duo 2 refuses 8-bit BGRA at 1080p50 while accepting it at 1080p25, 1080i50 and
-720p50, because alpha roughly doubles the link rate. The
-`SupportsExternalKeying`/`SupportsInternalKeying` guard passes on such a card and
-is therefore *not* sufficient on its own; the failure surfaces one layer down, at
-the pixel format. That no card has yet confirmed fill and key appearing on
-separate connectors remains true.
+What remains open on DeckLink is the keyed *content*, plus **audio over SDI**
+(not exercised at all) and genlock over hours rather than minutes.
+
+**DeckLink key + fill — partly verified.** `--key` enables the card's keyer
+through `IDeckLinkKeyer`, switching the output to 8-bit BGRA so the alpha
+survives. Both modes **start on real hardware**, and section 19 measured the
+**fill** off the wire: it carries straight, not premultiplied, colour. Two things
+about the guards are now known rather than assumed:
+
+- The `SupportsExternalKeying`/`SupportsInternalKeying` flags are *not*
+  sufficient alone — they pass on a card that then refuses 8-bit BGRA at
+  1080p50, because alpha roughly doubles the link rate (section 19).
+- They are also *not* redundant: on a profile with no keyer they are the only
+  thing that catches it, and they do (section 19a).
+
+Still unconfirmed: that the **key** output carries alpha as luma, and the
+internal-keying composite. Both need a keying-capable profile *and* a spare
+input, which no cabling and profile combination has offered at the same time
+yet. Section 19a also records a live defect in the 1080p50 keyed error message,
+which names rates that a keyer-less profile cannot use.
 
 **AJA.** Compiles against libajantv2 18.1. AutoCirculate playout follows the
 SDK's documented sequence. No card connected. Also untested: whether

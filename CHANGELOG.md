@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.7.1 — 2026-08-08
 
-Packaging. Nothing about how the engine renders changed; all of this is about
-which file you get and what happens when you open it.
+Packaging, and a second hardware verification of the DeckLink output. Nothing
+about how the engine renders changed; all of this is about which file you get,
+what happens when you open it, and what has now been measured on a real card.
 
 ### Fixed
 
@@ -35,6 +36,20 @@ which file you get and what happens when you open it.
   keep their name. The Windows uninstall registry key is deliberately unchanged,
   so an existing install updates its own Add/Remove Programs entry instead of
   growing a second one.
+
+- **The DeckLink output is verified on a second card profile.** The SDI loopback,
+  the colour on the wire at 1080p50 and 1080p25, and the buffer behaviour were
+  re-measured on a DeckLink Duo 2 in a four-sub-device half-duplex profile,
+  matching the full-duplex results recorded at v0.5.2. The keyer capability guard
+  is now exercised in the failing direction too — a profile with no keyer refuses
+  cleanly instead of failing at `Enable()`. `docs/04-verification.md` section 19a
+  has the numbers, and `tools/dl_profile.mm` is new: it reports the card's
+  profile, duplex and keying support, because a Desktop Video profile persists
+  and silently invalidates any connector map measured under a different one.
+
+  One defect this surfaced is **not** fixed here: asking for keyed 1080p50 on a
+  keyer-less profile returns the link-bandwidth message, which names lower rates
+  as a remedy that profile cannot use either.
 
 ## v0.7.0 — 2026-08-01
 

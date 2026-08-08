@@ -76,6 +76,27 @@ Start the probe *after* the server — a server that only answers its opening
 announce is the failure this catches. `--alphabars` and `--orientation` are
 separate checks and neither covers the other.
 
+DeckLink needs a card, an SDI loopback and the SDK. Unreal's bundled copy works
+if you do not have the SDK archive — `FindDeckLinkSDK.cmake` accepts its layout:
+
+```bash
+SDK="/path/to/Blackmagic DeckLink SDK/Mac/include"
+for t in dl_profile dl_scan sdi_probe; do
+  clang++ -std=c++17 -fobjc-arc -I"$SDK" "$SDK/DeckLinkAPIDispatch.cpp" \
+    tools/$t.mm -framework CoreFoundation -o $t
+done
+
+./dl_profile        # profile, duplex, keying and which rates carry alpha
+./dl_scan           # which inputs are receiving, no-source counted separately
+./sdi_probe 3       # capture on an index and check the bars; add 1080p25/bands
+```
+
+**Run `dl_profile` first and believe nothing you remember.** Desktop Video
+profiles persist and change how many sub-devices exist, whether each is half or
+full duplex, and whether there is a keyer at all — so a connector map is only
+true for the profile it was measured in. Section 19 of `docs/04-verification.md`
+records one profile and 19a another, on the same card.
+
 The Windows half (Spout) has its own pair, because WebLinked does not build on
 Windows and so cannot be the sender. `tools/spout_send_test.cpp` drives the real
 backend directly; run from a PowerShell prompt on the Windows machine:
@@ -176,4 +197,4 @@ everyone who already installed a second Add/Remove Programs entry.
 | `src/control/` | HTTP server, OSC receiver, embedded control page |
 | `src/app/` | entry points, Info.plists, entitlements |
 | `launcher/` | av-launcher tray shell (Rust/Tauri); separate build |
-| `tools/` | `ndi_probe` — independent receiver for verification |
+| `tools/` | independent receivers (`ndi_probe`, `sdi_probe`, `syphon_probe`, `spout_probe`) plus the DeckLink diagnostics `dl_profile` / `dl_scan`, and the HTML test pages |
