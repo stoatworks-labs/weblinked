@@ -42,12 +42,11 @@ weblinked --config show.json
 
 ---
 
-[![Watch it running — 63 seconds](docs/video-thumb.png)](https://www.youtube.com/watch?v=3qG3wPPjUjY)
+[![Watch it running — 75 seconds](docs/video-thumb.png)](https://www.youtube.com/watch?v=O5Z4SFGD3bA)
 
-*A 63-second tour of the real app, driven over its own HTTP control API. The output is
-NDI, picked up by a separate receiver (`tools/ndi_probe`). Filmed before a DeckLink was
-available, so no SDI card appears — the SDI path has since been measured against a real
-DeckLink Duo 2. See
+*A 75-second tour of the real app, driven over its own HTTP control API. NDI is picked up
+by a separate receiver (`tools/ndi_probe`), and the SDI output is a real DeckLink Duo 2 —
+the panel names the sub-device it opened, and both outputs run off the same clock. See
 [docs/04-verification.md](docs/04-verification.md) for what is verified and what is not.*
 
 ![The WebLinked control page, rendering github.com to NDI at 1080p50](docs/images/control-page.png)
