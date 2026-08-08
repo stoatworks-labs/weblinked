@@ -8,6 +8,15 @@ what happens when you open it, and what has now been measured on a real card.
 
 ### Fixed
 
+- **The Windows build is repaired.** The shared-surface work added the vendored
+  Spout sources to `weblinked_engine`, and they had never been through a tagged
+  Windows build — v0.7.0 predates them. `SpoutFrameCount.cpp` reaches the
+  multimedia timer through `<windows.h>`, which only pulls in `<mmsystem.h>`
+  when `WIN32_LEAN_AND_MEAN` is absent; this build defines it globally, so
+  upstream code that compiles everywhere else failed here with `'TIMECAPS':
+  undeclared identifier`. The Spout sources now force-include `mmsystem.h` and
+  link `winmm`, which fixes it without editing anything under `third_party/`.
+
 - **A double-click no longer looks like a broken build.** The macOS bundle
   carried no icon at all, so Finder drew the blank generic-document tile, and
   the process opens no window by design — so double-clicking `WebLinked.app`

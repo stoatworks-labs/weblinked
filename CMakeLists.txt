@@ -318,8 +318,17 @@ if(WEBLINKED_WITH_SHARED)
     list(APPEND WEBLINKED_ENGINE_SOURCES ${WEBLINKED_SPOUT_SOURCES})
     # /w because this is upstream code we do not modify. Spout builds cleanly
     # at its own warning level, not at the one CEF imposes here.
+    #
+    # /FI mmsystem.h for the same reason it is not an edit to the vendored file:
+    # SpoutFrameCount.cpp calls timeBeginPeriod/timeGetDevCaps and gets their
+    # declarations from <windows.h>, which only pulls in <mmsystem.h> when
+    # WIN32_LEAN_AND_MEAN is absent. This build defines it globally (see the
+    # NOMINMAX note above), so upstream code that compiles everywhere else fails
+    # here with 'TIMECAPS': undeclared identifier. Force-including it for these
+    # sources restores what upstream assumes without touching third_party/ and
+    # without giving the rest of the build the full Windows surface back.
     set_source_files_properties(${WEBLINKED_SPOUT_SOURCES} PROPERTIES
-      COMPILE_OPTIONS "/w")
+      COMPILE_OPTIONS "/w;/FImmsystem.h")
   endif()
 endif()
 
@@ -395,7 +404,10 @@ if(WEBLINKED_WITH_SHARED)
       ${CMAKE_CURRENT_SOURCE_DIR}/third_party/spout/Spout)
     # d3d11 and dxgi only. spoutDX is the DirectX half of the SDK and pulls in
     # no OpenGL; psapi arrives through a #pragma comment(lib) in SpoutDX.h.
-    target_link_libraries(weblinked_engine PUBLIC d3d11 dxgi)
+    # winmm carries the multimedia timer SpoutFrameCount uses — declaring it via
+    # /FImmsystem.h above only fixes the compile; the symbols still have to come
+    # from somewhere at link time.
+    target_link_libraries(weblinked_engine PUBLIC d3d11 dxgi winmm)
   endif()
 endif()
 
