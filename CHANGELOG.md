@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **WebLinked advertises itself over mDNS.** The control API is published as
+  `_weblinked._tcp` on its own port, so rookery, the Companion module and any
+  DNS-SD browser can find an instance without an address being typed in. On by
+  default; `--no-mdns`, or `"mdns_enabled": false` in a config file's `control`
+  block, turns it off for networks where multicast is filtered.
+
+  The TXT record carries the version, a stable id, whether a token is required,
+  and — the part that matters — the **OSC port and prefix**. Neither is
+  reported anywhere in the HTTP API, so anything that found an instance by
+  other means had to assume 7655 and `/weblinked`. OSC is fire-and-forget, so a
+  wrong assumption produces an instance that polls perfectly healthy and
+  silently discards every command sent to it.
+
+  Registration goes through the system responder on macOS (`dns_sd`, in
+  libSystem) and Windows (`DnsServiceRegister`, resolved at run time so a
+  pre-1703 Windows degrades rather than failing to start). Linux uses avahi,
+  opened at run time exactly as libndi is — a machine without it loses the
+  advertisement and nothing else.
+
+- **`--name`** sets what an instance is called on the network. Without it, the
+  name is the host name and the control port — the port always, because two
+  instances on one host is a supported arrangement and a name that only becomes
+  unique under the responder's conflict resolution tells an operator nothing.
+
+- **`/api/settings` reports a `discovery` block**: whether advertising was
+  asked for, whether it is actually happening, and when those differ, why.
+
+- **`tools/mdns_probe`** browses for advertisements and then *connects to the
+  address each one publishes*, which is the check `dns-sd -B` and
+  `avahi-browse` do not do.
+
+### Note
+
+An instance bound to loopback — the default — **does not advertise**. It would
+publish a record resolving to the browsing machine's own loopback, appearing in
+every fleet list on the subnet and failing every connection from them. Use
+`--bind 0.0.0.0` to be discoverable; the reason is logged and shown in
+`/api/settings` either way.
+
 ## v0.7.1 — 2026-08-08
 
 Packaging, and a second hardware verification of the DeckLink output. Nothing

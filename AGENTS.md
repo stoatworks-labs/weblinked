@@ -60,7 +60,8 @@ pool or a shared browser. The independence *is* the feature.
 ## 3. Layout
 
 ```
-src/core/     formats, frames, pools, clock, FIFO, JSON, dlopen  ─ NO CEF
+src/core/     formats, frames, pools, clock, FIFO, JSON, dlopen,
+              mDNS advertisement (+ _mac/_win/_linux)             ─ NO CEF
 src/diag/     logging, crash reports, bundles                    ─ NO CEF
 src/browser/  CefApp, CefClient (paint + audio), BrowserSource
 src/engine/   the clock loop and everything it owns
@@ -69,7 +70,7 @@ src/control/  HTTP server, OSC receiver, embedded control page
 src/app/      entry points, Info.plists, entitlements
 launcher/     the av-launcher tray shell, configured for WebLinked (Rust/Tauri)
 third_party/  cef, ndi, omt headers, and the vendored Syphon server subset
-tools/        ndi_probe, syphon_probe — independent receivers, for verification
+tools/        ndi_probe, syphon_probe, mdns_probe — independent, for verification
 tests/        unit tests; link core only
 ```
 
@@ -198,7 +199,32 @@ the CEF header rather than the macro.
 
 **Killing the process without a clean shutdown leaves a stale NDI source** that
 receivers keep trying to connect to, and the next run can be undiscoverable for
-minutes. The SIGTERM handler exists because of this, not for tidiness.
+minutes. The SIGTERM handler exists because of this, not for tidiness. The mDNS
+advertisement has exactly the same failure and is withdrawn on the same path —
+`ControlApi::stop()` stops the responder *before* the sockets close, because a
+record pointing at a port that has stopped answering is worse than no record.
+
+**An advertisement is a promise about an address, and the default bind cannot
+keep it.** `httpBind` defaults to `127.0.0.1`. Advertising that publishes a
+record which resolves, on every machine that browses, to *its own* loopback —
+so the instance appears in every fleet list on the subnet and every one of them
+fails to connect, with nothing logged anywhere. `mdns::bindIsAdvertisable()`
+refuses, loudly, and `/api/settings` reports why. Do not "fix" this by
+advertising anyway and letting the consumer work it out; the consumer cannot.
+
+**mDNS uses the system responder on macOS and Windows, on purpose.** `dns_sd`
+(in libSystem, no link needed) and `DnsServiceRegister` (resolved from
+dnsapi.dll, so a pre-1703 Windows degrades instead of failing to load) both add
+a record to the responder the machine is already running — the same one the NDI
+runtime uses. A second responder bound to UDP 5353 on a machine that is live to
+air is not a thing to introduce for a convenience feature. Linux has no system
+API of that kind, so avahi is opened with `Dylib` exactly as libndi is: absent
+avahi means no advertisement and nothing else.
+
+**A responder can rename you.** Two instances that pick the same name get one
+of them renamed, and the renamed value is what consumers show. Read it back
+from the callback (`Responder::registeredName()`); never assume the name you
+asked for is the name on the network.
 
 **A windowless browser cannot own a popup, and CEF's default tries.** Left
 alone, `target="_blank"` and `window.open` create a second browser parented to

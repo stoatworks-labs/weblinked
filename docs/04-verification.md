@@ -1617,6 +1617,19 @@ plugin's own draw is measured; what Arena does with the result is inferred.
 Recorded because they are the argument for doing it at all. Every one was found
 by running the thing, not by reading it.
 
+**A browse returns one entry per interface, and picking the first gave an
+unreachable address.** Not a bug in this repo but in the consumer, found the
+moment rookery was pointed at a real advertisement: a multi-homed Mac answers
+once per interface, so one WebLinked resolved to five rows carrying the same
+`id` and different addresses. Collapsing them by `id` fixed the count and
+introduced a second, quieter fault — whichever answer arrived first won, and on
+this machine that was a `127/8` address. An operator could add that row, see it
+poll green from the same machine, and find it unreachable from anywhere else.
+The fix is to pool every address seen for an id and *then* choose, preferring
+routable IPv4 over private, link-local and loopback. This is why the advertised
+`id` exists at all, and it is recorded in `docs/03-control-api.md` as a rule for
+anyone else consuming the record.
+
 **The screen output's window landed off-screen on every display but the main
 one, and every counter said it was working.** `-[NSWindow
 initWithContentRect:styleMask:backing:defer:screen:]` interprets the rect
@@ -1875,6 +1888,71 @@ mid-stream.
 
 **Windows and Linux remain unbuilt.** `posix_spawn` and `CreateProcessA` are
 different code paths and only the former has ever run.
+
+## 29. The mDNS advertisement — verified on macOS, against foreign tools
+
+The claim being checked is not "a record appears" but "the record is true and
+another program can act on it". Three independent checkers, none of which share
+code with the responder.
+
+**Registration and TXT, against Apple's `dns-sd`.** A process registering
+exactly what `ControlApi` registers:
+
+```
+$ dns-sd -B _weblinked._tcp
+12:51:33.072  Add   3   1 local.  _weblinked._tcp.  azlan-1386 (7654)
+
+$ dns-sd -L "azlan-1386 (7654)" _weblinked._tcp
+can be reached at azlan-1386.local.:7654 (interface 14)
+ txtvers=1 ver=0.7.1 name=azlan-1386\ \(7654\) id=fc0e50e0 path=/api/state
+ token=0 osc=1 oscport=7655 oscprefix=/weblinked
+```
+
+Every key survives the round trip, including the two that matter — `oscport`
+and `oscprefix`. Withdrawal was confirmed by the same browse going quiet after
+`Responder::stop()`.
+
+**Honesty, against `tools/mdns_probe`.** The probe browses, decodes the TXT with
+the platform's parser, and then connects to the advertised address:
+
+```
+$ ./mdns_probe --timeout 3        # nothing listening on the advertised port
+  reached : NOTHING ANSWERS at the advertised address        (exit 1)
+
+$ ./mdns_probe --timeout 3        # a control API answering /api/state
+  reached : OK — answered /api/state                          (exit 0)
+```
+
+Both directions were forced deliberately, because a checker that has only ever
+seen the passing case proves nothing about the failing one.
+
+**End to end, against rookery.** rookery's own browse — a different language, a
+different mDNS implementation (`mdns-sd`), written from the spec rather than
+from this code — resolved the advertisement and read every field:
+
+```json
+{ "found_via": "mdns", "host": "10.147.17.93", "http_port": 7654,
+  "id": "fc0e50e0", "name": "azlan-1386 (7654)",
+  "osc_port": 7655, "osc_prefix": "/weblinked", "version": "0.7.1" }
+```
+
+**Unit tests:** 14 tests, 913 checks over the TXT encoding, the instance-name
+rules and the loopback refusal. The length sweep runs 1..300 bytes because the
+TXT length prefix is a single byte and 255 is the boundary an off-by-one hides
+behind — the same reasoning as the OSC padding sweep in section 1.
+
+### What this section does **not** cover
+
+- **Windows and Linux registration is compile-only.** Neither
+  `DnsServiceRegister` nor the avahi backend has been run. The Linux backend is
+  built against avahi's real headers, so the signatures are compiler-checked,
+  but no avahi daemon has ever seen it.
+- **Nothing has been proven off-machine.** Every browse above ran on the same
+  Mac as the advertisement. Multicast across a real switch, across VLANs, and
+  through a venue network's IGMP snooping, is untested.
+- **Conflict renaming is untested.** Two instances claiming one name should get
+  one of them renamed by the responder, and `registeredName()` should report
+  the new one. Not exercised.
 
 ## Not verified
 

@@ -216,6 +216,81 @@ What would be saved, and where.
 `source` is the same shape a settings file holds, so what the API returns can be
 pasted into one.
 
+The same response carries a `discovery` block describing the mDNS
+advertisement — the *live* result, not the setting:
+
+```json
+{ "discovery": { "enabled": true, "advertising": false,
+                 "service_type": "_weblinked._tcp", "name": "",
+                 "blocked_because": "the control API is bound to loopback, ..." } }
+```
+
+`enabled` is what was asked for; `advertising` is what is actually happening.
+The two differ in exactly the case that generates support questions, and
+`blocked_because` is the answer to "why can rookery not see this machine".
+
+## Discovery
+
+WebLinked advertises its control API over mDNS so that fleet controllers
+(rookery), Companion and anything else can find it without an address being
+typed in. **This is the interoperability contract; treat it as API.**
+
+| | |
+|---|---|
+| Service type | `_weblinked._tcp` |
+| Port | the HTTP control port |
+| Instance name | `--name`, else `<host> (<port>)` |
+
+One record per process, not per source: a WebLinked with eight sources still
+has one control API on one port.
+
+### TXT records
+
+| Key | Meaning |
+|---|---|
+| `txtvers` | `1`. Refuse a record whose version you do not know. |
+| `ver` | WebLinked's version |
+| `name` | the operator-facing name |
+| `id` | stable across restarts, unique per instance on a host |
+| `path` | `/api/state` — where to confirm this is really a WebLinked |
+| `token` | `1` when a token is required, `0` when not |
+| `osc` | `1` when the OSC listener is running |
+| `oscport`, `oscprefix` | present only when `osc=1` |
+
+**`oscport` and `oscprefix` are the point of the whole thing.** Neither appears
+anywhere in the HTTP API, so a controller that finds an instance by any other
+means has to *assume* 7655 and `/weblinked`. OSC is fire-and-forget with no
+replies, so a wrong guess produces an instance that polls perfectly healthy
+over HTTP and silently discards every command sent to it.
+
+**TXT carries identity and reachability, never live state.** No source count,
+no URL, no counters. Those live on HTTP, where consumers already poll. A record
+that changed with state would have to be rewritten at poll rate, and every
+rewrite is a multicast the whole subnet pays for.
+
+### Two rules that surprise people
+
+**An instance bound to loopback does not advertise, deliberately.** The default
+bind is `127.0.0.1`, so this is the *common* case. Advertising it would publish
+a record resolving to the browsing machine's own loopback: the service appears
+in every fleet list on the subnet and every one of them fails to connect, with
+nothing anywhere saying why. It is refused instead, with the reason logged and
+reported in `/api/settings`. `--bind 0.0.0.0` is what makes an instance
+discoverable.
+
+**`id` is what identifies an instance, not its address.** A multi-homed machine
+answers a browse *once per interface*, so one WebLinked resolves to several
+entries carrying different addresses and the same `id`. Collapse on `id`, then
+choose the address — a consumer that keeps whichever arrived first will
+sometimes keep a loopback or link-local one and produce an entry it can never
+reach.
+
+### Turning it off
+
+`--no-mdns`, or `"mdns_enabled": false` in the config file's `control` block.
+On by default. It exists for networks where multicast is filtered or
+forbidden, where the advertisement is noise that never arrives.
+
 ### POST endpoints
 
 All take a JSON body and return `{"ok":true}` or `{"error":"..."}`.

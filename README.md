@@ -288,6 +288,28 @@ service manager or another program.
 The control page is served at `http://127.0.0.1:7654/`, so a phone on the same
 network is a remote panel.
 
+### It finds itself
+
+Started with `--bind 0.0.0.0`, WebLinked advertises its control API over mDNS
+as `_weblinked._tcp`, so [rookery](https://github.com/stoatworks-labs/rookery),
+the Companion module and anything else can list it instead of asking for an
+address. `--name "Stage Left"` sets what shows up; without it the name is the
+host and the control port.
+
+The advertisement carries the **OSC port and prefix**, which nothing in the
+HTTP API reports — a controller that has to guess them looks perfectly
+connected and silently drops every cue, because OSC has no replies.
+
+An instance on the default loopback bind **does not advertise, on purpose**:
+nothing off its machine could reach the address it would publish. `--no-mdns`
+turns it off entirely, for networks where multicast is filtered.
+
+```bash
+# What is on the network right now
+dns-sd -B _weblinked._tcp          # macOS
+avahi-browse -r _weblinked._tcp    # Linux
+```
+
 ```bash
 curl -X POST -d '{"url":"https://example.com/next"}' http://127.0.0.1:7654/api/url
 curl -X POST -d '{"ignore_cache":true}'              http://127.0.0.1:7654/api/reload

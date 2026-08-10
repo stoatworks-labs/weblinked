@@ -49,10 +49,17 @@ jobs:
         # step fails long after the (slow) CEF download has completed.
         run: |
           sudo apt-get update
+          # libavahi-client-dev is headers only: the library itself is opened
+          # at run time, so the built binary still runs on a box without it —
+          # it just cannot advertise itself. Without the headers at build time
+          # the mDNS backend compiles to a stub and no Linux release can be
+          # discovered at all, which is a silent loss rather than a build
+          # failure. See the note in CMakeLists.txt.
           sudo apt-get install -y \
             libgtk-3-dev libnss3-dev libasound2-dev libxss-dev \
             libxtst-dev libatk-bridge2.0-dev libdrm-dev libgbm-dev \
-            libx11-dev libegl1-mesa-dev libgles2-mesa-dev
+            libx11-dev libegl1-mesa-dev libgles2-mesa-dev \
+            libavahi-client-dev
 
       - name: Cache the CEF distribution
         uses: actions/cache@v4

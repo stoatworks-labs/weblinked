@@ -191,10 +191,61 @@ bool ControlApi::start(const Config& config, std::string& error) {
       diag::warn("control: OSC unavailable: %s", oscError.c_str());
     }
   }
+
+  // Last, and only once the sockets above are actually listening: the whole
+  // point of the record is that something answers at the address it publishes.
+  startAdvertising();
   return true;
 }
 
+void ControlApi::startAdvertising() {
+  if (!config_.mdnsEnabled) {
+    diag::info("control: mDNS advertisement disabled");
+    return;
+  }
+
+  std::string reason;
+  if (!mdns::bindIsAdvertisable(config_.httpBind, &reason)) {
+    // Deliberately a warning rather than silence. An operator who asked for
+    // discovery and is not getting it needs the reason on the first line they
+    // look at, not a service that appears in a fleet list and then refuses
+    // every connection from it.
+    diag::warn("control: not advertising over mDNS — %s", reason.c_str());
+    return;
+  }
+
+  const std::string host = mdns::hostName();
+  const auto port = static_cast<uint16_t>(config_.httpPort);
+
+  mdns::TxtInputs inputs;
+  inputs.name = mdns::instanceNameFor(config_.instanceName, host, port);
+  inputs.version = WEBLINKED_VERSION;
+  inputs.id = mdns::instanceId(host, port);
+  inputs.httpPort = port;
+  inputs.tokenRequired = !config_.httpToken.empty();
+  inputs.oscEnabled = config_.oscEnabled && osc_.isRunning();
+  inputs.oscPort = static_cast<uint16_t>(config_.oscPort);
+  inputs.oscPrefix = config_.oscPrefix;
+
+  mdns::Advertisement advertisement;
+  advertisement.instanceName = inputs.name;
+  advertisement.port = port;
+  advertisement.txt = mdns::buildTxt(inputs);
+
+  std::string error;
+  if (!mdns_.start(advertisement, error)) {
+    // Never fatal. Discovery is a convenience on top of an API that works
+    // perfectly well when an operator types the address, and a fleet
+    // controller falls back to sweeping the subnet.
+    diag::warn("control: mDNS unavailable: %s", error.c_str());
+  }
+}
+
 void ControlApi::stop() {
+  // Withdrawn first, and before the sockets close: a record still on the
+  // network pointing at a port that has stopped answering is the one state
+  // worse than never having advertised at all.
+  mdns_.stop();
   osc_.stop();
   http_.stop();
 }
@@ -346,6 +397,25 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
       list.push(source.toJson());
     }
     value.set("sources", list);
+
+    // Process-level, so it goes here rather than in /api/state — that endpoint
+    // is one source's state and every v0.3.0 client polls it. Reporting the
+    // *live* result rather than the setting is the point: "asked for, bound to
+    // loopback, so not advertising" is the answer to "why can rookery not see
+    // this machine", and it is not derivable from the config alone.
+    json::Value discovery = json::Value::object();
+    discovery.set("enabled", json::Value(config_.mdnsEnabled));
+    discovery.set("advertising", json::Value(mdns_.isRunning()));
+    discovery.set("service_type", json::Value(std::string(mdns::kServiceType)));
+    discovery.set("name", json::Value(mdns_.registeredName()));
+    if (config_.mdnsEnabled) {
+      std::string reason;
+      if (!mdns::bindIsAdvertisable(config_.httpBind, &reason)) {
+        discovery.set("blocked_because", json::Value(reason));
+      }
+    }
+    value.set("discovery", discovery);
+
     response.json(value.serialize());
     return;
   }
@@ -730,6 +800,8 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
     file.oscEnabled = config_.oscEnabled;
     file.oscBind = config_.oscBind;
     file.oscPort = config_.oscPort;
+    file.mdnsEnabled = config_.mdnsEnabled;
+    file.instanceName = config_.instanceName;
 
     std::string error;
     if (!settings::save(file, settingsPath_, &error)) {

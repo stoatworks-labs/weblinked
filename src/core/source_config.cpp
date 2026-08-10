@@ -314,6 +314,10 @@ json::Value AppConfig::toJson() const {
   control.set("osc_enabled", json::Value(oscEnabled));
   control.set("osc_bind", json::Value(oscBind));
   control.set("osc_port", json::Value(oscPort));
+  control.set("mdns_enabled", json::Value(mdnsEnabled));
+  if (!instanceName.empty()) {
+    control.set("name", json::Value(instanceName));
+  }
   value.set("control", control);
 
   json::Value list = json::Value::array();
@@ -343,6 +347,13 @@ std::optional<AppConfig> AppConfig::fromJson(const json::Value& value,
     }
     out.oscBind = control["osc_bind"].asString(out.oscBind);
     out.oscPort = control["osc_port"].asInt(out.oscPort);
+    // Same has()-guard as osc_enabled: asBool's fallback cannot distinguish
+    // "absent" from "present and false", so a plain read would turn every
+    // config file written before this key existed into an opt-out.
+    if (control.has("mdns_enabled")) {
+      out.mdnsEnabled = control["mdns_enabled"].asBool(true);
+    }
+    out.instanceName = control["name"].asString(out.instanceName);
   }
 
   if (!value.has("sources")) {

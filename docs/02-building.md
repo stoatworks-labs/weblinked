@@ -177,4 +177,30 @@ clang++ -std=c++20 -I"/Library/NDI SDK for Apple/include" tools/ndi_probe.cpp \
   -Wl,-rpath,"/Library/NDI SDK for Apple/lib/macOS" -o ndi_probe
 ```
 
+`tools/mdns_probe.cpp` is the equivalent for the mDNS advertisement. It browses
+for `_weblinked._tcp`, decodes the TXT record with the *platform's* parser
+rather than ours, and then connects to the address each record publishes —
+which is the half `dns-sd -B` and `avahi-browse` leave out, and the half that
+catches an advertisement pointing somewhere unreachable.
+
+```bash
+# macOS: dns_sd is in libSystem, so there is nothing to link
+clang++ -std=c++20 tools/mdns_probe.cpp -o mdns_probe
+./mdns_probe --timeout 5
+```
+
 See [04-verification.md](04-verification.md) for what it proves.
+
+## Linux: discovery needs avahi's headers
+
+The mDNS backend is built against `avahi-client`'s headers so the compiler
+checks every signature, but opens the library at run time like libndi — so the
+binary still runs on a machine without avahi, it just cannot advertise.
+
+```bash
+sudo apt-get install -y libavahi-client-dev
+```
+
+Without them CMake prints `mDNS: no avahi headers` and compiles a stub. That is
+not a build failure, which is exactly why it is worth noticing: the build
+succeeds and the release simply cannot be discovered.

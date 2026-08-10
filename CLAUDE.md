@@ -181,13 +181,22 @@ everyone who already installed a second Add/Remove Programs entry.
     `web_assets.h` kills every line after it and the page just sits on
     "connecting". If it looks dead, run its own script text through
     `new Function()` in a browser — it names the line at once.
-14. Commit means commit **and push**.
+14. **An advertisement must be true, or absent.** WebLinked refuses to publish
+    an mDNS record while the control API is bound to loopback, and withdraws
+    the record before the sockets close. A record that outlives its port, or
+    points at an address a browser cannot reach, is worse than never having
+    advertised — it fails on someone else's machine, silently. See
+    `mdns::bindIsAdvertisable` and `ControlApi::stop`.
+15. **The mDNS TXT record is identity and reachability, never live state.**
+    Adding a source count or a URL to it means rewriting the record at poll
+    rate, multicast to the whole subnet. State belongs on HTTP.
+16. Commit means commit **and push**.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `src/core/` | formats, frames, pools, clock, audio FIFO, JSON, dlopen — no CEF |
+| `src/core/` | formats, frames, pools, clock, audio FIFO, JSON, dlopen, mDNS (`mdns_service*`) — no CEF |
 | `src/diag/` | logging, crash reports, diagnostics bundles |
 | `src/browser/` | CefApp, CefClient (paint + audio), BrowserSource |
 | `src/engine/` | the clock loop |
@@ -197,4 +206,4 @@ everyone who already installed a second Add/Remove Programs entry.
 | `src/control/` | HTTP server, OSC receiver, embedded control page |
 | `src/app/` | entry points, Info.plists, entitlements |
 | `launcher/` | av-launcher tray shell (Rust/Tauri); separate build |
-| `tools/` | independent receivers (`ndi_probe`, `sdi_probe`, `syphon_probe`, `spout_probe`) plus the DeckLink diagnostics `dl_profile` / `dl_scan`, and the HTML test pages |
+| `tools/` | independent receivers (`ndi_probe`, `sdi_probe`, `syphon_probe`, `spout_probe`, `mdns_probe`) plus the DeckLink diagnostics `dl_profile` / `dl_scan`, and the HTML test pages |

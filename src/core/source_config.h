@@ -127,6 +127,10 @@ struct AppConfig {
   bool oscEnabled = true;
   std::string oscBind = "0.0.0.0";
   int oscPort = 7655;
+  /// Advertise the control API over mDNS. See ControlApi::Config.
+  bool mdnsEnabled = true;
+  /// Advertised name. Empty means host name and control port.
+  std::string instanceName;
 
   json::Value toJson() const;
   static std::optional<AppConfig> fromJson(const json::Value& value,

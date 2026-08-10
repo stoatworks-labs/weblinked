@@ -236,9 +236,23 @@ set(WEBLINKED_CORE_SOURCES
   # cheap to test was linkable by a test.
   src/control/osc_server.cpp
   src/control/osc_server.h
+  # Here for the same reason the OSC receiver is: it needs no CEF, and the
+  # parts most likely to be wrong — the TXT encoding and the instance-name
+  # rules — are pure string work that a test must be able to reach without
+  # standing up a responder.
+  src/core/mdns_service.cpp
+  src/core/mdns_service.h
   src/diag/diag.cpp
   src/diag/diag.h
 )
+
+if(APPLE)
+  list(APPEND WEBLINKED_CORE_SOURCES src/core/mdns_service_mac.cpp)
+elseif(WIN32)
+  list(APPEND WEBLINKED_CORE_SOURCES src/core/mdns_service_win.cpp)
+else()
+  list(APPEND WEBLINKED_CORE_SOURCES src/core/mdns_service_linux.cpp)
+endif()
 
 set(WEBLINKED_ENGINE_SOURCES
   src/browser/browser_source.cpp
@@ -378,6 +392,36 @@ if(UNIX)
   target_link_libraries(weblinked_core PUBLIC ${CMAKE_DL_LIBS})
   find_package(Threads REQUIRED)
   target_link_libraries(weblinked_core PUBLIC Threads::Threads)
+endif()
+
+if(APPLE)
+  # SystemConfiguration is for the machine's *local host name*, which is what
+  # Bonjour resolves it under. gethostname() answers "Mac" on a stock machine,
+  # so a rack of them would advertise a rack of identically named services.
+  # dns_sd itself needs no link at all — it is in libSystem.
+  target_link_libraries(weblinked_core PUBLIC
+    "-framework CoreFoundation"
+    "-framework SystemConfiguration"
+  )
+endif()
+
+if(UNIX AND NOT APPLE)
+  # Avahi's *headers* only, so the compiler checks every signature; the library
+  # is opened at run time with Dylib, exactly as libndi and libomt are, so a
+  # machine without it loses discovery and nothing else. No headers at build
+  # time is not an error either — the backend compiles to a stub that says so.
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(AVAHI_CLIENT QUIET avahi-client)
+  endif()
+  if(AVAHI_CLIENT_FOUND)
+    target_include_directories(weblinked_core PRIVATE ${AVAHI_CLIENT_INCLUDE_DIRS})
+    target_compile_definitions(weblinked_core PRIVATE WEBLINKED_WITH_AVAHI=1)
+    message(STATUS "mDNS: avahi headers found — Linux discovery enabled")
+  else()
+    message(STATUS "mDNS: no avahi headers — Linux builds will not advertise "
+                   "(install libavahi-client-dev)")
+  endif()
 endif()
 
 # ----------------------------------------------------------------------------

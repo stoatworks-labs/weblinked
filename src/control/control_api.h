@@ -6,6 +6,7 @@
 
 #include "control/http_server.h"
 #include "control/osc_server.h"
+#include "core/mdns_service.h"
 
 namespace weblinked {
 
@@ -45,6 +46,14 @@ class ControlApi {
     /// Where the settings page saves to and reloads from. Empty means the
     /// platform default — see settings::defaultPath().
     std::string settingsPath;
+    /// Advertise the control API over mDNS, so rookery and Companion can find
+    /// this instance without anyone typing an address. On by default; off is
+    /// for networks where multicast is filtered or forbidden, where the
+    /// advertisement is noise that never arrives anywhere.
+    bool mdnsEnabled = true;
+    /// The name to advertise under. Empty means one built from the host name
+    /// and the control port.
+    std::string instanceName;
   };
 
   explicit ControlApi(SourceManager* sources);
@@ -59,6 +68,7 @@ class ControlApi {
 
   const HttpServer& http() const { return http_; }
   const OscServer& osc() const { return osc_; }
+  const mdns::Responder& advertisement() const { return mdns_; }
 
  private:
   void handleHttp(const HttpServer::Request& request, HttpServer::Response& response);
@@ -77,9 +87,14 @@ class ControlApi {
                          HttpServer::Response& response,
                          const std::function<void(Engine&)>& fn);
 
+  /// Registers the service, or explains in the log why it did not. Never fails
+  /// the start: an instance nobody can discover still runs a show.
+  void startAdvertising();
+
   SourceManager* sources_;
   HttpServer http_;
   OscServer osc_;
+  mdns::Responder mdns_;
   Config config_;
   /// Resolved once at start(), so every endpoint agrees on which file it means.
   std::string settingsPath_;

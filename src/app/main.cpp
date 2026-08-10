@@ -210,6 +210,12 @@ Control
   --token <secret>         Require this token on every HTTP request
   --osc-port <n>           OSC listen port. Default: 7655
   --no-osc                 Do not listen for OSC
+  --name <text>            Name to advertise this instance under. Default: the
+                           host name and control port
+  --no-mdns                Do not advertise over mDNS. Advertising is on by
+                           default, and is skipped anyway while the control API
+                           is bound to loopback, since nothing off this machine
+                           could reach the address it would publish
   --headless               Accepted and ignored; there is no window to suppress.
                            The control page is served over HTTP — open it in a
                            browser, or use the tray launcher in launcher/
@@ -504,6 +510,16 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
       options.control.oscPort = std::atoi(text.c_str());
       continue;
     }
+    // Exact match for the switch, prefix for the one that takes a value —
+    // the same split every other pair here uses, so --name=Stage-1 works.
+    if (argument == "--no-mdns") {
+      options.control.mdnsEnabled = false;
+      continue;
+    }
+    if (argument.rfind("--name", 0) == 0) {
+      if (!needsValue(options.control.instanceName)) return false;
+      continue;
+    }
 
     if (argument == "--open") {
       options.openControlPage = true;
@@ -698,6 +714,14 @@ bool resolveSources(Options& options, std::string& error) {
   }
   // --no-osc is a refusal, so it wins either way round.
   options.control.oscEnabled = options.control.oscEnabled && options.sources.oscEnabled;
+  if (options.control.instanceName.empty()) {
+    options.control.instanceName = options.sources.instanceName;
+  }
+  // --no-mdns is a refusal too, and for the same reason: a network where
+  // multicast is forbidden does not become one where it is allowed because a
+  // config file says so.
+  options.control.mdnsEnabled =
+      options.control.mdnsEnabled && options.sources.mdnsEnabled;
   return true;
 }
 
@@ -758,6 +782,8 @@ json::Value describeOptions(const Options& options) {
   // Named so the diag module's redaction catches it.
   value.set("http_token", json::Value(options.control.httpToken));
   value.set("osc_port", json::Value(options.control.oscPort));
+  value.set("mdns", json::Value(options.control.mdnsEnabled));
+  value.set("name", json::Value(options.control.instanceName));
   value.set("interactive", json::Value(options.interactive));
   value.set("popups",
             json::Value(options.popupPolicy == RenderClient::PopupPolicy::kBlock
