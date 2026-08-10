@@ -57,6 +57,9 @@ std::vector<std::string> compiledOutputKinds() {
 #if defined(WEBLINKED_WITH_SHARED)
   kinds.push_back("shared");
 #endif
+#if defined(WEBLINKED_WITH_STREAM)
+  kinds.push_back("stream");
+#endif
   return kinds;
 }
 
@@ -94,6 +97,11 @@ std::unique_ptr<IOutput> createOutput(const OutputSpec& spec, std::string& error
     return createSharedOutput(spec);
   }
 #endif
+#if defined(WEBLINKED_WITH_STREAM)
+  if (spec.kind == "stream") {
+    return createStreamOutput(spec);
+  }
+#endif
 
   // Distinguish "never heard of it" from "this build has no support for it",
   // because the second is a build problem and the first is a typo.
@@ -101,7 +109,7 @@ std::unique_ptr<IOutput> createOutput(const OutputSpec& spec, std::string& error
   const bool known = spec.kind == "ndi" || spec.kind == "omt" ||
                      spec.kind == "decklink" || spec.kind == "aja" ||
                      spec.kind == "screen" || spec.kind == "shared" ||
-                     spec.kind == "preview";
+                     spec.kind == "stream" || spec.kind == "preview";
   if (known) {
     error = "output kind '" + spec.kind + "' was not compiled into this build";
   } else {

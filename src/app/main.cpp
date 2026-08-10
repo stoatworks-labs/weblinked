@@ -186,6 +186,13 @@ Outputs (repeatable; without any, only the preview runs)
                            name: WebLinked. The page's own alpha survives unless
                            a background is set, which is what makes this the one
                            to reach for when the page is an overlay.
+  --stream=<url>           Publish to an RTMP or SRT server: a Restreamer, a
+                           YouTube ingest, anything that takes a push. Encoded by
+                           an `ffmpeg` on PATH, so this is the one output that
+                           needs something installed alongside. Repeatable.
+                           --bitrate applies to the next one.
+  --bitrate <rate>         Applies to the next --stream, e.g. 6000k. Default:
+                           6000k
   --scaling <fit|fill|stretch>
                            Applies to the next --screen. fit (default) shows the
                            whole frame with bars; fill crops to the display;
@@ -257,6 +264,8 @@ bool launchedWithNoArguments(int argc, char** argv) {
 bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
   bool nextAlpha = false;
   std::string nextKeying;
+  std::string nextBitrate;
+  int streamIndex = 0;
   std::string nextScaling;
   int keyLevel = 255;
 
@@ -433,6 +442,29 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
       }
       options.outputs.push_back(spec);
       options.given.outputs = true;
+      continue;
+    }
+
+    if (argument.rfind("--stream", 0) == 0) {
+      std::string url;
+      if (!needsValue(url)) return false;
+      OutputSpec spec;
+      spec.kind = "stream";
+      spec.options.set("url", json::Value(url));
+      if (!nextBitrate.empty()) {
+        spec.options.set("bitrate", json::Value(nextBitrate));
+        nextBitrate.clear();
+      }
+      // The URL carries a stream key, so the output *name* must not: the name
+      // goes into the log, /api/state and any diagnostics bundle.
+      spec.name = "stream" + std::to_string(streamIndex++);
+      options.outputs.push_back(spec);
+      options.given.outputs = true;
+      continue;
+    }
+
+    if (argument.rfind("--bitrate", 0) == 0) {
+      if (!needsValue(nextBitrate)) return false;
       continue;
     }
 

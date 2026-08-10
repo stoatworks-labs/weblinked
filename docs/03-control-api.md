@@ -231,6 +231,7 @@ All take a JSON body and return `{"ok":true}` or `{"error":"..."}`.
 | `/api/output/add` | `{"kind":"ndi","name":"Second","options":{"alpha":true}}` | |
 | `/api/output/remove` | `{"name": "Second"}` | |
 | `/api/output/add` (screen) | `{"kind":"screen","name":"Wall","options":{"display":1,"scaling":"fit"}}` | `display` indexes `state.displays`; `scaling` is `fit` (default), `fill` or `stretch`. On macOS the window is created on the main thread however the request arrived |
+| `/api/output/add` (stream) | `{"kind":"stream","name":"Restreamer","options":{"url":"rtmp://host:1935/live/key","bitrate":"6000k"}}` | Encodes to H.264/AAC via an `ffmpeg` on PATH and pushes to RTMP or SRT. See below |
 | `/api/output/update` | `{"name":"Second","output":{"kind":"ndi","name":"Renamed"}}` | Replaces an output in place, keeping its position. On failure the previous one is restarted — see below |
 | `/api/output/background` | `{"name":"Second","background":"colour","colour":"#00b140"}` | What this output composites the page over. `transparent` keeps the page's own alpha. Applies on the next tick without restarting the output — see below |
 | `/api/pacing` | `{"pacing": "internal"}` | Rebuilds the browser at the same URL |
@@ -259,6 +260,40 @@ so honestly beats one that refuses wholesale because a card is missing.
 
 The `source` body is validated before anything is touched: an unparseable
 format or a duplicate output name is a 400 and changes nothing.
+
+### The stream output
+
+`{"kind":"stream","options":{...}}` publishes the page to an RTMP or SRT server —
+a Restreamer, a YouTube ingest, anything that takes a push. It is the only
+backend that needs something installed beside WebLinked: an `ffmpeg` on `PATH`,
+which does the encoding in a subprocess.
+
+| Option | Default | |
+|---|---|---|
+| `url` | *required* | `rtmp://host:1935/app/key`, `rtmps://…`, `srt://host:6000` |
+| `bitrate` | `6000k` | Video bitrate; also sets `maxrate`, with `bufsize` at twice it |
+| `codec` | `libx264` | `copy` passes the encoder settings by |
+| `preset` | `veryfast` | x264 preset |
+| `tune` | *none* | e.g. `zerolatency` |
+| `gop_seconds` | `2` | Keyframe interval. Every RTMP ingest wants 2 |
+| `audio_codec` | `aac` | |
+| `audio_bitrate` | `128k` | |
+| `container` | from the URL | `flv` for RTMP, `mpegts` for SRT/UDP |
+| `ffmpeg` | `ffmpeg` | Path to the binary, if it is not on `PATH` |
+
+The status fields worth watching:
+
+| `outputs[].connected` | ffmpeg has connected to **both** of the loopback sockets it is fed through. False with a climbing `dropped` means it never started or has died |
+| `outputs[].audio_deficit_ms` | How far the audio sent lags the video sent. **This should sit at 0.** One tick of video must carry exactly one tick of audio; a number that grows is a stream whose sound is drifting away from its picture, which nothing else here would show |
+| `outputs[].last_logline` | ffmpeg's own most recent line — where "Connection refused" and "Server returned 403" appear |
+
+The stream key is a password, so it is redacted (`…/live/<key>`) everywhere it
+would otherwise be written down: the log, `/api/state`, and diagnostics bundles.
+Give the output a `name` that is not the key, because the name is not redacted.
+
+**Not verified against a real server** — see section 28 of
+[04-verification.md](04-verification.md) for exactly what has and has not been
+established.
 
 ### Backgrounds
 

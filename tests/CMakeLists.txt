@@ -14,6 +14,7 @@ add_executable(weblinked_tests
   test_settings_store.cpp
   test_osc_server.cpp
   test_screen_geometry.cpp
+  test_stream_args.cpp
 )
 
 set_target_properties(weblinked_tests PROPERTIES

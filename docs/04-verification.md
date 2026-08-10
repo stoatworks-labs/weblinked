@@ -1775,6 +1775,107 @@ timer therefore stopped us asking for frames from a browser that does not paint
 on its own: no frames at all, and nothing in any log. It now rebuilds the
 browser at the same URL.
 
+## 28. The stream output — the whole pipeline, to a file instead of a server
+
+The `stream` backend encodes the page to H.264/AAC through an `ffmpeg`
+subprocess and pushes it to an RTMP or SRT server. No RTMP server was available
+here, so the check points the same output at a **file path** instead: ffmpeg
+takes the identical two raw inputs over the identical loopback sockets and muxes
+the identical FLV — only the final `avio` write target differs. That verifies
+everything WebLinked is responsible for, and nothing about RTMP itself.
+
+```bash
+./build/Release/WebLinked.app/Contents/MacOS/WebLinked \
+  --url file:///tmp/page.html --format 1280x720p25 --port 7754 --headless &
+
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"kind":"stream","name":"restreamer","options":{"url":"/tmp/wl.flv"}}' \
+  http://127.0.0.1:7754/api/output/add
+# …25 s…
+curl -X POST -d '{"name":"restreamer"}' http://127.0.0.1:7754/api/output/remove
+```
+
+The page rendered a frame counter over `#112233` and played a 440 Hz WebAudio
+tone at 0.2 gain, so both streams carry something checkable rather than black
+and silence.
+
+**What came out**, by `ffprobe` on the file — not by WebLinked's own counters:
+
+| | |
+|---|---|
+| Video | h264, 1280x720, `r_frame_rate` **25/1** |
+| Audio | aac, 48000 Hz, 2 channels |
+| Length | video 25.040 s, audio 25.067 s — **−27 ms** |
+| Picture | decoded frame is the page: right text, right background |
+| Sound | `volumedetect` mean −17.0 dB; DFT peak at **439 Hz** |
+| Dropped | 0, over 626 frames |
+
+−27 ms is one AAC frame of encoder priming (1024 samples = 21.3 ms) plus
+rounding. It is a **constant offset, not a drift** — the deficit was 0 ms when
+sampled at 5 s, 10 s and 20 s.
+
+### The two faults this found, both of which shipped in the first version
+
+**ffmpeg will not open its second input until the first one is flowing.** The
+first version accepted both loopback connections before writing either, which
+deadlocks: `lsof` showed ffmpeg connected to the video socket and blocked
+probing it, having never touched the audio socket. `connected: false`,
+`frames: 0`, `dropped: 171` — and no error, because nothing had failed. The fix
+is two independent writer threads; video moves first and the audio it displaces
+is held for the audio writer rather than dropped, so the streams still line up
+however late the audio connection is made.
+
+**A subprocess inherits every open descriptor.** This is the first child process
+this application has ever had, and ffmpeg came up holding the HTTP control port
+and an accepted control connection:
+
+```
+ffmpeg 16532 …  50u  TCP localhost:7754 (LISTEN)
+ffmpeg 16532 … 117u  TCP localhost:7754->localhost:54749 (CLOSE_WAIT)
+```
+
+An orphaned encoder therefore keeps the control port bound, and the next launch
+fails with *"port 7654 is already in use — another WebLinked is probably
+running"*, naming the wrong cause entirely. `core/socket_inherit.h` now sets
+`FD_CLOEXEC` (and clears `HANDLE_FLAG_INHERIT` on Windows) on the HTTP listener,
+every accepted HTTP connection, the OSC socket and this backend's own listeners.
+Re-checked after the fix: the child holds its own two input sockets and nothing
+else.
+
+A third, smaller one came out of the length measurement rather than a crash:
+**closing the sockets before joining the writers truncated the tail**, and
+**signalling ffmpeg before it had drained its input** truncated more. Together
+they cost about half a second of audio against a full-length video — 547 ms,
+then 392 ms once the writers were allowed to drain, then 27 ms once ffmpeg was
+allowed to exit on EOF instead of being signalled. The `audio_deficit_ms` field
+in `/api/state` exists because of this: one tick of video must carry exactly one
+tick of audio, and that comparison is the only place a slow desync is visible.
+
+### RTMP itself — since verified, against a real Restreamer
+
+The paragraph that stood here said no streaming server had ever accepted a
+connection from this backend. That was true for about an hour. On the same day
+it was pointed at a **datarhei Core 16.0.0** (the engine inside Restreamer)
+running on another machine, reached over Tailscale, driven by Atem Overseer's
+browser source type:
+
+```
+WebLinked (this Mac) ──RTMP over tailnet──▶ Restreamer ──split, -c copy──▶ back to Overseer
+```
+
+Measured at the far end, not here: the Core's split process took **h264
+1280x720 in at 0 drop**, and the monitor copy pulled out of Overseer's http-flv
+decoded to the rendered page. This backend reported `connected: true`, 652
+frames, **0 dropped**, `audio_deficit_ms: 0`.
+
+So the RTMP handshake, publish and sustained delivery are real. What is still
+untested is a commercial ingest (YouTube, Twitch) with its own handshake and
+tolerances, SRT in any form, and the reconnect behaviour when a server drops
+mid-stream.
+
+**Windows and Linux remain unbuilt.** `posix_spawn` and `CreateProcessA` are
+different code paths and only the former has ever run.
+
 ## Not verified
 
 Everything in this section is written against a real SDK header set and compiles.

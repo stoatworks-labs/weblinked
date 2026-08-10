@@ -68,6 +68,7 @@ option(WEBLINKED_WITH_DECKLINK "Build the DeckLink output backend" ON)
 option(WEBLINKED_WITH_AJA      "Build the AJA NTV2 output backend" OFF)
 option(WEBLINKED_WITH_SCREEN   "Build the fullscreen GPU output backend" ON)
 option(WEBLINKED_WITH_SHARED   "Build the Syphon/Spout shared-surface output backend" ON)
+option(WEBLINKED_WITH_STREAM   "Build the RTMP/SRT output backend (needs ffmpeg at run time)" ON)
 option(WEBLINKED_BUILD_TESTS   "Build the unit tests"              ON)
 
 # Syphon on macOS, Spout on Windows. Linux has no equivalent either of them
@@ -193,6 +194,10 @@ if(WEBLINKED_WITH_SHARED)
   list(APPEND WEBLINKED_BACKENDS shared)
 endif()
 
+if(WEBLINKED_WITH_STREAM)
+  list(APPEND WEBLINKED_BACKENDS stream)
+endif()
+
 message(STATUS "WebLinked output backends: preview ${WEBLINKED_BACKENDS}")
 
 # ----------------------------------------------------------------------------
@@ -218,6 +223,10 @@ set(WEBLINKED_CORE_SOURCES
   src/core/source_config.cpp
   src/core/source_config.h
   src/core/settings_store.cpp
+  src/core/socket_inherit.cpp
+  src/core/socket_inherit.h
+  src/core/stream_args.cpp
+  src/core/stream_args.h
   src/core/settings_store.h
   # The OSC receiver is here rather than with the rest of the control surface
   # because it needs no CEF — only sockets — and its packet decoder is pure
@@ -280,6 +289,9 @@ if(WEBLINKED_WITH_SCREEN)
   else()
     list(APPEND WEBLINKED_ENGINE_SOURCES src/outputs/screen_window_linux.cpp)
   endif()
+endif()
+if(WEBLINKED_WITH_STREAM)
+  list(APPEND WEBLINKED_ENGINE_SOURCES src/outputs/stream_output.cpp)
 endif()
 if(WEBLINKED_WITH_SHARED)
   list(APPEND WEBLINKED_ENGINE_SOURCES
@@ -386,6 +398,7 @@ target_compile_definitions(weblinked_engine PUBLIC
   $<$<BOOL:${WEBLINKED_WITH_AJA}>:WEBLINKED_WITH_AJA=1>
   $<$<BOOL:${WEBLINKED_WITH_SCREEN}>:WEBLINKED_WITH_SCREEN=1>
   $<$<BOOL:${WEBLINKED_WITH_SHARED}>:WEBLINKED_WITH_SHARED=1>
+  $<$<BOOL:${WEBLINKED_WITH_STREAM}>:WEBLINKED_WITH_STREAM=1>
 )
 
 if(WEBLINKED_WITH_SHARED)

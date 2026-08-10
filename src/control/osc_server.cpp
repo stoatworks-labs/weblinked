@@ -22,6 +22,7 @@ using socket_t = int;
 #define WL_CLOSE_SOCKET ::close
 #endif
 
+#include "core/socket_inherit.h"
 #include "diag/diag.h"
 
 namespace weblinked {
@@ -207,6 +208,7 @@ bool OscServer::start(const std::string& bindAddress, int port, Handler handler,
     error = "socket() failed for OSC";
     return false;
   }
+  preventSocketInheritance(static_cast<std::intptr_t>(sock));
 
   int reuse = 1;
   ::setsockopt(sock, SOL_SOCKET, SO_REUSEADDR,

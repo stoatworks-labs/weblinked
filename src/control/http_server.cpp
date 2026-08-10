@@ -26,6 +26,7 @@ using socket_t = int;
 #define WL_CLOSE_SOCKET ::close
 #endif
 
+#include "core/socket_inherit.h"
 #include "diag/diag.h"
 
 namespace weblinked {
@@ -250,6 +251,7 @@ bool HttpServer::start(const std::string& bindAddress, int port,
     error = "socket() failed";
     return false;
   }
+  preventSocketInheritance(static_cast<std::intptr_t>(listener));
 
   int reuse = 1;
   ::setsockopt(listener, SOL_SOCKET, SO_REUSEADDR,
@@ -318,6 +320,10 @@ void HttpServer::acceptLoop() {
       }
       continue;
     }
+    // An accepted connection needs this as much as the listener does: a child
+    // process that inherits one holds the client's connection open, so the
+    // browser at the other end waits for a response nobody will send.
+    preventSocketInheritance(static_cast<std::intptr_t>(client));
 
     // Detached, with a counter so shutdown can at least report stragglers. A
     // join-all would mean waiting on a client that has wandered off.

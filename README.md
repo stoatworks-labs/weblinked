@@ -134,10 +134,10 @@ macOS builds are signed and notarised and open normally. The Windows builds are 
   raster like `3840x600p60` for an LED strip.
 - **Carries the page's audio** — WebAudio, `<video>`, anything Chromium plays —
   as 48 kHz float, embedded in SDI or sent alongside the IP video.
-- **Outputs to six kinds of destination at once**: DeckLink, AJA, NDI, OMT, a
-  fullscreen GPU display, and a Syphon source other applications on the same
-  machine can pick up. Every output takes the same frame, so what NDI sees is
-  what SDI sees.
+- **Outputs to seven kinds of destination at once**: DeckLink, AJA, NDI, OMT, a
+  fullscreen GPU display, a Syphon source other applications on the same
+  machine can pick up, and RTMP/SRT to a streaming server. Every output takes
+  the same frame, so what NDI sees is what SDI sees.
 - **Straight into a VJ application** (`--syphon` on macOS, `--spout` on
   Windows). The page appears as a source in Resolume Arena, VDMX,
   TouchDesigner or anything else that speaks either protocol — on the same

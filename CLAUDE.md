@@ -191,7 +191,7 @@ everyone who already installed a second Add/Remove Programs entry.
 | `src/diag/` | logging, crash reports, diagnostics bundles |
 | `src/browser/` | CefApp, CefClient (paint + audio), BrowserSource |
 | `src/engine/` | the clock loop |
-| `src/outputs/` | IOutput + preview, ndi, omt, decklink, aja, screen, shared |
+| `src/outputs/` | IOutput + preview, ndi, omt, decklink, aja, screen, shared, stream |
 | `third_party/syphon/` | vendored Syphon server subset (BSD-3) — see its README |
 | `third_party/spout/` | vendored Spout DirectX sender subset (BSD-2) — see its README |
 | `src/control/` | HTTP server, OSC receiver, embedded control page |
