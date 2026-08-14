@@ -21,12 +21,16 @@ struct TrayOptions {
 
 /// Installs a menu-bar status item, and says whether it got one.
 ///
-/// False where there is no menu bar to install into: every platform but macOS
-/// today, though Windows and Linux both have one —
-/// and macOS itself when the process has no window server session, which is
-/// what an ssh login or a launchd daemon is. A false return is not an error and
-/// nothing downstream should treat it as one; WebLinked runs headless by design
-/// and the control page is reachable either way.
+/// All three desktop platforms have an implementation: NSStatusItem on macOS,
+/// Shell_NotifyIcon on Windows, StatusNotifierItem through
+/// libayatana-appindicator on Linux.
+///
+/// False means there was nowhere to put one, which is an ordinary outcome
+/// rather than a failure — a machine with no window server session (an ssh
+/// login, a launchd daemon, a container), a Linux box with no desktop
+/// libraries, or a shell that refused the icon. Nothing downstream should treat
+/// it as an error: WebLinked runs headless by design and the control page is
+/// reachable either way. The reason is always in the log.
 ///
 /// This is **not** the operator window returning. That was a CEF browser, and
 /// the reason it had to go is specific to browsers: a windowed one defaults to
