@@ -68,9 +68,13 @@ function(weblinked_add_mac_app)
 
   # ---- browser process -----------------------------------------------------
 
+  # Both .mm files are compiled as CXX, not OBJCXX — see the note at the head of
+  # the top-level CMakeLists for why enabling that language breaks CEF's own
+  # Objective-C++ sources.
   add_executable(weblinked MACOSX_BUNDLE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/main.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/mac_application.mm")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/mac_application.mm"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/tray_mac.mm")
   set_target_properties(weblinked PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON

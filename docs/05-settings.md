@@ -103,7 +103,7 @@ The command line always wins. The file only fills in what was left alone:
 weblinked --url https://example.com/tonight
 ```
 
-Without that rule, a launcher passing `--port` and `--headless` could have them
+Without that rule, a supervisor passing `--port` and `--headless` could have them
 undone by whatever the last operator happened to save, and an operator who typed
 `--url` would be looking at the wrong page with no clue why.
 

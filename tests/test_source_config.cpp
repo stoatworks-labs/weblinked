@@ -122,6 +122,40 @@ WEBLINKED_TEST(source_config_adds_a_preview_when_asked) {
   CHECK_EQ(without.outputs.size(), static_cast<size_t>(0));
 }
 
+WEBLINKED_TEST(only_the_preview_is_a_permanent_output) {
+  CHECK(outputKindIsPermanent("preview"));
+  // Every other backend is the operator's to add, convert and remove. Listed
+  // one by one rather than as "not preview" so that adding a backend which
+  // should also be permanent has to come here and say so.
+  CHECK(!outputKindIsPermanent("ndi"));
+  CHECK(!outputKindIsPermanent("omt"));
+  CHECK(!outputKindIsPermanent("decklink"));
+  CHECK(!outputKindIsPermanent("aja"));
+  CHECK(!outputKindIsPermanent("screen"));
+  CHECK(!outputKindIsPermanent("shared"));
+  CHECK(!outputKindIsPermanent("stream"));
+  CHECK(!outputKindIsPermanent(""));
+}
+
+WEBLINKED_TEST(a_configuration_that_lost_its_preview_gets_one_back) {
+  // What a settings file written before the preview was permanent looks like:
+  // the operator converted the preview row into an NDI feed and saved, so the
+  // list has an output but no picture for the control page.
+  const auto config = SourceConfig::fromJson(*json::parse(R"({
+    "id": "main",
+    "outputs": [ { "kind": "ndi", "name": "Test" } ]
+  })"));
+  CHECK(config.has_value());
+  if (!config) return;
+
+  SourceConfig repaired = *config;
+  repaired.ensurePreview();
+  CHECK_EQ(repaired.outputs.size(), static_cast<size_t>(2));
+  // In front, so the page has its picture before anything that can fail to open.
+  CHECK_STR(repaired.outputs[0].kind, "preview");
+  CHECK_STR(repaired.outputs[1].name, "Test");
+}
+
 WEBLINKED_TEST(app_config_parses_several_sources_and_names_the_unnamed) {
   const auto config = AppConfig::parse(R"({
     "control": { "http_port": 8000, "http_token": "secret", "osc_enabled": false },

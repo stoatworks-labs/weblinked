@@ -59,7 +59,7 @@ jobs:
             libgtk-3-dev libnss3-dev libasound2-dev libxss-dev \
             libxtst-dev libatk-bridge2.0-dev libdrm-dev libgbm-dev \
             libx11-dev libegl1-mesa-dev libgles2-mesa-dev \
-            libavahi-client-dev
+            libavahi-client-dev libayatana-appindicator3-dev
 
       - name: Cache the CEF distribution
         uses: actions/cache@v4
@@ -222,36 +222,6 @@ jobs:
             tar czf "$RL_FILE_SLUG-${{ steps.ver.outputs.version }}-${{ matrix.name }}.tar.gz" -C out .
           fi
 
-      - name: Pack WebLinked for embedding in the launcher
-        shell: bash
-        # Packed here rather than in the launcher job because this is the runner
-        # that has the built tree; the published .dmg and .pkg do not contain a
-        # WebLinked.app the launcher job could reach into.
-        #
-        # ONE archive, not the tree. Tauri's resource collector walks whatever
-        # it is told to bundle, and the CEF framework's Versions/Current and
-        # Resources symlinks send that walk into a path that does not exist
-        # (.../Resources/Resources). A single regular file has nothing to walk.
-        #
-        # macOS uses ditto, not zip: it is the one that round-trips a framework
-        # with its symlinks, execute bits and ad-hoc signature intact —
-        # measured, see docs/04-verification.md section 11.
-        run: |
-          set -euo pipefail
-          mkdir -p embed
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            # The staged copy, not build/Release: this one is ad-hoc signed and
-            # has the NDI runtime bundled beside it, so the embedded WebLinked
-            # is the same thing the .dmg installs rather than a barer build.
-            ditto -c -k --sequesterRsrc --keepParent \
-              "$RUNNER_TEMP/stage-mac/WebLinked.app" embed/WebLinked.app.zip
-          elif [ "$RUNNER_OS" = "Windows" ]; then
-            7z a embed/WebLinked.zip ./out/*
-          else
-            (cd out && zip -qry ../embed/WebLinked.zip .)
-          fi
-          ls -lh embed/
-
       - uses: actions/upload-artifact@v4
         with:
           name: weblinked-${{ matrix.name }}
@@ -261,127 +231,6 @@ jobs:
             *.dmg
             *.pkg
           if-no-files-found: error
-
-      - name: Upload the embed archive
-        uses: actions/upload-artifact@v4
-        # Separate from the artefact above on purpose: this one feeds the
-        # launcher job and must NOT become a published release asset, where it
-        # would sit next to the .dmg as a second copy of the same thing.
-        with:
-          name: weblinked-embed-${{ matrix.name }}
-          path: embed/*
-          if-no-files-found: error
-
-  launcher:
-    name: Launcher (${{ matrix.name }})
-    runs-on: ${{ matrix.os }}
-    # The launcher now ships WebLinked inside itself, so it cannot be built
-    # until the renderer exists. This is what makes the macOS download a single
-    # install rather than two that have to be applied in the right order.
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { name: macos-arm64,    os: macos-14,       config: macos }
-          - { name: windows-x86_64, os: windows-latest, config: windows }
-          - { name: linux-x86_64,   os: ubuntu-22.04,   config: linux }
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Linux Tauri dependencies
-        if: runner.os == 'Linux'
-        # libayatana-appindicator3 is the tray icon; without it the app builds
-        # and then has nowhere to live, which is the entire point of it.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
-            libayatana-appindicator3-dev patchelf build-essential libssl-dev
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            launcher/src-tauri/target
-          key: launcher-${{ matrix.name }}-${{ hashFiles('launcher/src-tauri/Cargo.lock') }}
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 20
-
-      - name: Fetch the packed WebLinked
-        uses: actions/download-artifact@v4
-        with:
-          name: weblinked-embed-${{ matrix.name }}
-          path: launcher/src-tauri/resources
-
-      - name: Confirm the archive is there
-        shell: bash
-        # A launcher that silently ships without the archive still builds and
-        # still runs — it just falls back to /Applications and an operator who
-        # installed only the launcher gets "no such file" on Start. Fail here
-        # instead, where it is obvious.
-        run: |
-          set -euo pipefail
-          ls -lh launcher/src-tauri/resources/
-          test -s launcher/src-tauri/resources/WebLinked.app.zip \
-            || test -s launcher/src-tauri/resources/WebLinked.zip
-
-      - name: Select the platform launcher config
-        shell: bash
-        # `command` is the one field that cannot be platform-neutral, and
-        # av-launcher's schema is shared with the rest of the fleet, so the
-        # choice is made here rather than by adding per-OS keys to it. A test
-        # (every_platform_variant_parses_and_launches) pins all three.
-        run: cp "launcher/launchers/${{ matrix.config }}.toml" launcher/src-tauri/launcher.toml
-
-      - name: Stamp the launcher with the release version
-        shell: bash
-        # The launcher ships inside WebLinked's release, so an artefact named
-        # 0.6.0 in a v0.6.1 release reads as a build mistake even when the
-        # launcher genuinely has not changed. Derived from the tag rather than
-        # hand-maintained in tauri.conf.json, because that is a second place to
-        # forget - v0.6.1 shipped with 0.6.0 launcher artefacts for exactly that
-        # reason.
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          case "$version" in
-            [0-9]*) ;;
-            *) version="$(sed -n 's/^project(weblinked VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)" ;;
-          esac
-          python3 -c 'import json,sys,pathlib; p=pathlib.Path("launcher/src-tauri/tauri.conf.json"); c=json.loads(p.read_text()); c["version"]=sys.argv[1]; p.write_text(json.dumps(c,indent=2)+"\n"); print("launcher version ->",sys.argv[1])' "$version"
-
-      - name: Test
-        working-directory: launcher
-        run: cargo test --manifest-path src-tauri/Cargo.toml
-
-      - name: Build
-        working-directory: launcher
-        run: |
-          npm install
-          npm run tauri build
-
-      - name: Collect
-        shell: bash
-        run: |
-          mkdir -p launcher-out
-          b=launcher/src-tauri/target/release/bundle
-          # Only the installable artefacts. The raw target/release tree also
-          # holds the unbundled binary, which is useless without its resources.
-          find "$b" -maxdepth 3 \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' \
-            -o -name '*-setup.exe' -o -name '*.msi' \) -exec cp {} launcher-out/ \;
-          ls -l launcher-out
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: weblinked-launcher-${{ matrix.name }}
-          path: launcher-out/*
-          if-no-files-found: error
-
   windows-installer:
     name: Windows installer
     needs: build
@@ -428,7 +277,7 @@ jobs:
 
   release:
     name: Publish release
-    needs: [build, launcher, windows-installer]
+    needs: [build, windows-installer]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -436,15 +285,12 @@ jobs:
         with:
           path: artifacts
 
-      - name: Drop the launcher's embed archives
-        # download-artifact takes *every* artifact when given no name, and the
-        # upload below globs artifacts/**/*, so the archives that exist only to
-        # feed the launcher job would otherwise be published as release assets.
-        # Naming them separately was not enough on its own — v0.7.0 shipped
-        # WebLinked.app.zip and WebLinked.zip next to the real installers, as
-        # 135 MB and 339 MB of duplicate nobody asked for.
+      - name: List what is about to be published
+        # download-artifact takes *every* artifact when given no name and the
+        # upload below globs artifacts/**/*, so what lands on the release is
+        # worth stating out loud. v0.7.0 shipped two embed archives — 135 MB and
+        # 339 MB — beside the real installers before anyone noticed.
         run: |
-          rm -rf artifacts/weblinked-embed-*
           echo "publishing:"
           find artifacts -type f -printf '  %f\n' | sort
 

@@ -283,6 +283,10 @@ bool SourceConfig::validate(std::string* error) const {
   return true;
 }
 
+bool outputKindIsPermanent(const std::string& kind) {
+  return kind == "preview";
+}
+
 void SourceConfig::ensurePreview() {
   if (!wantPreview) {
     return;

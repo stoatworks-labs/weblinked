@@ -629,6 +629,19 @@ bool Engine::addOutput(const OutputSpec& spec, std::string& error) {
       return false;
     }
   }
+  // One preview, no more. Not a duplicate of the name check above: a second
+  // preview under a different name costs a scale-and-copy per tick and the
+  // control page would only ever show one of them. Conditional on there being
+  // one already rather than refusing the kind outright, so a source that
+  // somehow lost its preview can still be given one back.
+  if (outputKindIsPermanent(spec.kind)) {
+    for (const auto& entry : outputs_) {
+      if (outputKindIsPermanent(entry.spec.kind)) {
+        error = "there is already a preview output";
+        return false;
+      }
+    }
+  }
 
   Entry entry;
   entry.spec = spec;
@@ -674,6 +687,24 @@ bool Engine::updateOutput(const std::string& name, const OutputSpec& spec,
                                });
   if (it == outputs_.end()) {
     error = "no output named '" + name + "'";
+    return false;
+  }
+
+  // A permanent output keeps its kind. This is the edit that silently kills the
+  // control page: converting the preview row into an NDI feed succeeds, the
+  // feed goes on air, and the only visible consequence is a preview pane that
+  // is black from then on. Everything else about the preview — its scale, its
+  // background — stays editable, so this refuses the one change that cannot be
+  // undone from the page it breaks.
+  if (outputKindIsPermanent(it->spec.kind) && spec.kind != it->spec.kind) {
+    error = "the preview cannot become a '" + spec.kind +
+            "' output — add a second output instead";
+    return false;
+  }
+  // And nothing else may turn into one, which would leave two previews with the
+  // control page reading whichever it found first.
+  if (!outputKindIsPermanent(it->spec.kind) && outputKindIsPermanent(spec.kind)) {
+    error = "there is already a preview output";
     return false;
   }
 
@@ -750,13 +781,25 @@ bool Engine::updateOutput(const std::string& name, const OutputSpec& spec,
   return false;
 }
 
-bool Engine::removeOutput(const std::string& name) {
+bool Engine::removeOutput(const std::string& name, std::string* error) {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto it = std::find_if(outputs_.begin(), outputs_.end(),
                                [&](const Entry& entry) {
                                  return entry.spec.name == name;
                                });
   if (it == outputs_.end()) {
+    if (error != nullptr) {
+      *error = "no output named '" + name + "'";
+    }
+    return false;
+  }
+  // Permanent outputs stay. applyConfiguration reaches here too, which is the
+  // point: a settings file written before this rule existed has no preview in
+  // its list, and reconciling against it must not delete the running one.
+  if (outputKindIsPermanent(it->spec.kind)) {
+    if (error != nullptr) {
+      *error = "the preview cannot be removed — it is what the control page shows";
+    }
     return false;
   }
   if (it->output != nullptr) {

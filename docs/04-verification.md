@@ -358,7 +358,13 @@ preview output — an option that does nothing there. Fixed with an explicit
 The diagnostics view showed the log with levels coloured, the log paths, the
 settings path, and the popup counters.
 
-## 14. The tray launcher — partially verified
+## 14. The tray launcher — partially verified (RETIRED in v1.0.0)
+
+> The separate Tauri launcher this section describes no longer exists. The
+> engine puts its own icon in the menu bar and system tray — section 31. This
+> and sections 18 and 21 are kept because they record what was true when they
+> were written, not because any of it still ships.
+
 
 - Builds; `cargo test` passes 7 tests, one of which parses the `launcher.toml`
   this repo actually ships and asserts the argv it produces, `--headless`
@@ -546,7 +552,7 @@ keying.
 
 ---
 
-## 18. The tray launcher — built, not yet driven
+## 18. The tray launcher — built, not yet driven (RETIRED, see 14)
 
 Improved from section 14 but still not end-to-end.
 
@@ -980,7 +986,7 @@ absent, the same way a missing NDI SDK disables NDI.
 
 ---
 
-## 21. The launcher carrying WebLinked — mostly verified
+## 21. The launcher carrying WebLinked — mostly verified (RETIRED, see 14)
 
 The launcher now ships WebLinked inside itself, so the macOS download is one
 install rather than two applied in the right order. `launcher/README.md`
@@ -1954,6 +1960,139 @@ behind — the same reasoning as the OSC padding sweep in section 1.
   one of them renamed by the responder, and `registeredName()` should report
   the new one. Not exercised.
 
+## 30. The menu bar item — verified by using it
+
+WebLinked now puts an `NSStatusItem` in the macOS menu bar itself, rather than
+leaving that entirely to the tray launcher. `--no-tray` turns it off.
+
+**Why this is not the operator window coming back.** Section 9 removed a CEF
+*browser* window, and the crash was specific to browsers: a windowed one
+defaults to Chrome runtime style while every source here is windowless and so
+Alloy, which put two runtime styles in one process and segfaulted the GPU
+process on every launch. A status item is AppKit and owns no browser, so it
+cannot reintroduce that — the same reasoning that already lets the screen
+output own a real `NSWindow`. Rule 9 is about browsers.
+
+It also closes the second complaint section 9 recorded. That window "never had
+a menu bar … and there was no way to quit it from the UI". `NSApp.mainMenu` is
+still never set, but the status item's menu carries Quit with ⌘Q.
+
+**What was checked, on this Mac, by clicking it:**
+
+- the icon appears in the menu bar — `dot.radiowaves.left.and.right`, as a
+  template image so it recolours for a light or dark bar. Photographed, not
+  inferred from the log line;
+- the menu opens with the live line filled in: `WebLinked 0.7.1` / `1 source` /
+  Open control page / Copy control address / Reveal log in Finder / Quit;
+- **the live line is genuinely live** — it is `SourceManager::size()`, read in
+  `menuNeedsUpdate:` when the menu opens rather than on a timer;
+- **Copy control address** put `http://127.0.0.1:7699/` on the pasteboard,
+  confirmed with `pbpaste`;
+- **Quit shut down in order**, which is the whole point of it existing:
+
+```
+INFO  menu bar item installed
+INFO  shutdown requested from the menu bar
+INFO  shutdown requested by signal
+INFO  WebLinked exiting cleanly
+```
+
+  The process exited and port 7699 was released. Quit deliberately sets the same
+  flag `SIGTERM` does and lets the watchdog post to the UI thread, rather than
+  calling `CefQuitMessageLoop()` from inside AppKit's menu tracking — the one
+  place unwinding the loop is not safe. That is why both the menu-bar line and
+  the signal line appear: it is one path, not two.
+
+- **`--no-tray` installs nothing** and keeps the Dock icon;
+- **no rendering regression** from the accessory activation policy the tray
+  turns on: the same build sent 60 frames to `ndi_probe` at 51.24 fps, 1920x1080
+  progressive, 50/1, correct stride.
+
+**Not verified.** The status item on a second display or with the menu bar
+auto-hidden; behaviour when the menu is open as the process is killed from
+outside. Windows and Linux have **no** tray at all here — `installTray` is a
+stub returning false on both, deliberately, because a Shell_NotifyIcon message
+window and a StatusNotifierItem D-Bus name would be real UI that has never been
+run (rule 1), and the tray launcher already covers those platforms.
+
+## 31. The tray on Windows and Linux — verified on real systems
+
+The tray is no longer macOS-only, and neither platform was signed off on a
+compile. Both were exercised on machines built for it: a Windows 11 **x86_64**
+KVM guest and an Ubuntu 24.04 guest, on the Unraid host. That matters for
+Windows in particular — the only Windows machine here before this was ARM64,
+while every Windows artefact this project ships is x86_64, so no shipped
+Windows binary had ever been run on its own architecture.
+
+### Linux — libayatana-appindicator, verified twice
+
+Against a purpose-built StatusNotifierWatcher **and** against KDE Plasma's own,
+which is the reference implementation of the protocol:
+
+```
+org.kde.StatusNotifierWatcher          KDE's
+org.kde.StatusNotifierHost-6883        plasmashell
+RegisteredStatusNotifierItems:
+  :1.46/org/ayatana/NotificationItem/weblinked
+```
+
+Menu read over `com.canonical.dbusmenu` — header, the live source count,
+Open control page, Quit — clicking Quit by its label gave the orderly path:
+
+```
+INFO  tray item installed via libayatana-appindicator3.so.1
+INFO  shutdown requested from the tray
+INFO  shutdown requested by signal
+INFO  WebLinked exiting cleanly
+```
+
+`--no-tray` installs nothing. A machine with no desktop degrades to
+`no tray: no display available for GTK` and keeps serving.
+
+**Not verified:** the icon's pixels on a real desktop. The KDE guest's Plasma
+session runs on Xvfb with software GL and is not healthy enough for a blank
+tray to mean anything — see the lab notes. Protocol conformance is proven;
+appearance is not.
+
+### Windows — Shell_NotifyIcon, verified end to end
+
+- **115 tests, 26191 checks, 0 failures** — the suite's first run on Windows;
+- **the icon appears in the notification area**, confirmed by photographing the
+  tray with the process up and again with it stopped: the icon is present in
+  one and absent in the other, difference bounding box `(0,0,147,37)`;
+- Windows' own `HKCU\Control Panel\NotifyIconSettings` carries an entry for
+  `weblinked.exe`, which is the shell recording the registration;
+- **the menu opens** with the same items as the other two platforms, live source
+  count included;
+- **Copy control address** put `http://127.0.0.1:7699/` on the clipboard;
+- **Quit shut down in order**, port released:
+
+```
+DEBUG tray: callback event 0x007b (lparam 0x1007b)   <- WM_CONTEXTMENU
+INFO  shutdown requested from the tray
+INFO  shutdown requested by signal
+INFO  WebLinked exiting cleanly
+```
+
+**Three Windows-specific traps this found, all of which compile silently:**
+
+1. `IDI_APPLICATION` expands through `MAKEINTRESOURCE` to the **ANSI** form
+   because this project does not define `UNICODE`, so it cannot be handed to
+   `LoadIconW`. Use `MAKEINTRESOURCEW(32512)`.
+2. `NIM_SETVERSION`/`NOTIFYICON_VERSION_4` **changes the callback encoding**:
+   the event moves to `LOWORD(lParam)` and a right-click arrives as
+   `WM_CONTEXTMENU`, not `WM_RBUTTONUP`. The icon still appears and every click
+   is delivered — the menu simply never opens. The log line above is what
+   proved the fix.
+3. `Shell_NotifyIcon`'s return value was being discarded, so the log claimed the
+   icon was installed without knowing. It is checked now; that check is what
+   established the icon was genuinely accepted while it was still hidden behind
+   the Windows 11 chevron.
+
+**Not verified on Windows:** behaviour when Explorer restarts. The
+`TaskbarCreated` handler is written and is why the window is a real hidden
+window rather than `HWND_MESSAGE`, but the re-add path has not been exercised.
+
 ## Not verified
 
 Everything in this section is written against a real SDK header set and compiles.
@@ -2022,8 +2161,9 @@ merely flipping the flag produced no frames at all. The rebuild is implemented
 and compiles; it has not been exercised on air, and it is not a mid-show
 operation.
 
-**The tray launcher end to end.** See sections 14, 18 and 21. The unpack the
-Start button triggers is verified by hand and by test; the click itself is not.
+**The tray launcher end to end.** No longer a gap, because the launcher is gone:
+retired in v1.0.0 in favour of the engine's own status item, which *is* verified
+by using it on all three platforms (section 31).
 
 **A projector, and three or more displays.** Two displays are now verified
 (section 20); nothing has been shown on a projector.

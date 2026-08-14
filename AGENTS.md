@@ -67,16 +67,16 @@ src/browser/  CefApp, CefClient (paint + audio), BrowserSource
 src/engine/   the clock loop and everything it owns
 src/outputs/  IOutput + preview | ndi | omt | decklink | aja | screen | shared | stream
 src/control/  HTTP server, OSC receiver, embedded control page
-src/app/      entry points, Info.plists, entitlements
-launcher/     the av-launcher tray shell, configured for WebLinked (Rust/Tauri)
+src/app/      entry points, Info.plists, entitlements, the tray icon
 third_party/  cef, ndi, omt headers, and the vendored Syphon server subset
 tools/        ndi_probe, syphon_probe, mdns_probe — independent, for verification
 tests/        unit tests; link core only
 ```
 
-`launcher/` is a separate Cargo project on purpose — it is the fleet's
-av-launcher shell with a `launcher.toml` and an icon, not code that belongs to
-this pipeline. It does not build with the rest.
+There was a separate Tauri tray launcher here until v1.0.0. It existed to give
+this process a desktop presence, and the engine now has one of its own —
+`src/app/tray_mac.mm`, `tray_win.cpp`, `tray_linux.cpp` — so a second 140 MB
+download carrying a duplicate copy of the engine no longer earns its place.
 
 **`weblinked_core` must not depend on CEF.** That split is what keeps the test
 suite building in seconds instead of linking 200 MB of Chromium. If you need
@@ -101,8 +101,8 @@ windowed browser defaults to Chrome style. Hosting both means two runtime styles
 in one process, and the GPU process segfaults on startup — leaving a correctly
 sized, completely empty window. That is exactly what shipped as the "operator
 window" up to v0.5.2, and it survived because every test run was headless, where
-the GPU process never crashes. The UI is the control page, in a browser; the tray
-launcher in `launcher/` is what puts it on a desktop. If you ever add a window
+the GPU process never crashes. The UI is the control page, in a browser; the
+menu-bar/tray icon is what puts it one click away. If you ever add a window
 back, `CefWindowInfo::runtime_style = CEF_RUNTIME_STYLE_ALLOY` is the thing you
 will need, and a menu bar, because CEF sets neither for you.
 
@@ -326,12 +326,15 @@ questions.
 **Compiles against a real SDK but has never touched hardware:** AJA
 (libajantv2 18.1), OMT (libomt 1.0.0.16 — never consumed by a receiver).
 
-**Never built or run:** Windows and Linux.
+**Never built or run:** nothing is in this category any more for the three
+desktop platforms — Windows and Linux are both built *and* run now, on the
+lab's own VMs. See docs/04-verification.md section 31.
 
-**Builds and is unit-tested, but not driven end to end:** the tray launcher in
-`launcher/` — Start / Stop / Launch GUI have not been clicked against a live
-WebLinked. Also `/api/pacing`, whose browser rebuild compiles and has not been
-exercised on air.
+**Builds and is unit-tested, but not driven end to end:** `/api/pacing`, whose
+browser rebuild compiles and has not been exercised on air. The tray's
+Explorer-restart re-add path on Windows, and the Linux tray's appearance on a
+healthy desktop (its protocol conformance *is* verified, against KDE's own
+watcher).
 
 Do not upgrade an "it compiles" claim to "it works" anywhere in this repo. If you
 verify something new, add it to `04-verification.md` with the command and the

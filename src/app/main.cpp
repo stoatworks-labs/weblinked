@@ -54,6 +54,7 @@
 #include "engine/engine.h"
 #include "engine/source_manager.h"
 #include "outputs/output.h"
+#include "app/tray.h"
 
 #if !defined(__APPLE__)
 namespace weblinked {
@@ -123,6 +124,12 @@ struct Options {
   /// who typed a command line asked for something specific and gets no browser
   /// unless they ask; --open and --no-open force it either way.
   bool openControlPage = false;
+  /// Whether to put an icon in the menu bar or system tray. On by default where
+  /// there is one: this process opens no window, so without it a double-clicked
+  /// WebLinked is a Dock icon that does nothing and cannot be quit from the UI.
+  /// --no-tray turns it off, which on macOS also keeps the Dock icon — see
+  /// installTray().
+  bool wantTray = true;
   /// A configuration file describing several sources. Mutually exclusive with
   /// the per-source flags — see resolveSources().
   std::string configPath;
@@ -218,12 +225,16 @@ Control
                            could reach the address it would publish
   --headless               Accepted and ignored; there is no window to suppress.
                            The control page is served over HTTP — open it in a
-                           browser, or use the tray launcher in launcher/
+                           browser, or use the icon in the menu bar / tray
   --open                   Show the control page in your default browser once it
                            is listening. This is the default when the app is
                            started with no arguments at all, as it is by a
                            double-click; a command line gets it only on request
   --no-open                Never open a browser, whatever the launch looked like
+  --no-tray                Do not put an icon in the menu bar or system tray.
+                           On macOS this also keeps the Dock icon. A machine
+                           with no desktop has no tray to skip: the icon is
+                           simply not installed and a line in the log says so
   --no-interactive         Do not arm the preview for input on load
   --verbose                Verbose logging
   --help                   This text
@@ -336,7 +347,7 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
     }
     if (argument == "--no-audio") { options.audio = false; continue; }
     // Accepted and ignored. There is no window to suppress any more, but the
-    // shipped launcher.toml passes it and so does every script written against
+    // every script written against the old launcher passes it, and so does
     // an older build; rejecting it would break both for no gain.
     if (argument == "--headless") { continue; }
     if (argument == "--verbose") { options.verbose = true; continue; }
@@ -529,6 +540,10 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
       options.openControlPage = false;
       continue;
     }
+    if (argument == "--no-tray") {
+      options.wantTray = false;
+      continue;
+    }
 
     // CEF and Chromium switches pass straight through; they are consumed from
     // the command line CEF builds for itself.
@@ -578,7 +593,7 @@ void ensurePreview(Options& options) {
 /// Fills in whatever the command line left alone from a saved settings file.
 ///
 /// Deliberately one-directional: the file never overrides an explicit flag. A
-/// launcher passing --port and --headless must not have those undone by
+/// a supervisor passing --port and --headless must not have those undone by
 /// whatever the last operator happened to save.
 void applySavedSettings(Options& options) {
   if (!options.useSavedSettings) {
@@ -984,9 +999,36 @@ int main(int argc, char** argv) {
     weblinked::openInDefaultBrowser(control.controlUrl());
   }
 
+  // A menu-bar item, where there is a menu bar. Not a window and not a browser:
+  // see the comment on installTray() for why this does not reintroduce the
+  // runtime-style crash that took the operator window out.
+  //
+  // After CefInitialize so NSApp is fully stood up, and on this thread because
+  // it is the main one. The status callback runs on the UI thread when the menu
+  // opens, so it only reads SourceManager::size(), which takes its own lock and
+  // does not wait on the clock.
+  bool trayInstalled = false;
+  if (options.wantTray) {
+    weblinked::TrayOptions tray;
+    tray.appName = "WebLinked";
+    tray.version = WEBLINKED_VERSION;
+    tray.controlUrl = control.controlUrl();
+    tray.status = [&sources] {
+      const size_t count = sources.size();
+      return std::to_string(count) +
+             (count == 1 ? std::string(" source") : std::string(" sources"));
+    };
+    // Exactly what SIGTERM does, by the same route: set the flag and let the
+    // watchdog post to the UI thread. Calling CefQuitMessageLoop() straight
+    // from a menu action would quit the loop from inside AppKit's own menu
+    // tracking, which is the one place it is not safe to unwind from.
+    tray.quit = [] { g_quitRequested.store(true); };
+    trayInstalled = weblinked::installTray(tray);
+  }
+
   // No window is ever created here. This process is a render host and a control
-  // server; the operator's view is a browser pointed at the address above, and
-  // the tray launcher in launcher/ is what puts that on a desktop.
+  // server; the operator's view is a browser pointed at the address above, put
+  // one click away by the menu bar item just installed.
   //
   // It used to open the control page in a CEF window of its own. That could not
   // work: every source browser is windowless, windowless always means Alloy
@@ -998,6 +1040,11 @@ int main(int argc, char** argv) {
   // Blocks until beginShutdown() quits it. Everything else runs on its own
   // thread: the engine's clock, the HTTP connections, the OSC receiver.
   CefRunMessageLoop();
+  // Before the outputs go, so the icon disappears when the operator asks rather
+  // than lingering while NDI senders and cards are released.
+  if (trayInstalled) {
+    weblinked::removeTray();
+  }
   control.stop();
   sources.stop();
   CefShutdown();

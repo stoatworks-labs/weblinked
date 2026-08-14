@@ -110,24 +110,21 @@ backend directly; run from a PowerShell prompt on the Windows machine:
 This verifies the *output* and nothing above it. See `docs/04-verification.md`
 section 24 for exactly what that does and does not establish.
 
-## Settings and the launcher
+## Settings
 
 ```bash
 # Settings file (macOS). --settings <file> or $WEBLINKED_SETTINGS overrides it;
 # --no-settings ignores it. The command line always beats the file.
 ~/Library/Application Support/WebLinked/settings.json
-
-# The tray launcher is a separate Cargo project and does NOT build with the rest
-cd launcher && cargo test --manifest-path src-tauri/Cargo.toml
-cd launcher && npm install && npm run tauri dev     # needs the Tauri CLI
-AV_LAUNCHER_CONFIG=launchers/dev.toml npm run tauri dev   # against ./build
 ```
 
 ## Release
 
-Two products come out of this repo and they are not interchangeable: the tray
-launcher, which carries the engine inside it and is what a person should
-download, and the engine on its own for a machine driven from a command line.
+One product comes out of this repo: the engine, which puts its own icon in the
+menu bar or system tray on all three platforms. The separate Tauri tray launcher
+was retired in v1.0.0 — it existed to give the engine a desktop presence, and
+the engine now has one of its own without a second 140 MB download carrying a
+duplicate copy of it.
 
 Published engine artefacts are named from `scripts/release-file-slug`
 (`weblinked-engine`), which `rl_init` reads — do **not** also export
@@ -166,7 +163,11 @@ everyone who already installed a second Add/Remove Programs entry.
    Chrome style and segfault the GPU process. See `docs/04-verification.md`
    section 9. The `screen` output *is* a real platform window, and is not an
    exception to this: it is a video destination, not a UI and not a browser —
-   it draws frames the engine already produced. Keep it that way.
+   it draws frames the engine already produced. Keep it that way. The macOS
+   menu bar item (`src/app/tray_mac.mm`) is not an exception either: it is
+   AppKit, owns no browser, and so cannot put a second runtime style in the
+   process. The rule is about *browsers* owning windows, not about AppKit.
+   See section 30.
 10. **Anything the clock thread reads outside `Engine::mutex_` is atomic** —
     `matrix_`, `pacing_`. The settings page can write both at run time.
 11. **Build clean (`rm -rf build`) before tagging a release.** An incremental
@@ -204,6 +205,5 @@ everyone who already installed a second Add/Remove Programs entry.
 | `third_party/syphon/` | vendored Syphon server subset (BSD-3) — see its README |
 | `third_party/spout/` | vendored Spout DirectX sender subset (BSD-2) — see its README |
 | `src/control/` | HTTP server, OSC receiver, embedded control page |
-| `src/app/` | entry points, Info.plists, entitlements |
-| `launcher/` | av-launcher tray shell (Rust/Tauri); separate build |
+| `src/app/` | entry points, Info.plists, entitlements, the macOS menu bar item |
 | `tools/` | independent receivers (`ndi_probe`, `sdi_probe`, `syphon_probe`, `spout_probe`, `mdns_probe`) plus the DeckLink diagnostics `dl_profile` / `dl_scan`, and the HTML test pages |

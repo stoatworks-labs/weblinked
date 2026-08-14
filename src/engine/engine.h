@@ -115,7 +115,13 @@ class Engine {
   bool setOutputEnabled(const std::string& name, bool enabled, std::string& error);
 
   bool addOutput(const OutputSpec& spec, std::string& error);
-  bool removeOutput(const std::string& name);
+
+  /// Removes an output by name. Refuses for a permanent one — see
+  /// `outputKindIsPermanent` — so the preview survives both an operator's
+  /// Remove and a settings file that has lost it. `error` is optional because
+  /// `applyConfiguration` removes in a loop where a refusal is the intended
+  /// outcome and there is nobody to tell.
+  bool removeOutput(const std::string& name, std::string* error = nullptr);
 
   /// Changes what one output composites the page over, without restarting it.
   ///

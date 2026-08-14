@@ -701,21 +701,36 @@ function displayOptions(selected) {
 }
 
 function outputEditor(output, isNew) {
-  const kinds = lastState.compiled_backends || ['preview'];
+  const allKinds = lastState.compiled_backends || ['preview'];
   const options = output.options || {};
   const node = document.createElement('div');
   node.className = 'output-editor';
+
+  // The engine refuses to remove the preview or change its kind. Disabling the
+  // two controls here as well is not belt-and-braces: a control that is greyed
+  // out with a line of text next to it states the rule before the operator
+  // acts, where a 409 only reports it afterwards — and this particular mistake
+  // is one nobody thinks to look for, because the edit appears to work.
+  const locked = !isNew && output.kind === 'preview';
+  // A second preview is not addable either, so it is not offered. Falls back to
+  // the full list if filtering emptied it, which would mean a build whose only
+  // backend is the preview — there Add can have nothing to offer, but the
+  // editor must still render rather than throw halfway through its HTML.
+  const addable = allKinds.filter((k) => k !== 'preview');
+  const kinds = isNew && addable.length ? addable : allKinds;
 
   const kind = isNew ? (kinds.includes('ndi') ? 'ndi' : kinds[0]) : output.kind;
   node.innerHTML =
     '<header><span class="name">' + (isNew ? 'New output' : output.name) + '</span></header>' +
     '<div class="fields">' +
-      '<div class="field"><label>Kind</label><select data-f="kind">' +
+      '<div class="field"><label>Kind</label>' +
+        '<select data-f="kind"' + (locked ? ' disabled' : '') + '>' +
         kinds.map((k) => '<option value="' + k + '"' + (k === kind ? ' selected' : '') +
                          '>' + k + '</option>').join('') +
       '</select></div>' +
       '<div class="field"><label>Name</label>' +
-        '<input type="text" data-f="name" spellcheck="false" value="' +
+        '<input type="text" data-f="name" spellcheck="false"' +
+        (locked ? ' disabled' : '') + ' value="' +
         (output.name || '').replace(/"/g, '&quot;') + '"></div>' +
       '<div class="field" data-when="device"><label>Device index</label>' +
         '<input type="number" min="0" data-f="device_index" value="' +
@@ -768,10 +783,15 @@ function outputEditor(output, isNew) {
     '<label class="check" data-when="alpha">' +
       '<input type="checkbox" data-f="alpha"' + (options.alpha ? ' checked' : '') + '>' +
       'Carry alpha (BGRA, straight)</label>' +
+    (locked ? '<p class="hint">This is the picture on this page, so it stays: ' +
+              'its kind and name are fixed and it cannot be removed. Its scale ' +
+              'and background are still yours to set. To send the page ' +
+              'somewhere, add a second output rather than changing this one.</p>'
+            : '') +
     '<div class="buttons">' +
       '<button class="primary" data-a="save">' + (isNew ? 'Add' : 'Apply') + '</button>' +
-      (isNew ? '<button data-a="cancel">Cancel</button>'
-             : '<button class="danger" data-a="remove">Remove</button>') +
+      (isNew ? '<button data-a="cancel">Cancel</button>' : '') +
+      (!isNew && !locked ? '<button class="danger" data-a="remove">Remove</button>' : '') +
     '</div>' +
     (output.error ? '<p class="err">' + errorHtml(output.error) + '</p>' : '');
 
@@ -833,7 +853,10 @@ function outputEditor(output, isNew) {
   };
   if (isNew) {
     node.querySelector('[data-a="cancel"]').onclick = () => renderSettings(lastState);
-  } else {
+  } else if (!locked) {
+    // Bound only when the button was rendered. A querySelector that returns
+    // null here would throw while the page is being built and take every line
+    // after it with it — the failure mode this file is built to avoid.
     node.querySelector('[data-a="remove"]').onclick = async () => {
       if (await post('/api/output/remove', { name: output.name })) {
         toast('removed ' + output.name);

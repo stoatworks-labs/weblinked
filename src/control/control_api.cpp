@@ -640,13 +640,23 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
   if (path == "/api/output/remove") {
     const std::string name = body["name"].asString();
     bool removed = true;
+    bool existed = true;
+    std::string error;
     if (!withRequestSource(request, response, [&](Engine& engine) {
-          removed = engine.removeOutput(name);
+          // Asked before the attempt so that a refusal and a typo do not report
+          // as the same thing: removing the preview is a valid request about a
+          // real output that the engine declines, which is a 409, not a 404.
+          const auto specs = engine.outputSpecs();
+          existed = std::any_of(specs.begin(), specs.end(),
+                                [&](const OutputSpec& spec) {
+                                  return spec.name == name;
+                                });
+          removed = engine.removeOutput(name, &error);
         })) {
       return;
     }
     if (!removed) {
-      response.error(404, "no output named '" + name + "'");
+      response.error(existed ? 409 : 404, error);
       return;
     }
     ok(response);

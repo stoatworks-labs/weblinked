@@ -18,7 +18,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_ARCHITECTURES)
   set(CMAKE_OSX_ARCHITECTURES "${CMAKE_HOST_SYSTEM_PROCESSOR}" CACHE STRING "")
 endif()
 
-project(weblinked VERSION 0.7.1 LANGUAGES C CXX)
+project(weblinked VERSION 1.0.0 LANGUAGES C CXX)
 
 # Deliberately NOT enable_language(OBJCXX), even though src/app/mac_application.mm
 # is Objective-C++. Enabling it makes CMake compile every .mm as OBJCXX —
@@ -422,6 +422,14 @@ if(UNIX AND NOT APPLE)
     message(STATUS "mDNS: no avahi headers — Linux builds will not advertise "
                    "(install libavahi-client-dev)")
   endif()
+
+  # The tray, on the same terms as avahi above: headers at build time so every
+  # signature is compiler-checked, the library itself opened with Dylib at run
+  # time so a headless box without a desktop still starts. Absent headers are
+  # not an error — tray_linux.cpp compiles to a stub that says why.
+  if(PkgConfig_FOUND)
+    pkg_check_modules(AYATANA_APPINDICATOR QUIET ayatana-appindicator3-0.1)
+  endif()
 endif()
 
 # ----------------------------------------------------------------------------
@@ -545,10 +553,36 @@ else()
   # WinMain shim — buys a windowless process at the cost of --help, the version
   # banner and the startup errors having nowhere to go. WebLinked is driven from
   # a command line often enough that losing its output is the worse trade; the
-  # tray launcher covers the case where nobody wants a terminal.
-  add_executable(weblinked src/app/main.cpp)
+  # tray icon covers the case where nobody wants a terminal.
+  set(WEBLINKED_APP_SOURCES src/app/main.cpp)
+  if(UNIX AND NOT APPLE)
+    list(APPEND WEBLINKED_APP_SOURCES src/app/tray_linux.cpp)
+  elseif(WIN32)
+    list(APPEND WEBLINKED_APP_SOURCES src/app/tray_win.cpp)
+  endif()
+  add_executable(weblinked ${WEBLINKED_APP_SOURCES})
   set_target_properties(weblinked PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
   target_link_libraries(weblinked PRIVATE weblinked_engine libcef_lib)
+
+  if(WIN32)
+    # Shell_NotifyIcon and ShellExecute live in shell32; the window, menu and
+    # clipboard calls in user32. Named explicitly rather than relied on from
+    # CEF_STANDARD_LIBS, which is CEF's list and not ours to depend on.
+    target_link_libraries(weblinked PRIVATE shell32 user32)
+  endif()
+
+  if(AYATANA_APPINDICATOR_FOUND)
+    # Include directories only — deliberately not ${AYATANA_APPINDICATOR_LIBRARIES}.
+    # Linking it would make a desktop library a hard requirement of a program
+    # whose main use is a headless render host.
+    target_include_directories(weblinked PRIVATE
+      ${AYATANA_APPINDICATOR_INCLUDE_DIRS})
+    target_compile_definitions(weblinked PRIVATE WEBLINKED_WITH_APPINDICATOR=1)
+    message(STATUS "tray: ayatana-appindicator headers found — Linux tray enabled")
+  elseif(UNIX AND NOT APPLE)
+    message(STATUS "tray: no ayatana-appindicator headers — Linux builds will "
+                   "have no tray (install libayatana-appindicator3-dev)")
+  endif()
 
   if(MSVC AND WEBLINKED_WITH_OMT)
     # libomt.h carries #pragma comment(lib, "libomt.lib"), so merely including it

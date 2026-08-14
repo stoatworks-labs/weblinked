@@ -143,12 +143,13 @@ simply tapped off the browser.
 The same page carries the settings and diagnostics views, as tabs rather than
 separate pages: switching must not cost the preview stream or the state poll.
 
-For a machine where WebLinked should come up at login and sit in the menu bar
-instead of a terminal, [`launcher/`](../launcher/) wraps it in the fleet's
-av-launcher tray shell. It **carries WebLinked inside it** as an archive it
-unpacks to Application Support on first run — deliberately not nested, because
-an ad-hoc signed bundle with five helper `.app`s inside another one is where
-Gatekeeper kills the helpers silently. See `launcher/README.md`.
+For a machine where WebLinked should sit in the menu bar instead of a terminal,
+the engine installs its own status item — `NSStatusItem` on macOS,
+`Shell_NotifyIcon` on Windows, a StatusNotifierItem via libayatana on Linux.
+That is a platform status item and not a window, so it does not reintroduce the
+runtime-style conflict that removed the operator window; see section 9 of
+`04-verification.md`. A separate Tauri launcher did this job until v1.0.0 and
+was retired once the engine could do it without a second copy of itself.
 
 ## A windowless browser cannot own a popup
 

@@ -63,7 +63,7 @@ class ControlApi {
   void stop();
 
   /// The address the control page is reachable at, printed at startup and used
-  /// by the tray launcher's "Launch GUI" button.
+  /// by the tray icon's "Open control page" item.
   std::string controlUrl() const;
 
   const HttpServer& http() const { return http_; }

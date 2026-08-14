@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(weblinked_plugin VERSION 0.1.0 LANGUAGES C CXX)
 
 # ---------------------------------------------------------------------------
-# A separate CMake project on purpose, exactly as launcher/ is a separate Cargo
+# A separate CMake project on purpose, and stays that way: it
 # project. It does NOT build with the rest of WebLinked and must not be added
 # to the top-level CMakeLists: it needs the FFGL SDK, it produces a Resolume
 # bundle rather than an application, and it has no CEF anywhere in it. Build it

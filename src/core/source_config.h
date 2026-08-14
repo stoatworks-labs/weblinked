@@ -77,6 +77,23 @@ struct OutputConfig {
                                               std::string* error = nullptr);
 };
 
+/// Whether an output of this kind is permanent: it cannot be removed at run
+/// time, and its kind cannot be changed into anything else.
+///
+/// Only the preview is, and it has to be. `ensurePreview` already puts one in
+/// every configuration because the control page has no other way to show a
+/// picture — but that runs when a source is built, so on its own it leaves the
+/// runtime API free to convert or delete the one output the page depends on.
+/// An operator who edits the preview row into an NDI feed gets exactly that:
+/// the row is still there and the feed really is on air, so nothing reads as
+/// broken, while the preview pane goes black and stays black with no error
+/// anywhere to explain it.
+///
+/// Lives in core rather than in the engine so the rule is one predicate that
+/// both the engine and the tests can see, instead of a condition repeated at
+/// each of the three call sites that could break it.
+bool outputKindIsPermanent(const std::string& kind);
+
 /// One complete pipeline: a page, a format, and where it goes.
 ///
 /// This is the unit the source manager multiplies. It is deliberately a plain

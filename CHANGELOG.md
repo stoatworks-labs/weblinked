@@ -1,5 +1,60 @@
 # Changelog
 
+## v1.0.0 — 2026-08-14
+
+The engine grew its own menu-bar icon, and the separate launcher that existed to
+provide one was retired. Windows and Linux stopped being platforms that only
+ever compiled.
+
+### Added
+
+- **A menu-bar / system-tray icon, on all three platforms.** `NSStatusItem` on
+  macOS, `Shell_NotifyIcon` on Windows, a StatusNotifierItem through
+  libayatana-appindicator on Linux. It carries the version, a live source count
+  read as the menu opens rather than on a timer, *Open control page*, *Copy
+  control address*, *Reveal log*, and a *Quit* that goes through the same
+  orderly path `SIGTERM` does — so NDI senders and cards are released rather
+  than dropped. `--no-tray` turns it off, and a machine with no desktop simply
+  does not get one and says so in the log.
+
+  This is not the operator window returning. That was a CEF *browser*, and the
+  crash was a runtime-style conflict specific to browsers; a platform status
+  item owns no browser. See rule 9 and section 31 of `docs/04-verification.md`.
+
+- **A four-tier test lab**, on the Unraid host: containers that build and
+  exercise Linux headlessly and host a tray, a KDE VM, and a Windows **x86_64**
+  VM. Windows mattered most — the only Windows machine here before was ARM64,
+  so no shipped Windows binary had ever run on its own architecture.
+
+### Changed
+
+- **The separate Tauri tray launcher is gone.** It existed to give this process
+  a desktop presence and cost a second ~140 MB download carrying a duplicate
+  copy of the engine. There is now one download per platform.
+- **Preview outputs are permanent.** The control page's preview can no longer be
+  removed, renamed or turned into another kind of output. Editing that row into
+  an NDI feed used to succeed, take the preview away, and leave the pane black
+  with nothing in any log to explain it.
+
+### Fixed
+
+- **The Linux build could never start without a display.** CEF dies inside
+  `CefInitialize` with "Missing X server or $DISPLAY". `--ozone-platform=headless`
+  is what makes a headless render host work, and it was undocumented.
+- Three Windows tray faults that all compile silently: `IDI_APPLICATION`
+  resolving to the ANSI macro and so being unusable with `LoadIconW`;
+  `NOTIFYICON_VERSION_4` moving the callback event into `LOWORD(lParam)`, which
+  would have left the icon visible and its menu permanently dead; and
+  `Shell_NotifyIcon`'s return value being discarded, so the log claimed an icon
+  was installed without knowing whether it was.
+
+### Known
+
+- **The Windows build needs MSVC 14.51 (VS 2026) or newer.** `web_assets.h`
+  embeds the control page as one ~60 KB raw string literal and MSVC 14.44 still
+  enforces the old 16380-byte cap, failing with C2026 pointing at that file
+  rather than at the compiler.
+
 ## Unreleased
 
 ### Added

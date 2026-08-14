@@ -200,8 +200,10 @@ macOS builds are signed and notarised and open normally. The Windows builds are 
   Three 1080p sources drop frames on an M4 Max; three at 720p25 do not. Measure
   it where the show will run — [docs/04-verification.md](docs/04-verification.md)
   has the numbers and the method.
-- **A tray launcher** ([`launcher/`](launcher/)) for a machine where WebLinked
-  should come up at login and live in the menu bar rather than in a terminal.
+- **A menu-bar / system-tray icon** on macOS, Windows and Linux, for a machine
+  where WebLinked should live beside the clock rather than in a terminal. It
+  carries the source count, opens the control page, copies its address and quits
+  cleanly. `--no-tray` turns it off.
 
 ## What it does not do
 
@@ -225,7 +227,7 @@ macOS builds are signed and notarised and open normally. The Windows builds are 
 | **Several sources** | **Verified**: three at once on three rasters, each confirmed by a separate receiver, with one retargeted and a fourth added and removed mid-run without disturbing the others. Frame rates are a capacity question — see below. |
 | **Settings + diagnostics pages** | Verified against a running instance: outputs added, renamed and removed, settings saved and read back after a restart, the log and bundle served. |
 | **Screen (fullscreen GPU)** | **Verified on this Mac, across two displays**: picture, all three scaling modes, live add and remove, and pacing measured against the display's own refresh — a 50 Hz source on a 60 Hz head presents at 60.1/s, a ratio of 1.199 against a theoretical 1.200. No projector, and Windows and Linux are written and never run. |
-| **Tray launcher** | **Now carries WebLinked inside it**, so the macOS download is one install. The unpack, the signature surviving it and the helpers running from it are verified; the config is unit-tested for all three platforms. **The Start button itself still has not been clicked through** — see [launcher/README.md](launcher/README.md). |
+| **Menu bar / tray icon** | **Verified on all three platforms, by using it.** macOS: icon photographed, menu opened, clean shutdown. Windows x86_64: icon confirmed present-then-absent by pixel diff, menu opened, *Copy control address* checked against the clipboard, Quit shut down in order. Linux: registered with KDE Plasma's own StatusNotifierWatcher, menu read over dbusmenu, Quit clean. **Not verified:** the icon's pixels on a healthy KDE desktop, and the Explorer-restart re-add path on Windows. |
 | **OMT** | Compiles against `libomt.h` 1.0.0.16. **Never tested against an OMT receiver.** |
 | **DeckLink** | **Verified against a real card, on two card profiles** (DeckLink Duo 2): output, pre-roll and buffer level, with colour confirmed by SDI loopback captures at 1080p50 and 1080p25 — identical sampled values in a full-duplex and a half-duplex profile. Key + fill is measured to the extent one card allows: the fill carries straight alpha. The **key channel itself**, the internal-keying composite and **audio over SDI** are still unmeasured, and a keyed 1080p50 is beyond what this card will carry. |
 | **AJA** | Compiles against libajantv2 18.1. **Never run against a card.** Off by default. |
@@ -266,9 +268,10 @@ Then:
 
 WebLinked opens no window of its own. It is a render host and a control server:
 the UI is the control page it serves, which you open in a browser, drive over
-HTTP or OSC, or reach from the [tray launcher](launcher/) — a menu-bar icon that
-starts and stops the process and opens the page for you. That is why there is no
-GUI toolkit anywhere in this project.
+HTTP or OSC, or reach from its own menu-bar / system-tray icon, which opens the
+page for you and quits the process cleanly. That icon is a platform status item,
+not a window — which is why there is still no GUI toolkit anywhere in this
+project.
 
 Started with no arguments — by a double-click, say — it hands the control page to
 your default browser once the server is listening, so it does not look like
@@ -277,11 +280,10 @@ browser unless you add `--open`; `--no-open` suppresses it either way.
 
 `--help` lists every option and reports which backends this build contains.
 
-**Two downloads, and they are not the same thing.** The one marked *desktop app*
-is the whole product: a menu-bar launcher with the engine packaged inside it, and
-what you want unless you know otherwise. The ones marked *engine only* are the
-render host by itself, for a machine that starts it from a command line, a
-service manager or another program.
+**One download.** Up to v0.7.1 there were two — a *desktop app* that wrapped the
+engine in a separate tray launcher, and the *engine only*. The engine now puts
+its own icon in the menu bar, so the wrapper was retired in v1.0.0 and there is
+just the one thing to install.
 
 ## Control
 
@@ -373,7 +375,6 @@ who can reach the port can change what is on air.
   writes
 - [docs/06-ndi-distribution.md](docs/06-ndi-distribution.md) — why NDI is loaded
   at run time, what the licence permits, and the attribution every project owes
-- [launcher/README.md](launcher/README.md) — the menu-bar tray launcher
 - [AGENTS.md](AGENTS.md) — orientation for an AI assistant or a new contributor
 
 ## Control it from Companion

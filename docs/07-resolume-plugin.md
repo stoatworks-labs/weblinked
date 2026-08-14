@@ -111,7 +111,7 @@ cmake --build build
 cp -R build/WebLinked.bundle "$HOME/Documents/Resolume Arena/Extra Effects/"
 ```
 
-Separate from the top-level build on purpose, exactly as `launcher/` is: it
+Separate from the top-level build on purpose: it
 needs the FFGL SDK, produces a Resolume bundle rather than an application, and
 contains no CEF.
 
