@@ -62,7 +62,7 @@ jobs:
             libavahi-client-dev libayatana-appindicator3-dev
 
       - name: Cache the CEF distribution
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # FetchCEF downloads a ~200MB archive per architecture and verifies it
           # by sha1; caching it keeps the run from re-fetching every time.
