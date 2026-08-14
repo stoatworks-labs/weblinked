@@ -306,13 +306,14 @@ jobs:
 
             **Linux** — portable `.tar.gz`, x86_64.
 
-            **WebLinked Launcher** — tray app (`WebLinked Launcher_*`), and now the easiest
-            way to install. It **carries WebLinked inside it**, unpacking it on first run, so
-            this one download is all you need; the separate WebLinked installers above are for
-            a rack or CLI machine where a tray is no use. It starts and stops WebLinked, lets
-            you pick which network interface the control page binds to, and opens it in your
-            browser. WebLinked itself opens no window for an operator: it is a render host and
-            a control server, and the control page it serves is the whole UI.
+            **One download per platform.** WebLinked opens no window of its own — it is a
+            render host and a control server, and the control page it serves is the whole UI.
+            It puts an icon in the menu bar (macOS) or notification area (Windows and Linux)
+            which shows the running source count and offers *Open control page*, *Copy control
+            address*, *Reveal log* and *Quit*. `--no-tray` turns it off, and a machine with no
+            desktop simply does not get one. The separate WebLinked Launcher that earlier
+            releases carried was retired in v1.0.0: the engine now does that job itself,
+            without a second download containing a duplicate copy of it.
 
             **Output backends in these builds:** NDI, OMT, the fullscreen screen output and the
             preview. The NDI SDK headers are vendored and the runtime is bundled into the
@@ -323,9 +324,10 @@ jobs:
 
             Verification status is in docs/04-verification.md, which is the authority: NDI is
             confirmed end-to-end against a real receiver, DeckLink against a real Duo 2, and the
-            screen output across two displays on the author's Mac. AJA and OMT compile against
-            the real SDKs and have never met hardware or a receiver, and the screen output's
-            Windows and Linux backends have never been run.
+            screen output across two displays on the author's Mac. The tray icon is verified by
+            use on all three platforms. AJA and OMT compile against the real SDKs and have never
+            met hardware or a receiver, and the screen output's Windows and Linux backends have
+            never been run.
 
             Builds are unsigned. On macOS, after installing:
 
