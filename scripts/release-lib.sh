@@ -224,7 +224,13 @@ rl_ndi_bundle() { # rl_ndi_bundle <label> <stagedir> [--app <BundleName>]
   fi
 
   src="$(rl_ndi_srcdir "$label")"
-  srcfile="$([[ -n "$src" ]] && rl_ndi_srcfile "$src" "$lib")"
+  # NOT `srcfile="$([[ -n "$src" ]] && ...)"`. Under `set -e` a false `[[ ]]`
+  # makes the whole && list — and so the command substitution — exit non-zero,
+  # which kills the script on the assignment. The skip below then never runs,
+  # and a local release for an NDI-bundling repo dies at the first target whose
+  # runtime is not on this host (Linux/Windows on a Mac) with no message at all.
+  srcfile=""
+  if [[ -n "$src" ]]; then srcfile="$(rl_ndi_srcfile "$src" "$lib")"; fi
 
   if [[ -z "$srcfile" ]]; then
     rl_skip "${label} NDI runtime (set RL_NDI_DIR_$(printf '%s' "$label" | tr '[:lower:]-' '[:upper:]_') to a directory containing ${lib})"
