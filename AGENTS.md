@@ -358,3 +358,10 @@ Run the app, then check it with the probe rather than with its own counters:
 
 The app's own `/api/state` can only tell you it *sent* something. `ndi_probe`
 tells you what arrived, which is the claim that matters.
+
+## Notes
+
+`docs/NOTES.md` carries this repo's working notes — current status, decisions
+already made, and the traps that have actually bitten. Read it before changing
+anything non-obvious. Cross-cutting fleet knowledge lives in
+[fleet-notes](https://github.com/stoatworks-labs/fleet-notes).
