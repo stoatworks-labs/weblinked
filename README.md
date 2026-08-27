@@ -4,9 +4,11 @@
 > (Anthropic), directed and reviewed by a human author. NDI is verified end to
 > end including alpha, DeckLink against a real Duo 2 with colour confirmed by an
 > SDI loopback capture, and Syphon against Resolume Arena. **OMT and AJA have
-> never been tested against a receiver or a card.** Linux has never been run, and
-> on Windows only the Spout output has — through a standalone harness; the
-> application itself does not yet build there.
+> never been tested against a receiver or a card.** All three platforms now run:
+> Windows x86_64 and Linux were exercised on real systems in August 2026, NDI
+> included, on both. **Frame-rate performance is verified on macOS and Linux
+> only** — the Windows machine available for testing has no GPU and cannot
+> sustain a rate, so nothing here claims one for it.
 > [Status, honestly](#status-honestly) says which is which, and
 > [docs/04-verification.md](docs/04-verification.md) records exactly what was
 > measured and how.
@@ -140,8 +142,8 @@ macOS builds are signed and notarised and open normally. The Windows builds are 
   machine, over shared memory, with the page's own alpha intact so an HTML
   overlay lands on a layer already keyed. Verified against Arena 7.27.1, which
   identifies it as premultiplied without being told; the Spout backend is
-  verified against its own receiver, since WebLinked does not yet build on
-  Windows.
+  verified against its own receiver rather than against a real Spout
+  application.
 - **Fullscreen on a display** (`--screen`), for a projector, a confidence monitor
   or an LED processor fed from a GPU head. Not a second browser window — it puts
   the frames the engine already produced straight onto the glass with Metal
@@ -222,21 +224,26 @@ macOS builds are signed and notarised and open normally. The Windows builds are 
 | **Preview** | Verified, and interactive — it is the control page's confidence monitor. |
 | **Several sources** | **Verified**: three at once on three rasters, each confirmed by a separate receiver, with one retargeted and a fourth added and removed mid-run without disturbing the others. Frame rates are a capacity question — see below. |
 | **Settings + diagnostics pages** | Verified against a running instance: outputs added, renamed and removed, settings saved and read back after a restart, the log and bundle served. |
-| **Screen (fullscreen GPU)** | **Verified on this Mac, across two displays**: picture, all three scaling modes, live add and remove, and pacing measured against the display's own refresh — a 50 Hz source on a 60 Hz head presents at 60.1/s, a ratio of 1.199 against a theoretical 1.200. No projector, and Windows and Linux are written and never run. |
+| **Screen (fullscreen GPU)** | **Verified on this Mac, across two displays**: picture, all three scaling modes, live add and remove, and pacing measured against the display's own refresh — a 50 Hz source on a 60 Hz head presents at 60.1/s, a ratio of 1.199 against a theoretical 1.200. No projector. **Linux verified too**: a 1920x1080 window under X11/EGL on software GL, checked by screenshotting it against the source page rather than by reading counters. **Windows is still written and never run** — the test machine has no GPU, so the Direct3D path cannot be exercised there. |
 | **Menu bar / tray icon** | **Verified on all three platforms, by using it.** macOS: icon photographed, menu opened, clean shutdown. Windows x86_64: icon confirmed present-then-absent by pixel diff, menu opened, *Copy control address* checked against the clipboard, Quit shut down in order. Linux: registered with KDE Plasma's own StatusNotifierWatcher, menu read over dbusmenu, Quit clean. **Not verified:** the icon's pixels on a healthy KDE desktop, and the Explorer-restart re-add path on Windows. |
 | **OMT** | Compiles against `libomt.h` 1.0.0.16. **Never tested against an OMT receiver.** |
 | **DeckLink** | **Verified against a real card, on two card profiles** (DeckLink Duo 2): output, pre-roll and buffer level, with colour confirmed by SDI loopback captures at 1080p50 and 1080p25 — identical sampled values in a full-duplex and a half-duplex profile. Key + fill is measured to the extent one card allows: the fill carries straight alpha. The **key channel itself**, the internal-keying composite and **audio over SDI** are still unmeasured, and a keyed 1080p50 is beyond what this card will carry. |
 | **AJA** | Compiles against libajantv2 18.1. **Never run against a card.** Off by default. |
-| **Shared surface (Syphon / Spout)** | **Syphon verified against Resolume Arena 7.27.1**: it lists the source, loads it on a layer at 1920x1080 and labels it premultiplied unaided. Colour, alpha and orientation are exact through a receiver linking *Arena's own* Syphon framework. **Spout is verified only through a harness** — the real backend and SDK, its pixels checked by a Spout receiver, but WebLinked itself does not build on Windows and no real Spout application was involved. |
+| **Shared surface (Syphon / Spout)** | **Syphon verified against Resolume Arena 7.27.1**: it lists the source, loads it on a layer at 1920x1080 and labels it premultiplied unaided. Colour, alpha and orientation are exact through a receiver linking *Arena's own* Syphon framework. **Spout is verified only through a harness** — the real backend and SDK, its pixels checked by a Spout receiver, but no real Spout application was involved and the shipped Windows binary's own `--spout` output has not been driven. |
 
 Read [docs/04-verification.md](docs/04-verification.md) before trusting any of
 this on air. It records exactly what was measured, how, and what was not.
 
-Verified on macOS 26.4 / Apple Silicon. Windows and Linux are written for and
-build-configured, but have not been built or run — the sole exception is the
-Spout output, compiled and executed on Windows 11 through the harness in
-`tools/`, which does not build the application around it. See
-[docs/02-building.md](docs/02-building.md).
+Verified on macOS 26.4 / Apple Silicon, and — since August 2026 — on Windows 11
+x86_64 and Ubuntu 24.04 as well. On both of those the unit suite passes (115
+tests, 26191 checks), the control API, OSC, mDNS and the tray work, and NDI was
+received and decoded by an independent receiver on another machine. Two things
+that run there are still unproven: DeckLink and AJA (no cards in either machine),
+and **Windows frame-rate performance** — that machine has two vCPUs and no GPU
+driver, so it renders at a few frames per second and can only demonstrate
+function, never throughput. See
+[docs/02-building.md](docs/02-building.md) and §32 of
+[docs/04-verification.md](docs/04-verification.md).
 
 ---
 

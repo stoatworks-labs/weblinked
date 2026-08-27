@@ -133,12 +133,16 @@ rather than trusting the build log.
 
 ## Windows and Linux
 
-**Not built or run.** The CMake, the process model and the platform code paths
-are written for both and the CEF distributions are pinned, but neither has been
-compiled. Expect to do work here, particularly:
+**Both build and run** — CI builds every release for them, and both were run on
+real systems in August 2026 (§31 and §32 of
+[04-verification.md](04-verification.md)). A from-source Linux build on a clean
+Ubuntu 24.04 needed only the packages listed below and took one `cmake` and one
+`ninja` with no source changes. Still worth knowing:
 
+- **The DeckLink SDK and libajantv2 are the only backends a local build adds.**
+  NDI and OMT have vendored headers and are compiled in everywhere, including CI.
 - The Windows DeckLink path uses COM (`CoCreateInstance`) rather than the
-  dispatch shim, and that code has never seen a compiler.
+  dispatch shim, and that code has still never seen a card.
 - On Windows and Linux one binary is re-executed for every subprocess type, so
   `CefExecuteProcess` runs first in `main()` — there are no helper bundles.
 - Linux needs the usual Chromium runtime libraries (`libnss3`, `libgbm`,
@@ -155,7 +159,8 @@ compiled. Expect to do work here, particularly:
   The Linux backend is X11 only. A Wayland session with XWayland gets a window;
   one without does not, and `open()` says so. It also indexes **X screens**, not
   RandR heads, so a normal multi-monitor Linux desktop presents as one screen —
-  which makes `--screen=1` there not yet useful. Neither has ever been run.
+  which makes `--screen=1` there not yet useful. The Linux backend has now been
+  run and renders correctly on software GL; the Windows one still has not.
 
 ## Tests
 

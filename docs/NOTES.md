@@ -51,10 +51,22 @@ so it is unit-tested; see docs/04-verification.md §28 and
   applied, helpers run — so **no re-signing is needed** and the `codesign
   --deep` step was removed. Launcher .app 3.8 MB → ~142 MB.
 
-**CI artefacts ship OMT only** — hosted runners have no NDI or DeckLink SDK and
-`find_package` silently disables them, so a *downloaded* build cannot do NDI at
-all. Build locally with the SDKs for the full set. Only the macOS build has ever
-been **run**; Windows and Linux compile and nothing more.
+**CI artefacts carry NDI and OMT; only DeckLink and AJA need a local build.**
+This corrects what this note said until 2026-08-27, which was that a downloaded
+build "cannot do NDI at all" — true once, and wrong since the NDI and OMT headers
+were vendored (`third_party/ndi`, `third_party/omt`). Both backends are opened
+with dlopen at run time, so no SDK is needed to *build* them, and the release
+workflow bundles the runtime beside the binary: `Processing.NDI.Lib.x64.dll` in
+the Windows zip, `libndi.so.6` in the Linux tarball. Verified on 2026-08-27 by
+running the shipped Windows binary and receiving its NDI on another machine.
+DeckLink and AJA link real SDKs that are not redistributable, so those two still
+need a local build on a machine that has them.
+
+**Windows and Linux have now been run — 2026-08-27, on the fleet lab VMs.**
+See `docs/04-verification.md` §29. The old "only macOS has ever been run" line is
+retired. What that run cost: the Linux tarball had been shipping with **no
+`weblinked` binary in it at all** since v1.0.1, and SIGTERM does not stop the
+process on Linux.
 
 **Multi-source shipped 2026-07-31** (unreleased, on `main` after v0.3.0):
 `SourceManager` runs N independent Engines from `--config <file>`; HTTP takes
@@ -80,7 +92,11 @@ out of the lab" line; the per-subsystem gaps below are unaffected and still hold
   key channel itself, audio over SDI, genlock over hours.
 - **AJA (libajantv2 18.1) and OMT (libomt 1.0.0.16): compile against real SDK
   headers, never touched hardware or a receiver.**
-- **Windows/Linux: built by CI, but only macOS has ever been run.**
+- **Windows and Linux: run on real machines 2026-08-27** (§29). NDI verified on
+  both against an independent receiver; OSC, HTTP, mDNS, the tray and the Linux
+  `screen` output all exercised. Pacing is verified on **Linux only** — the
+  Windows lab VM has two vCPUs and no GPU, so it cannot sustain a frame rate and
+  proves nothing about performance.
 `docs/04-verification.md` is the authority — never upgrade "compiles" to "works".
 
 **Local SDK sources that made this possible:** DeckLink SDK headers are NOT

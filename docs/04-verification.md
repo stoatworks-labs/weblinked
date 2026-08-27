@@ -8,8 +8,10 @@ the same as **works against real hardware**. NDI and DeckLink have now been
 measured against real hardware (sections 2, 19 and 19a); OMT and AJA remain in
 the first category.
 
-Everything below was run on macOS 26.4.1, Apple Silicon (M4 Max), against
-CEF 150.0.17 / Chromium 150.0.7871.187.
+Unless a section says otherwise, everything below was run on macOS 26.4.1, Apple
+Silicon (M4 Max), against CEF 150.0.17 / Chromium 150.0.7871.187. Sections 31 and
+32 were run on the fleet lab VMs instead — a Windows 11 x86_64 guest and an
+Ubuntu 24.04 guest — and say so.
 
 ---
 
@@ -979,10 +981,15 @@ pinned to sRGB precisely so it *can* be compared that way, but that comparison
 has not been made. Nothing has been shown on a projector. Three or more displays
 are untested.
 
-**Windows and Linux: never run.** `screen_window_win.cpp` (D3D11) and
-`screen_window_linux.cpp` (X11 + EGL) are written and compile-targeted only.
-Linux additionally disables the whole backend when X11 or EGL headers are
-absent, the same way a missing NDI SDK disables NDI.
+**Linux: run 2026-08-27, and it renders correctly — see §32.**
+`screen_window_linux.cpp` (X11 + EGL) opened a 1920x1080 window on Xvfb under
+llvmpipe and put the right picture on it. Linux still disables the whole backend
+when X11 or EGL headers are absent, the same way a missing NDI SDK disables NDI.
+
+**Windows: still never run.** `screen_window_win.cpp` (D3D11) is written and
+compile-targeted only. The Windows lab VM has no GPU — `DCompositionCreateDevice3`
+fails with `Access is denied` and Chromium's GPU process exits — so that box
+cannot exercise the D3D11 path even though it can run everything else.
 
 ---
 
@@ -2092,6 +2099,147 @@ INFO  WebLinked exiting cleanly
 **Not verified on Windows:** behaviour when Explorer restarts. The
 `TaskbarCreated` handler is written and is why the window is a real hidden
 window rather than `HWND_MESSAGE`, but the re-add path has not been exercised.
+
+## 32. The shipped artefacts on Windows and Linux — and the Linux one that had nothing in it
+
+Section 31 ran the tray on these two VMs from a local build. This section put the
+**downloaded v1.0.1 release artefacts** in front of them, which is the thing a
+user actually gets, and that is what found the bug below. Run 2026-08-27 on
+`win-lab` (Windows 11 x86_64, build 26200) and `kde-lab` (Ubuntu 24.04.4 x86_64),
+both KVM guests on the Unraid host.
+
+### The Linux tarball shipped with no application in it
+
+`weblinked-engine-1.0.1-linux-x86_64.tar.gz` is 355 MB and 237 files. It carries
+`libcef.so`, `libndi.so.6`, the resources, the locales and `weblinked_tests` —
+and **no `weblinked` binary**. There is nothing in it to run. v1.0.0 shipped one
+(as `Release/weblinked`), so this arrived with v1.0.1.
+
+The cause is CMake ordering, not the workflow. `SET_CEF_TARGET_OUT_DIR()` sets
+`CMAKE_RUNTIME_OUTPUT_DIRECTORY`, which applies only to targets created *after*
+it, and it sat below `add_executable(weblinked …)`. So on a single-config
+generator the app linked to `build/`, while the CEF runtime and — because the
+subdirectory is added later — `weblinked_tests` went to `build/Release/`. The
+release step's `cp -R build/Release/* out/` then packaged everything except the
+application. Proven on the box rather than reasoned about:
+
+```
+build/weblinked                 <- the app
+build/Release/weblinked_tests   <- the tests, and the CEF runtime
+```
+
+**MSVC hid it completely.** It is multi-config, takes the other branch of the
+macro, and defaults every target into `Release` anyway — so `weblinked.exe` is
+present in the Windows zip and the same bug ships a working artefact there. A
+platform-specific packaging failure that CI cannot see: `if-no-files-found: error`
+is satisfied by a tarball that exists.
+
+Fixed by moving `SET_CEF_TARGET_OUT_DIR()` above the `add_executable`. Verified
+by rebuilding, re-running the workflow's own `cp -R build/Release/* out/`, and
+starting the result from the packaged layout.
+
+### SIGTERM does not stop WebLinked on Linux
+
+Headless, both `SIGTERM` and `SIGINT` are ignored: the process survives 30 s and
+needs `SIGKILL`, which leaves port 7654 bound so the next start refuses with
+`control port 7654 ... already in use`. This matters more than it looks, because
+a headless Linux render host is precisely what runs under systemd or Docker, and
+both stop a service with SIGTERM.
+
+**None of it is this project's signal handling**, which is correct at every step.
+Instrumented with `write(2)` straight from the handler, the whole chain fires:
+
+```
+PROBE: our requestQuit handler RAN
+PROBE A: watchdog thread started
+PROBE B: watchdog saw the flag
+PROBE C: diag::info returned
+PROBE D: CefPostTask returned
+PROBE E: beginShutdown on UI thread     <- CefQuitMessageLoop() called here
+```
+
+`CefRunMessageLoop()` then never returns. `multi_threaded_message_loop` is false,
+so `CefRunMessageLoop`/`CefQuitMessageLoop` is the correct pairing and the call is
+on the UI thread as CEF requires. macOS and Windows are unaffected; the tray's
+Quit path on Linux (§31) reaches the same `CefQuitMessageLoop()` and is worth
+re-checking against this.
+
+### NDI, both platforms, against an independent receiver
+
+`tools/ndi_probe` built on the Linux guest and run against each sender in turn.
+
+**Linux sending** — `KDE-LAB (LinuxNDI)`:
+
+```
+first frame: 1280x720 progressive, 25/1 (25.000 fps), UYVY,
+             stride 2560 bytes (2560 expected for 4:2:2), aspect 1.7778
+received 50 video frames in 1.94 s — 25.83 fps measured
+PASS
+```
+
+**Windows sending, received on Linux** — `WIN-LAB (WinTray)`, from the shipped
+zip: same raster, rate, FourCC and stride, PASS. The Windows binary loaded the
+bundled `Processing.NDI.Lib.x64.dll` and reported `NDI SDK WIN64 6.3.2.0`; the
+Linux one `NDI SDK LINUX 6.3.2.0`. This is what retires the old claim that a
+downloaded build cannot do NDI.
+
+The Windows sender measured **0.37 fps** on the wire, which is the box and not
+the code — see below.
+
+### Pacing: Linux good, Windows meaningless
+
+Linux at 720p25, 20 s window: **500 ticks, 500 frames published, 0 dropped**,
+`last_lateness_us` 83–103. That is the same quality of result as macOS.
+
+Windows on the same page could not keep up: 1531 ticks and 54 frames published
+at 1080p50 (~1.8 fps, 97% of ticks dropped), improving only to ~5.4 fps at
+720p25. **The lab VM has two vCPUs, no GPU driver (`Microsoft Basic Display
+Adapter`), and shares the box with Resolume Arena.** The clock itself was right
+throughout — 51 ticks/s against 1080p50 — so this is the renderer starving, not
+the pacing breaking. **No performance claim about Windows can be made from this
+machine**, and the 0.37 fps NDI figure above is the same limit seen from the
+receiving end.
+
+### Everything else exercised
+
+| | Windows | Linux |
+|---|---|---|
+| Unit tests | §31: 115 tests, 0 failures | **115 tests, 26191 checks, 0 failures** |
+| HTTP control API | `/api/state`, `/api/url`, `/api/output/add`, and cross-machine | same, bound `0.0.0.0` |
+| OSC | — | `/weblinked/url` with a **43-character** URL — the `3 mod 4` padding case that shipped broken in v0.3.0 |
+| mDNS | declines correctly on loopback, with the reason | `mdns: advertising 'kde-lab (7654)' as _weblinked._tcp` |
+| Tray | `tray icon installed` | `tray item installed via libayatana-appindicator3.so.1` |
+| Screen output | display enumerated; D3D11 not exercised (no GPU) | `screen 'screen0': 1280x720 on display 0, fit, OpenGL ES 2.0, llvmpipe` |
+| Port conflict | — | refuses with the right error and names the fix |
+
+**The Linux screen output, checked by screenshotting it** rather than by reading
+its counters — the lesson from §20's two-display bug. `import -window root` gave
+a 1920x1080 frame carrying the colour bars at 55% height, the animated `#35c46a`
+box and the blue frame counter: exactly what `tools/testcard.html` defines, at
+the right size and the right colours.
+
+### Two things the Windows session looked like and was not
+
+- `tray: Shell_NotifyIcon(NIM_ADD) refused the icon (2147500037)` is **correct
+  behaviour**, not a defect. An ssh session lands in **Session 0**, which has no
+  notification area; the desktop is Session 1. Launched there through a scheduled
+  task with an interactive token, the same binary logs `tray icon installed`.
+  Anything testing the tray over ssh will see the refusal and must not read it as
+  a bug — this is the check §31 added earning its keep.
+- **Unknown flags are accepted silently**, because `--`-prefixed arguments are
+  deliberately passed through to Chromium. A consequence worth knowing: there is
+  no `--version` flag, so `weblinked --version` starts the engine rather than
+  printing a version and exiting.
+
+### Still not verified on these machines
+
+DeckLink and AJA (no cards in either guest), the Windows D3D11 screen output (no
+GPU), audio over NDI on either platform, and the stream output on either. The
+`weblinked_tests` binary is still packaged into the user-facing Linux tarball,
+and the Windows zip still carries `weblinked_core.lib`, `weblinked_engine.lib`
+and `weblinked_engine.pdb` — about 33 MB of build output in a download.
+
+---
 
 ## Not verified
 

@@ -554,6 +554,19 @@ else()
   # banner and the startup errors having nowhere to go. WebLinked is driven from
   # a command line often enough that losing its output is the worse trade; the
   # tray icon covers the case where nobody wants a terminal.
+
+  # Before add_executable, and that ordering is the whole point.
+  # SET_CEF_TARGET_OUT_DIR() sets CMAKE_RUNTIME_OUTPUT_DIRECTORY, which CMake
+  # applies only to targets created *after* it — so with this call below the
+  # add_executable it left `weblinked` in ${CMAKE_BINARY_DIR} while the CEF
+  # runtime, and `weblinked_tests` from the subdirectory added later, went to
+  # ${CMAKE_BINARY_DIR}/Release. On a single-config generator the release
+  # workflow's `cp -R build/Release/* out/` then packaged the CEF runtime, the
+  # resources and the test binary and silently left the application behind:
+  # v1.0.1's Linux tarball is 355 MB with nothing in it to run. MSVC hid it,
+  # being multi-config and defaulting everything into Release anyway.
+  SET_CEF_TARGET_OUT_DIR()
+
   set(WEBLINKED_APP_SOURCES src/app/main.cpp)
   if(UNIX AND NOT APPLE)
     list(APPEND WEBLINKED_APP_SOURCES src/app/tray_linux.cpp)
@@ -596,7 +609,6 @@ else()
   target_compile_options(weblinked PRIVATE ${CEF_COMPILER_FLAGS} ${CEF_CXX_COMPILER_FLAGS})
   target_link_options(weblinked PRIVATE ${CEF_LINKER_FLAGS} ${CEF_EXE_LINKER_FLAGS})
 
-  SET_CEF_TARGET_OUT_DIR()
   COPY_FILES(weblinked "${CEF_BINARY_FILES}" "${CEF_BINARY_DIR}" "${CEF_TARGET_OUT_DIR}")
   COPY_FILES(weblinked "${CEF_RESOURCE_FILES}" "${CEF_RESOURCE_DIR}" "${CEF_TARGET_OUT_DIR}")
 endif()
