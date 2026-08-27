@@ -1,5 +1,49 @@
 # Changelog
 
+## v1.0.2 — 2026-08-27
+
+A packaging fix. **If you are on Linux, v1.0.1 was unusable and this is the
+release that repairs it** — nothing else here changes how the software behaves.
+
+### Fixed
+
+- **The Linux tarball shipped with no application in it.** `weblinked-engine-1.0.1-linux-x86_64.tar.gz`
+  was 355 MB of CEF runtime, resources, `libndi.so.6` and the *test* binary, and
+  contained no `weblinked` executable at all. There was nothing in it to run.
+
+  `SET_CEF_TARGET_OUT_DIR()` sets `CMAKE_RUNTIME_OUTPUT_DIRECTORY`, which CMake
+  applies only to targets created after it, and it sat below the
+  `add_executable`. So on a single-config generator the application linked to
+  `build/` while the CEF runtime — and `weblinked_tests`, from the subdirectory
+  added later — went to `build/Release/`, and the release step copied only the
+  latter. MSVC hid it completely by being multi-config, which is why the Windows
+  zip was correct and only Linux shipped empty.
+
+### Changed
+
+- **The verification status now covers Windows and Linux**, which were run on
+  real systems rather than signed off on a compile: the unit suite passes on both
+  (115 tests, 26191 checks), and NDI was received and decoded by an independent
+  receiver on a separate machine, in both directions. The Linux `screen` output
+  ran for the first time and renders correctly. See §32 of
+  `docs/04-verification.md`.
+- **The claim that a downloaded build "cannot do NDI at all" is retired.** It has
+  been wrong since the NDI and OMT headers were vendored: both backends compile
+  into every CI artefact and the runtime ships beside the binary. Only DeckLink
+  and AJA still need a local build.
+
+### Known issues
+
+- **`SIGTERM` and `SIGINT` do not stop WebLinked on Linux.** The process survives
+  both and needs `SIGKILL`, which leaves the control port bound. This matters
+  under systemd or Docker, which stop a service with `SIGTERM`. The cause is not
+  this project's signal handling — the handler, the watchdog and `beginShutdown()`
+  all run, on the UI thread, and `CefRunMessageLoop()` does not return.
+  Unaffected on macOS and Windows.
+- **Windows frame-rate performance is still unmeasured.** The machine available
+  for testing has two cores and no GPU driver, so it demonstrates function and
+  proves nothing about throughput.
+
 ## v1.0.0 — 2026-08-14
 
 The engine grew its own menu-bar icon, and the separate launcher that existed to

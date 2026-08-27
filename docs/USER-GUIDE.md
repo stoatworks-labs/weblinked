@@ -13,8 +13,12 @@ does not try to hide the broadcast decisions from you.
 >
 > Not everything: **the SDI key channel itself, audio over SDI and genlock over hours are
 > unmeasured**, and **AJA and OMT compile against their SDKs and have never met hardware or a
-> receiver**. The fullscreen output's Windows and Linux backends are written and have never been
-> run. [04-verification.md](04-verification.md) gives the numbers and the method rather than a
+> receiver**. The fullscreen output's Linux backend has now been run and renders correctly; its
+> **Windows backend is written and has never been run**, the test machine having no GPU.
+> Windows and Linux themselves are no longer signed off on a compile — both were run on real
+> systems in August 2026, NDI included — but **frame-rate performance is verified on macOS and
+> Linux only**, because that Windows machine cannot sustain a rate.
+> [04-verification.md](04-verification.md) gives the numbers and the method rather than a
 > promise.
 
 ---
