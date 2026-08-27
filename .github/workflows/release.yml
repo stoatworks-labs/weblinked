@@ -222,7 +222,7 @@ jobs:
             tar czf "$RL_FILE_SLUG-${{ steps.ver.outputs.version }}-${{ matrix.name }}.tar.gz" -C out .
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: weblinked-${{ matrix.name }}
           path: |
@@ -269,7 +269,7 @@ jobs:
           rl_nsis windows-x86_64 "$stage" --gui "WebLinked.exe"
           ls -l installers
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: weblinked-windows-installer
           path: installers/*
