@@ -99,7 +99,7 @@ ever compiled.
   enforces the old 16380-byte cap, failing with C2026 pointing at that file
   rather than at the compiler.
 
-## Unreleased
+## v0.8.0 — 2026-08-10, never tagged on its own; shipped in v1.0.0
 
 ### Added
 
