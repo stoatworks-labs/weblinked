@@ -19,7 +19,7 @@ class WebLinkedSource : public weblinked::WebLinkedPlugin {};
 static CFFGLPluginInfo PluginInfo(
     PluginFactory<WebLinkedSource>,  // Create method
     "WL01",                          // Plugin unique ID of maximum length 4
-    "WebLinked",                     // Plugin name
+    "SW WebLinked",                  // Plugin name
     2,                               // API major version number
     1,                               // API minor version number
     0,                               // Plugin major version number
