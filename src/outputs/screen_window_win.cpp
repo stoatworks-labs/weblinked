@@ -1,8 +1,9 @@
 // The Windows screen output: Win32 for the window, D3D11 for the picture.
 //
-// NEVER RUN. This compiles against the Windows SDK and has never been executed,
-// let alone put on a projector — see docs/04-verification.md. Treat every claim
-// below as intent, not as evidence.
+// First run 2026-09-28, on the lab VM's Microsoft Basic Render Driver, and
+// checked by reading the desktop back (tools/screen_probe_win.cpp) — see §33 of
+// docs/04-verification.md. It had shipped black until then: no viewport and a
+// culled triangle. Not yet seen on a real GPU or a projector.
 //
 // The structure differs from the macOS backend on purpose. A Win32 window
 // belongs to the thread that created it and only lives while that thread pumps
@@ -169,11 +170,13 @@ class WinScreenWindow final : public ScreenWindow {
   ID3D11VertexShader* vertexShader_ = nullptr;
   ID3D11PixelShader* pixelShader_ = nullptr;
   ID3D11SamplerState* sampler_ = nullptr;
+  ID3D11RasterizerState* rasterizer_ = nullptr;
   ID3D11Buffer* uniformBuffer_ = nullptr;
   ID3D11Texture2D* texture_ = nullptr;
   ID3D11ShaderResourceView* textureView_ = nullptr;
 
   Uniforms uniforms_;
+  D3D11_VIEWPORT viewport_{};
 
   /// Staging rows, one buffer per ring slot. D3D11 has no equivalent of
   /// aliasing a texture onto a mapped buffer, so unlike the Metal backend this
@@ -463,6 +466,25 @@ bool WinScreenWindow::buildDevice(int display, const RECT& bounds,
   uniformDescription.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
   device_->CreateBuffer(&uniformDescription, nullptr, &uniformBuffer_);
 
+  // The fullscreen triangle winds anticlockwise on the render target, which
+  // D3D11's default rasterizer state culls as a back face — Metal's default
+  // culls nothing, which is why the same geometry works there. Culling off
+  // rather than rewinding keeps the shader identical to the Metal one.
+  D3D11_RASTERIZER_DESC rasterizerDescription{};
+  rasterizerDescription.FillMode = D3D11_FILL_SOLID;
+  rasterizerDescription.CullMode = D3D11_CULL_NONE;
+  rasterizerDescription.DepthClipEnable = TRUE;
+  if (FAILED(device_->CreateRasterizerState(&rasterizerDescription, &rasterizer_))) {
+    error = "could not create the rasterizer state";
+    return false;
+  }
+
+  // D3D11 has no default viewport: without one every draw rasterises nothing
+  // and the display shows only the clear colour.
+  viewport_.Width = static_cast<float>(swapDescription.Width);
+  viewport_.Height = static_cast<float>(swapDescription.Height);
+  viewport_.MaxDepth = 1.0f;
+
   return true;
 }
 
@@ -471,6 +493,7 @@ void WinScreenWindow::teardownDevice() {
   releaseCom(texture_);
   releaseCom(uniformBuffer_);
   releaseCom(sampler_);
+  releaseCom(rasterizer_);
   releaseCom(pixelShader_);
   releaseCom(vertexShader_);
   releaseCom(renderTarget_);
@@ -511,6 +534,8 @@ void WinScreenWindow::drawOnce() {
   const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
   context_->ClearRenderTargetView(renderTarget_, black);
   context_->OMSetRenderTargets(1, &renderTarget_, nullptr);
+  context_->RSSetViewports(1, &viewport_);
+  context_->RSSetState(rasterizer_);
   context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   context_->VSSetShader(vertexShader_, nullptr, 0);
   context_->VSSetConstantBuffers(0, 1, &uniformBuffer_);

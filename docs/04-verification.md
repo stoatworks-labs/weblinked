@@ -986,10 +986,9 @@ are untested.
 llvmpipe and put the right picture on it. Linux still disables the whole backend
 when X11 or EGL headers are absent, the same way a missing NDI SDK disables NDI.
 
-**Windows: still never run.** `screen_window_win.cpp` (D3D11) is written and
-compile-targeted only. The Windows lab VM has no GPU — `DCompositionCreateDevice3`
-fails with `Access is denied` and Chromium's GPU process exits — so that box
-cannot exercise the D3D11 path even though it can run everything else.
+**Windows: run 2026-09-28, and it was black — see §33.** The first real machine
+to use it showed a black display, and the lab VM reproduced that exactly. Fixed,
+and now verified against the desktop read back on the VM's software renderer.
 
 ---
 
@@ -2209,7 +2208,7 @@ receiving end.
 | OSC | — | `/weblinked/url` with a **43-character** URL — the `3 mod 4` padding case that shipped broken in v0.3.0 |
 | mDNS | declines correctly on loopback, with the reason | `mdns: advertising 'kde-lab (7654)' as _weblinked._tcp` |
 | Tray | `tray icon installed` | `tray item installed via libayatana-appindicator3.so.1` |
-| Screen output | display enumerated; D3D11 not exercised (no GPU) | `screen 'screen0': 1280x720 on display 0, fit, OpenGL ES 2.0, llvmpipe` |
+| Screen output | display enumerated; D3D11 first run in §33 | `screen 'screen0': 1280x720 on display 0, fit, OpenGL ES 2.0, llvmpipe` |
 | Port conflict | — | refuses with the right error and names the fix |
 
 **The Linux screen output, checked by screenshotting it** rather than by reading
@@ -2233,13 +2232,63 @@ the right size and the right colours.
 
 ### Still not verified on these machines
 
-DeckLink and AJA (no cards in either guest), the Windows D3D11 screen output (no
-GPU), audio over NDI on either platform, and the stream output on either. The
+DeckLink and AJA (no cards in either guest), audio over NDI on either platform, and the stream output on either. The
 `weblinked_tests` binary is still packaged into the user-facing Linux tarball,
 and the Windows zip still carries `weblinked_core.lib`, `weblinked_engine.lib`
 and `weblinked_engine.pdb` — about 33 MB of build output in a download.
 
 ---
+
+## 33. The Windows screen output — black on first contact, and why
+
+The first machine to run the D3D11 screen output for real showed a black
+display on the GPU head: the window opened fullscreen and nothing was drawn
+into it. The lab VM, which has no GPU but does have the Microsoft Basic Render
+Driver, reproduced it byte for byte, and that was enough to test the fix.
+
+**Two bugs, each sufficient on its own.**
+
+- **No viewport.** D3D11 has no default viewport, and `drawOnce()` never set
+  one, so the draw rasterised nothing. What reached the glass was the
+  `ClearRenderTargetView` black that precedes it.
+- **The triangle was culled.** The vertex shader is the Metal one verbatim,
+  `pos * 2.0 - 1.0` with no y flip, which winds anticlockwise on the render
+  target. D3D11's default rasterizer state culls that as a back face; Metal's
+  default culls nothing, which is why the same geometry works on macOS.
+
+Fixed by setting the viewport to the swap chain's size and a rasterizer state
+with `D3D11_CULL_NONE`, which keeps the shader identical to Metal's.
+
+**Why the counters hid it.** `presented` climbed steadily the whole time —
+Present succeeded, it just presented black. The status looked healthy.
+
+**Verified by looking at the glass.** `tools/screen_probe_win.cpp` drives the
+real `WinScreenWindow` with quadrant colour bars, reads the desktop back with
+`BitBlt`, and checks each quadrant. Run on the VM's desktop (Session 1, through
+a scheduled task with an Interactive logon — over ssh it would land in Session
+0), same probe, same machine, before and after:
+
+```
+display 0: \\.\DISPLAY1 1280x800 @64Hz
+renderer: Direct3D 11, Microsoft Basic Render Driver
+
+before  top-left  got   0   0   0  want 255   0   0  WRONG   (all four black)
+        presented 504 dropped 2 in 12 s                       RESULT FAIL
+after   top-left  got 255   0   0  ok      top-right  got   0 255   0  ok
+        bottom-left got 0 0 255  ok        bottom-right got 255 255 255  ok
+        presented 284 dropped 16 in 12 s                      RESULT PASS
+```
+
+The fixed capture shows the 16:9 bars fitted to the 16:10 head with black bars
+above and below, the right way up. The fixed path presents about 24 times a
+second against a 25 fps source here, down from the clear-only 42, because the
+software renderer now does real work each refresh. The very first run after a
+build presented once in three seconds while the renderer warmed up, then ran
+normally; it did not recur.
+
+**Still not verified.** A real GPU, a projector, a second display under Windows,
+and the full application — Chromium's GPU process still cannot start on the VM,
+so the probe feeds the window directly rather than through a page.
 
 ## Not verified
 
@@ -2316,5 +2365,6 @@ by using it on all three platforms (section 31).
 **A projector, and three or more displays.** Two displays are now verified
 (section 20); nothing has been shown on a projector.
 
-**The screen output on Windows and Linux.** Written, compile-targeted, never
-run — like AJA and OMT before them.
+**The screen output on a real Windows GPU.** Linux renders correctly (section
+32), and Windows now draws on the lab VM's software renderer (section 33), but
+no Windows GPU and no projector has run the fixed code.

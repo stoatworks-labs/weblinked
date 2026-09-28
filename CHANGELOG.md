@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The fullscreen screen output on Windows showed nothing but black.** The
+  window opened on the right display and presented every refresh, so its status
+  looked healthy, but the D3D11 backend set no viewport and let the default
+  rasterizer state cull its fullscreen triangle, so only the black clear ever
+  reached the display. Either bug alone was enough. It had never been run before
+  it met a real machine. See §33 of `docs/04-verification.md`.
+
+### Added
+
+- `tools/screen_probe_win.cpp`, which checks the Windows screen output by reading
+  the desktop back rather than trusting the frame counters.
+
 ## v1.0.2 — 2026-08-27
 
 A packaging fix. **If you are on Linux, v1.0.1 was unusable and this is the
