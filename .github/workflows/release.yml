@@ -326,8 +326,9 @@ jobs:
             confirmed end-to-end against a real receiver, DeckLink against a real Duo 2, and the
             screen output across two displays on the author's Mac. The tray icon is verified by
             use on all three platforms. AJA and OMT compile against the real SDKs and have never
-            met hardware or a receiver, and the screen output's Windows and Linux backends have
-            never been run.
+            met hardware or a receiver. The screen output's Linux backend renders correctly
+            under llvmpipe, and its Windows backend is verified on a software renderer but not
+            yet on a real GPU.
 
             Builds are unsigned. On macOS, after installing:
 
