@@ -2290,6 +2290,58 @@ normally; it did not recur.
 and the full application — Chromium's GPU process still cannot start on the VM,
 so the probe feeds the window directly rather than through a page.
 
+## 34. The page ran twenty times faster than the output — and the clock hid behind it
+
+Reported from the field on Windows: WebLinked used a lot of RAM, loaded pages
+slowly, and animations that should have been smooth arrived as cuts.
+
+**The cause was `disable-frame-rate-limit`.** It was added so a 60 Hz panel
+could not cap a 50p output, but an offscreen browser is paced by our begin
+frames, not by a display. What the switch actually uncapped was the *page*.
+`tools/testcard.html` with one line added — `console.error` every hundredth
+`requestAnimationFrame`, so `source.console_errors` in `/api/state` counts the
+page's own frame rate — measured, for a 1080p50 output:
+
+| | page rAF | renderer CPU | total CPU |
+|---|---|---|---|
+| M4 Max, v1.0.4 | 9,670/s | 161% | 405% |
+| Windows VM (2 vCPU), v1.0.5 | 1,390/s | 102% | — |
+| Edge, same page, same VM (control) | display rate | 7% | — |
+
+Every animation and script ran twenty to two hundred times more often than the
+output could use. On a machine with cores to spare that was only waste; on the
+Windows PC it saturated the CPU, which starved page loads and the screen output.
+On the VM the screen output presented **5.9 fps** of a 50p feed.
+
+**Removing the switch exposed the clock.** With the renderer quiet, the engine's
+`sleep_for` stopped being accurate: at 1080p60 on the Mac, 1,338 of 3,603 ticks
+were dropped in a minute. The busy renderer had been keeping the process out of
+macOS App Nap, and on Windows keeping the system timer at high resolution —
+without it `sleep_for` rounds up to the 15.6 ms tick. So the process now opts
+out of App Nap, and on Windows the clock waits on a high-resolution waitable
+timer (`timeBeginPeriod` is not enough: Windows 11 may ignore it for a process
+with no visible window).
+
+**After, one minute each:**
+
+```
+M4 Max  1080p60  ticks 3601  published 3601  repeated 0  dropped 0
+M4 Max  1080p50  ticks 3002  published 3001  repeated 1  dropped 0
+M4 Max  1080p50  page rAF 50/s   CPU 405% -> 43%   renderer 161% -> 4%
+M4 Max  memory after 70 s        826 MB -> 731 MB total, renderer 306 -> 223 MB
+
+Windows VM, v1.0.5 -> fixed, 1080p50 with --screen=0:
+  page rAF          1,390/s -> 50/s
+  renderer          102% CPU, 210 MB private -> 11% CPU, 33 MB private
+  dropped ticks     17.7/s -> 0.1/s
+  screen presented  5.9 fps -> 34.6 fps (the VM's software renderer ceiling)
+```
+
+**Still open.** On Windows Chromium delivers about two paints per begin frame
+(`frames_published` ≈ 100/s at 50p; the Mac delivers one), each an 8 MB copy on
+the main thread. It predates this fix and did not cause the report, but it is
+CPU a slower machine would feel. Not yet measured on the field PC itself.
+
 ## Not verified
 
 Everything in this section is written against a real SDK header set and compiles.

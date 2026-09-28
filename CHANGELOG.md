@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Pages ran their animations twenty to two hundred times faster than the
+  output.** `disable-frame-rate-limit` uncapped the offscreen page: at 1080p50,
+  `requestAnimationFrame` ran about 1,400 times a second on a Windows PC and
+  nearly 10,000 on an M4 Max. The renderer burned whole cores, which on a
+  machine without cores to spare meant slow page loads, heavy memory use and
+  animations arriving as cuts. The page now runs at the output rate; renderer
+  CPU fell from 102% to 11% on the Windows test machine and its memory from
+  210 MB to 33 MB. See §34 of `docs/04-verification.md`.
+- **The engine clock dropped frames once the machine went quiet.** The spinning
+  renderer had been hiding it: WebLinked now opts out of App Nap on macOS, and on
+  Windows its clock waits on a high-resolution timer rather than the 15.6 ms
+  system tick.
+
 ## v1.0.5 — 2026-09-28
 
 ### Fixed
