@@ -16,6 +16,17 @@
   renderer had been hiding it: WebLinked now opts out of App Nap on macOS, and on
   Windows its clock waits on a high-resolution timer rather than the 15.6 ms
   system tick.
+- **Windows PCs with no GPU painted every frame twice.** CEF started a frame
+  capturer before Chromium found there was no hardware GPU, then delivered
+  every frame through both it and the software compositor, with identical
+  pixels. WebLinked now disables GPU compositing up front when Windows reports no
+  hardware adapter. On the 2-core test VM at 1080p50 the GPU process fell from
+  44% CPU to 7% and the main process from 34% to 18%.
+- **Output held or skipped a frame when a paint came back quickly.** The engine
+  asked for the next paint before reading the current one, so a fast paint
+  could race the read. It now reads first, and what goes out is always the
+  paint requested one tick ago. Held frames on the test VM went from 1.2–2.0 a
+  second to none. See §34 of `docs/04-verification.md`.
 
 ## v1.0.5 — 2026-09-28
 

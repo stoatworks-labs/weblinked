@@ -2337,10 +2337,84 @@ Windows VM, v1.0.5 -> fixed, 1080p50 with --screen=0:
   screen presented  5.9 fps -> 34.6 fps (the VM's software renderer ceiling)
 ```
 
-**Still open.** On Windows Chromium delivers about two paints per begin frame
+### Two paints per begin frame on Windows — fixed
+
+On the Windows VM Chromium delivered about two paints per begin frame
 (`frames_published` ≈ 100/s at 50p; the Mac delivers one), each an 8 MB copy on
-the main thread. It predates this fix and did not cause the report, but it is
-CPU a slower machine would feel. Not yet measured on the field PC itself.
+the main thread. It predated the fix above and did not cause the report.
+
+**What the second paint was.** A throwaway build logged every `OnPaint` against
+the begin frame before it, and compared the pixels. Every begin frame produced
+exactly two paints. The second arrived 3–5 ms after the first, with the same
+damage rect and **byte-identical pixels**. None arrived without a begin frame,
+and neither was a partial paint. The duplicate rate followed
+`windowless_frame_rate`, which is supposed to be unused under external pacing:
+
+| `windowless_frame_rate` | begin frames with two paints |
+|---|---|
+| 60 (ours) | all of them |
+| 30 | 30 a second |
+| 1 | 1 a second |
+
+`run-all-compositor-stages-before-draw` and the viz scheduling features changed
+nothing. A Chromium startup trace (`--trace-startup=viz,cc`) showed the Display
+drawing **once** per begin frame (391 `DrawAndSwap` for 394 deadlines), but with
+a `CopyOutputRequest` on every draw (390). That is a frame-sink video capturer
+reading the frame back.
+
+CEF has two ways to deliver an offscreen frame. With GPU compositing, a capturer
+(`CefVideoConsumerOSR`) copies each frame out, at most once per
+`1/windowless_frame_rate`. With software compositing, the software output device
+hands over its shared memory on each draw. CEF picks one when the view is first
+shown, by asking whether GPU compositing is disabled. On a machine with no
+hardware GPU the answer at that moment is still "no", so the capturer starts. The
+display then comes up in software, which the trace shows from its first frame,
+and the capturer is never stopped. So both paths delivered every frame. That
+this is the order of events is inferred from CEF's source and the trace; the two
+deliveries themselves are measured. On a Mac, or any machine where GPU
+compositing works, only the capturer runs, which is why the Mac shows one paint.
+
+**Fix 1.** On Windows, when DXGI offers no hardware adapter (only the Microsoft
+Basic Render Driver, which is WARP), WebLinked passes `disable-gpu-compositing`
+before Chromium starts. Pages are drawn exactly as before, because compositing
+was going to be software anyway. CEF is simply told so in time, and never starts
+the capturer. `--disable-gpu` instead was worse: 5.4 held frames a second.
+
+**What that exposed.** Measured by content, the shipped build already held a
+frame 1.2–2.0 times a second. Its `repeated_frames` counter compares sequence
+numbers, not pixels, so the duplicate paint could hide a held one and the
+counter read 0.0–0.3. With the duplicate gone, held frames looked worse:
+0.2/s in some runs and 5–6/s in others. That was
+not the paint. With the capturer gone every paint landed within 10 ms of its
+begin frame, usually about 2 ms. The clock thread posted the begin frame and
+*then* read the slot. On a two-core machine it was often descheduled for a
+couple of milliseconds in between, came back, and read the paint it had just
+asked for. On other ticks it read the previous one. Each flip between those two
+phases held a frame or skipped one, and the phase a run started in decided
+which figure it got. Logging at each held frame confirmed it: the last begin
+frame had run 20 ms earlier and its paint had landed 2 ms after that.
+
+**Fix 2.** The engine now reads the slot *before* asking for the next paint.
+Chromium still gets the whole period, and what goes out is always the paint
+requested one tick ago.
+
+**After, 1080p50, `tools/testcard.html`, Windows VM (2 vCPU, no GPU):**
+
+```
+                      before (f1e0712)   after, 3 x 60 s
+frames_published/s    100.5              50.2 (= ticks)
+held frames/s         1.2-2.0 by content 0.0, 0.0, 0.0
+gpu-process CPU       44%                7%
+main process CPU      34%                18%
+renderer CPU          11%                12%
+
+M4 Max, same page, after: ticks 3001  published 3002  repeated 0  dropped 0
+```
+
+**Still not verified.** The field PC. If it has a working GPU it only ever had
+the capturer path, one paint per frame, and fix 1 does not apply to it. Fix 2
+applies everywhere. A Linux machine with no GPU presumably has the same double
+delivery, but it has not been tested and fix 1 is Windows-only.
 
 ## Not verified
 
