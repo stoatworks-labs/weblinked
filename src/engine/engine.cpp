@@ -294,13 +294,22 @@ void Engine::clockLoop() {
       lastFrame.reset();
     }
 
-    // Ask for the next paint straight away, so Chromium has a whole frame period
-    // to produce it rather than being asked at the moment we need it.
-    browser_->requestFrame();
-
     // peek(), not take(): a page that has not repainted since the last tick — a
     // static graphic, most of the time — must still produce a frame.
+    //
+    // Read *before* asking for the next paint, never after. Asking first let a
+    // fast paint race the read: when the clock thread lost the CPU for a couple
+    // of milliseconds after posting the request — routine on a two-core
+    // machine — it came back to the paint it had just asked for, and on other
+    // ticks to the one before. Every flip between the two held one frame or
+    // skipped one. Read first, and what goes out is always the paint requested
+    // one tick ago. See §34 of docs/04-verification.md.
     VideoFramePtr frame = slot_.peek();
+
+    // Then ask for the next paint straight away, so Chromium has a whole frame
+    // period to produce it rather than being asked at the moment we need it.
+    browser_->requestFrame();
+
     if (!frame) {
       frame = blackFrame_;
     } else if (lastFrame && frame->sequence() == lastFrame->sequence()) {
