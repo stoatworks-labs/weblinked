@@ -2,11 +2,40 @@
 
 #include <thread>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 namespace weblinked {
 
 namespace {
 constexpr int64_t kNanosPerSecond = 1'000'000'000LL;
+
+/// Sleeps for `nanos`, as precisely as the platform allows.
+///
+/// On Windows, std::this_thread::sleep_for rounds up to the system timer
+/// resolution — 15.6 ms unless some process has asked for better — so a 20 ms
+/// frame sleeps 31 ms and the clock drops ticks. timeBeginPeriod is not the
+/// fix: Windows 11 may ignore it for a process with no visible window, which is
+/// what WebLinked usually is. A high-resolution waitable timer (Windows 10 1803
+/// and later) is not subject to that. Until v1.0.6 this was masked by
+/// Chromium's renderer spinning flat out, which raised the resolution for us.
+void sleepPrecise(int64_t nanos) {
+#if defined(_WIN32)
+  thread_local HANDLE timer = CreateWaitableTimerExW(
+      nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  if (timer != nullptr) {
+    LARGE_INTEGER due;
+    due.QuadPart = -(nanos / 100);  // Relative, in 100 ns units.
+    if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE) &&
+        WaitForSingleObject(timer, INFINITE) == WAIT_OBJECT_0) {
+      return;
+    }
+  }
+#endif
+  std::this_thread::sleep_for(std::chrono::nanoseconds(nanos));
 }
+}  // namespace
 
 FrameClock::FrameClock(FrameRate rate) : rate_(rate) {}
 
@@ -55,7 +84,7 @@ int64_t FrameClock::waitForNextTick() {
 
   now = elapsedNanos();
   if (deadline > now) {
-    std::this_thread::sleep_for(std::chrono::nanoseconds(deadline - now));
+    sleepPrecise(deadline - now);
   }
 
   lastLateness_ = elapsedNanos() - deadline;

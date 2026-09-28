@@ -20,10 +20,14 @@ void BrowserApp::OnBeforeCommandLineProcessing(
   commandLine->AppendSwitch("disable-renderer-backgrounding");
   commandLine->AppendSwitch("disable-background-timer-throttling");
 
-  // Chromium's frame-rate limiter caps the compositor at the display's refresh
-  // rate. A 60 Hz laptop panel would therefore cap a 50p output at whatever the
-  // panel does, and drop frames on a 4K 60p feed on a 30 Hz-connected display.
-  commandLine->AppendSwitch("disable-frame-rate-limit");
+  // No disable-frame-rate-limit. It was here to stop a 60 Hz panel capping a
+  // 50p output, but an offscreen browser is paced by our begin frames (or
+  // windowless_frame_rate), not by any display. What the switch actually did was
+  // uncap the page: requestAnimationFrame and CSS animations ran at ~1,000/s on
+  // a 2-core PC and ~10,000/s on an M4 Max for a 50p output, burning whole
+  // cores in the renderer, starving page loads and the screen output, and
+  // turning smooth motion into cuts on any machine without cores to spare.
+  // See §34 of docs/04-verification.md.
   commandLine->AppendSwitch("disable-gpu-vsync");
 
   // Autoplay: a page whose video only starts after a click is useless as a

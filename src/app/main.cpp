@@ -833,6 +833,7 @@ int main(int argc, char** argv) {
 #if defined(__APPLE__)
   // Before anything else touches NSApp. See mac_application.mm.
   weblinked::installMacApplication();
+  weblinked::disableAppNap();
 #endif
 
   // CefMainArgs is one of the few genuinely different shapes across platforms:

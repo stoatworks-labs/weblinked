@@ -58,6 +58,17 @@ void installMacApplication() {
   [WebLinkedApplication sharedApplication];
 }
 
+void disableAppNap() {
+  // Held for the life of the process; the token is never ended. Allowing idle
+  // system sleep keeps this about timer precision, not about keeping a machine
+  // awake that its owner has told to sleep.
+  static id<NSObject> activity = [[NSProcessInfo processInfo]
+      beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep |
+                               NSActivityLatencyCritical
+                        reason:@"WebLinked renders a live video feed"];
+  (void)activity;
+}
+
 void openInDefaultBrowser(const std::string& url) {
   @autoreleasepool {
     NSURL* target = [NSURL URLWithString:@(url.c_str())];
