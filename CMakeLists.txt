@@ -453,6 +453,13 @@ target_compile_definitions(weblinked_engine PUBLIC
   $<$<BOOL:${WEBLINKED_WITH_STREAM}>:WEBLINKED_WITH_STREAM=1>
 )
 
+if(WIN32)
+  # dxgi for BrowserApp, which asks whether the machine has a hardware GPU
+  # before Chromium starts — see hasHardwareGpu() in src/browser/cef_app.cpp.
+  # Linked here as well as with the outputs so a build without them still has it.
+  target_link_libraries(weblinked_engine PUBLIC dxgi)
+endif()
+
 if(WEBLINKED_WITH_SHARED)
   if(APPLE)
     # third_party/syphon is the include root, not .../syphon/Syphon: the

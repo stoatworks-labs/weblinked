@@ -2,7 +2,45 @@
 
 #include "diag/diag.h"
 
+#if defined(_WIN32)
+#include <dxgi.h>
+#include <wrl/client.h>
+#endif
+
 namespace weblinked {
+namespace {
+
+#if defined(_WIN32)
+/// Whether DXGI offers any adapter that is not a software rasteriser.
+///
+/// Answers "don't know" as true, so a failure here leaves Chromium to decide
+/// exactly as it did before.
+bool hasHardwareGpu() {
+  Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+  if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+    return true;
+  }
+  Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+  for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND;
+       ++i) {
+    DXGI_ADAPTER_DESC1 desc = {};
+    if (FAILED(adapter->GetDesc1(&desc))) {
+      continue;
+    }
+    // The Microsoft Basic Render Driver (1414:008C) is WARP: what a VM, or a PC
+    // whose display driver is missing, gets instead of a GPU. It carries the
+    // software flag on current Windows; the ids catch it where it does not.
+    const bool software = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0 ||
+                          (desc.VendorId == 0x1414 && desc.DeviceId == 0x8C);
+    if (!software) {
+      return true;
+    }
+  }
+  return false;
+}
+#endif
+
+}  // namespace
 
 void BrowserApp::OnBeforeCommandLineProcessing(
     const CefString& processType, CefRefPtr<CefCommandLine> commandLine) {
@@ -29,6 +67,26 @@ void BrowserApp::OnBeforeCommandLineProcessing(
   // turning smooth motion into cuts on any machine without cores to spare.
   // See §34 of docs/04-verification.md.
   commandLine->AppendSwitch("disable-gpu-vsync");
+
+#if defined(_WIN32)
+  // With no hardware GPU, say so before Chromium starts, or every frame is
+  // painted twice. Chromium composites in software on such a machine anyway,
+  // but it only finds that out once the GPU process is up — after CEF has shown
+  // the offscreen view. CEF decides at that moment whether to deliver frames
+  // through a frame-sink capturer (the GPU compositing path) or the software
+  // output device, sees "GPU compositing not disabled yet", and starts the
+  // capturer. The display then comes up in software, whose output device also
+  // delivers every frame, and the capturer is never stopped: two OnPaint calls
+  // per begin frame with identical pixels, each an 8 MB copy on the UI thread,
+  // plus a readback in the GPU process for the capturer. Disabling GPU
+  // compositing up front changes nothing about how the page is drawn — it was
+  // going to be software — and leaves CEF with only the software path.
+  // See §34 of docs/04-verification.md.
+  if (!hasHardwareGpu()) {
+    commandLine->AppendSwitch("disable-gpu-compositing");
+    diag::info("cef: no hardware GPU adapter; compositing in software");
+  }
+#endif
 
   // Autoplay: a page whose video only starts after a click is useless as a
   // source. This is the switch that makes an unattended feed work.
