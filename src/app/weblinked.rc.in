@@ -1,0 +1,7 @@
+// Generated into the build tree by CMakeLists.txt so the manifest path is
+// absolute: rc.exe's search for a bare file name does not reliably include the
+// directory the .rc came from.
+//
+// 1 = CREATEPROCESS_MANIFEST_RESOURCE_ID, 24 = RT_MANIFEST. Written as numbers
+// because nothing here includes <winuser.h>.
+1 24 "@WEBLINKED_MANIFEST_PATH@"

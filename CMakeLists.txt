@@ -579,6 +579,28 @@ else()
     list(APPEND WEBLINKED_APP_SOURCES src/app/tray_linux.cpp)
   elseif(WIN32)
     list(APPEND WEBLINKED_APP_SOURCES src/app/tray_win.cpp)
+
+    # The application manifest, and the process dies without it. With no
+    # supportedOS entry Windows treats the exe as a pre-Windows-10 program and
+    # lies about the version. That includes GetFileVersionInfo on kernel32.dll
+    # when the name resolves through the current directory. Chromium reads
+    # that version by the bare name "kernel32.dll" to fill in the user-agent
+    # client hints. Started with the working directory at C:\Windows\System32
+    # (the default for a scheduled task, and for anything else that does not set
+    # one), it read 6.2, took the process for Windows 8, and hit a NOTREACHED in
+    # GetPreRS5UniversalApiContractVersion about a second after starting.
+    # See §35 of docs/04-verification.md.
+    #
+    # Embedded as a resource, not listed as a .manifest source: CEF's linker
+    # flags carry /MANIFEST:NO, which silently discards a manifest the linker
+    # would otherwise merge.
+    set(WEBLINKED_MANIFEST_PATH
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/app/weblinked.exe.manifest")
+    configure_file(src/app/weblinked.rc.in
+                   "${CMAKE_CURRENT_BINARY_DIR}/weblinked.rc" @ONLY)
+    list(APPEND WEBLINKED_APP_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/weblinked.rc")
+    set_property(SOURCE "${CMAKE_CURRENT_BINARY_DIR}/weblinked.rc" APPEND
+                 PROPERTY OBJECT_DEPENDS "${WEBLINKED_MANIFEST_PATH}")
   endif()
   add_executable(weblinked ${WEBLINKED_APP_SOURCES})
   set_target_properties(weblinked PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
@@ -613,7 +635,10 @@ else()
     # "LNK1104: cannot open file 'libomt.lib'".
     target_link_options(weblinked PRIVATE "/NODEFAULTLIB:libomt.lib")
   endif()
-  target_compile_options(weblinked PRIVATE ${CEF_COMPILER_FLAGS} ${CEF_CXX_COMPILER_FLAGS})
+  # C++ only: the target also has a .rc on Windows, and rc.exe would reject
+  # /MP, /GR- and the rest of CEF's compiler flags.
+  target_compile_options(weblinked PRIVATE
+    "$<$<COMPILE_LANGUAGE:CXX>:${CEF_COMPILER_FLAGS};${CEF_CXX_COMPILER_FLAGS}>")
   target_link_options(weblinked PRIVATE ${CEF_LINKER_FLAGS} ${CEF_EXE_LINKER_FLAGS})
 
   COPY_FILES(weblinked "${CEF_BINARY_FILES}" "${CEF_BINARY_DIR}" "${CEF_TARGET_OUT_DIR}")
