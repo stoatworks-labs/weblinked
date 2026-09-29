@@ -27,6 +27,13 @@
   could race the read. It now reads first, and what goes out is always the
   paint requested one tick ago. Held frames on the test VM went from 1.2–2.0 a
   second to none. See §34 of `docs/04-verification.md`.
+- **On Windows, WebLinked crashed about a second after starting from
+  `C:\Windows\System32`.** That is the default working directory for a
+  scheduled task. `weblinked.exe` had no application manifest, so Windows
+  reported the OS as Windows 8 to it. Chromium read that from kernel32.dll's
+  version and hit an internal check it has no case for. The exe now declares
+  Windows 10 and 11 support, as CEF's own samples do. See §35 of
+  `docs/04-verification.md`.
 
 ## v1.0.5 — 2026-09-28
 

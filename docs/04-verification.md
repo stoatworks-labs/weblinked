@@ -2416,6 +2416,84 @@ the capturer path, one paint per frame, and fix 1 does not apply to it. Fix 2
 applies everywhere. A Linux machine with no GPU presumably has the same double
 delivery, but it has not been tested and fix 1 is Windows-only.
 
+## 35. The crash that followed the working directory
+
+On the Windows VM every build began dying about a second after start, with
+`exception 0x80000003` in `libcef.dll` at offset `0x1e95389`. The last log line
+each time was "tray icon installed". It happened only when WebLinked was
+launched on the desktop through a scheduled task, and a build that had run that
+way hours earlier now crashed too. So it looked like the desktop session, the
+tray, or something that had changed on the VM.
+
+**Symbolised, it was none of those.** CEF publishes symbols next to each build
+(`cef_binary_150.0.17+g94c1726+chromium-150.0.7871.187_windows64_release_symbols`).
+`llvm-symbolizer` on a Mac resolves the offset against `libcef.dll.pdb`:
+
+```
+$ llvm-symbolizer --obj=libcef.dll --inlines --relative-address 0x1e95389
+base::ImmediateCrash                              base/immediate_crash.h:180
+logging::NotReachedFailure                        base/notreached.h:22
+GetPreRS5UniversalApiContractVersion              components/embedder_support/user_agent_utils.cc:113
+GetUniversalApiContractVersion                    user_agent_utils.cc:124
+GetWindowsPlatformVersion                         user_agent_utils.cc:158
+embedder_support::GetPlatformVersion              user_agent_utils.cc:606
+```
+
+That function runs only when `OSInfo::Kernel32Version()` is Windows 10 RS4 or
+older. It lists RS4 and earlier Windows 10 releases, and anything older than
+Windows 10 lands on the `NOTREACHED`. Chromium gets that version by passing the
+bare name `"kernel32.dll"` to `GetFileVersionInfo`.
+
+**Windows lies to a process with no manifest.** `weblinked.exe` had no
+application manifest, because CEF's linker flags carry `/MANIFEST:NO`, so
+Windows treated it as a pre-Windows-10 program. A 30-line probe
+(`GetFileVersionInfo` of `kernel32.dll`, no manifest) showed where the lie
+applies. The session made no difference:
+
+```
+cwd C:\Users\lab,        session 0 or 1:  kernel32.dll 10.0.26100.9444
+cwd C:\Windows\System32, session 0 or 1:  kernel32.dll  6.2.26100.9444
+full path, any cwd:                       kernel32.dll  6.2.26100.9444
+same probe with a supportedOS manifest:   10.0.26100.9444 everywhere
+```
+
+6.2 is Windows 8. A scheduled task starts in `C:\Windows\System32` unless it is
+given a directory, and the earlier run that worked had been started from its own
+folder. The tray line was only the last thing logged before Chromium first
+needed the client hints.
+
+The real application agrees. This is the main build (`9abe9ba`, CI run
+36487445818) with `tools/testcard.html` at 1080p50, polling `/api/state` once a
+second:
+
+```
+Session 1, cwd C:\Windows\System32   api up at 1 s, exit 0x80000003 at 3 s
+Session 1, cwd <exe folder>          alive and answering for 12 s
+Session 0, cwd C:\Windows\System32   exit 0x80000003 at 2 s
+```
+
+**Fix.** `src/app/weblinked.exe.manifest` declares Windows 10/11 in
+`supportedOS`, which is what CEF's own samples embed. It goes in as an
+`RT_MANIFEST` resource from a generated `.rc`, because `/MANIFEST:NO` would
+discard a manifest passed to the linker. CEF's compiler flags on the Windows and
+Linux `weblinked` target are now limited to C++ so that rc.exe does not get
+`/MP` and `/GR-`.
+
+**After**, the fixed build (CI run 36532195110), same page and polling:
+
+```
+Session 1, cwd C:\Windows\System32   tray icon installed; alive and answering for 12 s
+Session 0, cwd C:\Windows\System32   alive and answering for 12 s (tray refused, as always there)
+no crash report written by either run
+```
+
+A side effect: the process now sees its real OS version everywhere, including
+`GetVersionEx`, which returned 6.2.9200 before.
+
+**Still not verified.** A Windows 10 machine. The manifest is the one CEF's
+samples ship, so nothing is expected there, but only Windows 11 (build 26200)
+has run it.
+
 ## Not verified
 
 Everything in this section is written against a real SDK header set and compiles.
