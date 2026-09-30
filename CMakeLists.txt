@@ -67,6 +67,7 @@ option(WEBLINKED_WITH_OMT      "Build the OMT output backend"      ON)
 option(WEBLINKED_WITH_DECKLINK "Build the DeckLink output backend" ON)
 option(WEBLINKED_WITH_AJA      "Build the AJA NTV2 output backend" OFF)
 option(WEBLINKED_WITH_SCREEN   "Build the fullscreen GPU output backend" ON)
+option(WEBLINKED_WITH_KMS      "Build the Linux DRM/KMS display output (no X, no GPU)" ON)
 option(WEBLINKED_WITH_SHARED   "Build the Syphon/Spout shared-surface output backend" ON)
 option(WEBLINKED_WITH_STREAM   "Build the RTMP/SRT output backend (needs ffmpeg at run time)" ON)
 option(WEBLINKED_BUILD_TESTS   "Build the unit tests"              ON)
@@ -96,6 +97,24 @@ if(WEBLINKED_WITH_SCREEN AND UNIX AND NOT APPLE)
       "Screen output: disabled — needs libx11-dev, libegl1-mesa-dev and "
       "libgles2-mesa-dev")
     set(WEBLINKED_WITH_SCREEN OFF)
+  endif()
+endif()
+
+# The KMS output is Linux's alone — it is the kernel's display API — and needs
+# only libdrm's headers. Like the screen output it switches itself off rather
+# than failing the build when they are missing.
+if(WEBLINKED_WITH_KMS)
+  if(NOT UNIX OR APPLE)
+    set(WEBLINKED_WITH_KMS OFF)
+  else()
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+      pkg_check_modules(LIBDRM QUIET libdrm)
+    endif()
+    if(NOT LIBDRM_FOUND)
+      message(STATUS "KMS output: disabled — needs libdrm-dev")
+      set(WEBLINKED_WITH_KMS OFF)
+    endif()
   endif()
 endif()
 
@@ -190,6 +209,10 @@ if(WEBLINKED_WITH_SCREEN)
   list(APPEND WEBLINKED_BACKENDS screen)
 endif()
 
+if(WEBLINKED_WITH_KMS)
+  list(APPEND WEBLINKED_BACKENDS kms)
+endif()
+
 if(WEBLINKED_WITH_SHARED)
   list(APPEND WEBLINKED_BACKENDS shared)
 endif()
@@ -216,6 +239,8 @@ set(WEBLINKED_CORE_SOURCES
   src/core/frame_clock.h
   src/core/pixel_convert.cpp
   src/core/pixel_convert.h
+  src/core/rotated_blit.cpp
+  src/core/rotated_blit.h
   src/core/json.cpp
   src/core/json.h
   src/core/dylib.cpp
@@ -305,6 +330,11 @@ if(WEBLINKED_WITH_SCREEN)
   else()
     list(APPEND WEBLINKED_ENGINE_SOURCES src/outputs/screen_window_linux.cpp)
   endif()
+endif()
+if(WEBLINKED_WITH_KMS)
+  list(APPEND WEBLINKED_ENGINE_SOURCES
+    src/outputs/kms_output.cpp
+    src/outputs/kms_output.h)
 endif()
 if(WEBLINKED_WITH_STREAM)
   list(APPEND WEBLINKED_ENGINE_SOURCES src/outputs/stream_output.cpp)
@@ -451,6 +481,7 @@ target_compile_definitions(weblinked_engine PUBLIC
   $<$<BOOL:${WEBLINKED_WITH_DECKLINK}>:WEBLINKED_WITH_DECKLINK=1>
   $<$<BOOL:${WEBLINKED_WITH_AJA}>:WEBLINKED_WITH_AJA=1>
   $<$<BOOL:${WEBLINKED_WITH_SCREEN}>:WEBLINKED_WITH_SCREEN=1>
+  $<$<BOOL:${WEBLINKED_WITH_KMS}>:WEBLINKED_WITH_KMS=1>
   $<$<BOOL:${WEBLINKED_WITH_SHARED}>:WEBLINKED_WITH_SHARED=1>
   $<$<BOOL:${WEBLINKED_WITH_STREAM}>:WEBLINKED_WITH_STREAM=1>
 )
@@ -504,6 +535,11 @@ if(WEBLINKED_WITH_SCREEN)
       ${X11_LIBRARIES} ${WEBLINKED_EGL_LIBRARY} ${WEBLINKED_GLES_LIBRARY})
     target_include_directories(weblinked_engine PRIVATE ${X11_INCLUDE_DIR})
   endif()
+endif()
+
+if(WEBLINKED_WITH_KMS)
+  target_include_directories(weblinked_engine PRIVATE ${LIBDRM_INCLUDE_DIRS})
+  target_link_libraries(weblinked_engine PUBLIC ${LIBDRM_LINK_LIBRARIES})
 endif()
 
 set_target_properties(weblinked_engine PROPERTIES

@@ -16,6 +16,7 @@ add_executable(weblinked_tests
   test_osc_server.cpp
   test_mdns_service.cpp
   test_screen_geometry.cpp
+  test_rotated_blit.cpp
   test_stream_args.cpp
 )
 

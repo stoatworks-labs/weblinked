@@ -151,6 +151,10 @@ macOS builds are signed and notarised and open normally. The Windows builds are 
   SDI and NDI outputs. Paced by the *display*, so a 50 Hz page on a 60 Hz monitor
   repeats frames instead of tearing, and it fits, fills or stretches to a head
   whose shape does not match the raster.
+- **Straight to a Linux display** (`--kms`), with no X server, no compositor and
+  no GPU — the kernel's own display interface, drawn by the CPU. For small boards
+  driving a screen and nothing else. `--rotate` turns the picture for a screen
+  hung on its side, and a page that is not changing costs almost nothing.
 - **Frame-accurate pacing.** The engine's clock drives Chromium one frame at a
   time (`SendExternalBeginFrame`) rather than letting the browser paint on its
   own timer, so 50 ticks a second means 50 paints a second.
@@ -225,6 +229,7 @@ macOS builds are signed and notarised and open normally. The Windows builds are 
 | **Several sources** | **Verified**: three at once on three rasters, each confirmed by a separate receiver, with one retargeted and a fourth added and removed mid-run without disturbing the others. Frame rates are a capacity question — see below. |
 | **Settings + diagnostics pages** | Verified against a running instance: outputs added, renamed and removed, settings saved and read back after a restart, the log and bundle served. |
 | **Screen (fullscreen GPU)** | **Verified on this Mac, across two displays**: picture, all three scaling modes, live add and remove, and pacing measured against the display's own refresh — a 50 Hz source on a 60 Hz head presents at 60.1/s, a ratio of 1.199 against a theoretical 1.200. No projector. **Linux verified too**: a 1920x1080 window under X11/EGL on software GL, checked by screenshotting it against the source page rather than by reading counters. **Windows is still written and never run** — the test machine has no GPU, so the Direct3D path cannot be exercised there. |
+| **KMS (Linux, no X)** | **Verified on a virtual display, not a real one**: all four rotations and letterboxing, read back from the scanout by ffmpeg's `kmsgrab`, running inside the BirdDog PLAY's own Debian 10 rootfs. No real display controller or monitor yet, and no measurement of the copy's cost on a slow CPU. |
 | **Menu bar / tray icon** | **Verified on all three platforms, by using it.** macOS: icon photographed, menu opened, clean shutdown. Windows x86_64: icon confirmed present-then-absent by pixel diff, menu opened, *Copy control address* checked against the clipboard, Quit shut down in order. Linux: registered with KDE Plasma's own StatusNotifierWatcher, menu read over dbusmenu, Quit clean. **Not verified:** the icon's pixels on a healthy KDE desktop, and the Explorer-restart re-add path on Windows. |
 | **OMT** | Compiles against `libomt.h` 1.0.0.16. **Never tested against an OMT receiver.** |
 | **DeckLink** | **Verified against a real card, on two card profiles** (DeckLink Duo 2): output, pre-roll and buffer level, with colour confirmed by SDI loopback captures at 1080p50 and 1080p25 — identical sampled values in a full-duplex and a half-duplex profile. Key + fill is measured to the extent one card allows: the fill carries straight alpha. The **key channel itself**, the internal-keying composite and **audio over SDI** are still unmeasured, and a keyed 1080p50 is beyond what this card will carry. |

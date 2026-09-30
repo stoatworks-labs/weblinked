@@ -48,6 +48,7 @@
 #include "browser/cef_app.h"
 #include "control/control_api.h"
 #include "core/json.h"
+#include "core/rotated_blit.h"
 #include "core/settings_store.h"
 #include "core/video_format.h"
 #include "diag/diag.h"
@@ -186,6 +187,19 @@ Outputs (repeatable; without any, only the preview runs)
                            page on a 60 Hz monitor repeats frames rather than
                            tearing. Not a second browser — the frames are the
                            same ones the SDI and NDI outputs get.
+  --kms[=card]             Fullscreen on a display driven directly through Linux
+                           DRM/KMS: no X server, no compositor, no GPU. For
+                           boards with a display controller and little else.
+                           card is /dev/dri/cardN, by N or by path. Default: 0.
+                           Another program driving the display must be stopped
+                           first — only one may. --rotate, --scaling and
+                           --kms-mode apply to the next one.
+  --rotate <0|90|180|270>  Applies to the next --kms: turn the picture this far
+                           clockwise. A screen hung with its top edge to the
+                           right needs 270; to the left, 90. Render the page at
+                           the turned shape (e.g. 1080x1920p30) to fill it.
+  --kms-mode <WxH[@Hz]>    Applies to the next --kms: the display mode to set.
+                           Default: the display's preferred mode
   --syphon[=name]          Publish to other applications on this machine as a
                            Syphon source (macOS) or Spout sender (Windows) —
                            Resolume, VDMX, TouchDesigner and the rest.
@@ -201,7 +215,7 @@ Outputs (repeatable; without any, only the preview runs)
   --bitrate <rate>         Applies to the next --stream, e.g. 6000k. Default:
                            6000k
   --scaling <fit|fill|stretch>
-                           Applies to the next --screen. fit (default) shows the
+                           Applies to the next --screen or --kms. fit (default) shows the
                            whole frame with bars; fill crops to the display;
                            stretch ignores aspect ratio
   --alpha                  Applies to the next --ndi/--omt: send BGRA with alpha
@@ -284,6 +298,8 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
   std::string nextBitrate;
   int streamIndex = 0;
   std::string nextScaling;
+  std::string nextRotate;
+  std::string nextKmsMode;
   int keyLevel = 255;
 
   for (int i = 1; i < argc; ++i) {
@@ -379,6 +395,55 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
         return false;
       }
       nextScaling = text;
+      continue;
+    }
+    if (argument.rfind("--rotate", 0) == 0) {
+      std::string text;
+      if (!needsValue(text)) return false;
+      BlitRotation rotation;
+      if (!blitRotationFromString(text, rotation)) {
+        std::fprintf(stderr, "--rotate must be 0, 90, 180 or 270, not '%s'\n",
+                     text.c_str());
+        return false;
+      }
+      nextRotate = blitRotationToString(rotation);
+      continue;
+    }
+    // Before --kms, which is a prefix of it.
+    if (argument.rfind("--kms-mode", 0) == 0) {
+      std::string text;
+      if (!needsValue(text)) return false;
+      int w = 0, h = 0;
+      if (std::sscanf(text.c_str(), "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0) {
+        std::fprintf(stderr, "--kms-mode must look like 1920x1080 or 1920x1080@60, not '%s'\n",
+                     text.c_str());
+        return false;
+      }
+      nextKmsMode = text;
+      continue;
+    }
+    if (argument == "--kms" || argument.rfind("--kms=", 0) == 0) {
+      OutputSpec spec;
+      spec.kind = "kms";
+      const std::string card = inlineValue(argument);
+      spec.name = "kms" + (card.empty() ? std::string("0") : card);
+      if (!card.empty()) {
+        spec.options.set("card", json::Value(card));
+      }
+      if (!nextRotate.empty()) {
+        spec.options.set("rotate", json::Value(nextRotate));
+        nextRotate.clear();
+      }
+      if (!nextScaling.empty()) {
+        spec.options.set("scaling", json::Value(nextScaling));
+        nextScaling.clear();
+      }
+      if (!nextKmsMode.empty()) {
+        spec.options.set("mode", json::Value(nextKmsMode));
+        nextKmsMode.clear();
+      }
+      options.outputs.push_back(spec);
+      options.given.outputs = true;
       continue;
     }
     if (argument.rfind("--screen", 0) == 0) {

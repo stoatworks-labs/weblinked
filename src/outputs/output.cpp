@@ -54,6 +54,9 @@ std::vector<std::string> compiledOutputKinds() {
 #if defined(WEBLINKED_WITH_SCREEN)
   kinds.push_back("screen");
 #endif
+#if defined(WEBLINKED_WITH_KMS)
+  kinds.push_back("kms");
+#endif
 #if defined(WEBLINKED_WITH_SHARED)
   kinds.push_back("shared");
 #endif
@@ -92,6 +95,11 @@ std::unique_ptr<IOutput> createOutput(const OutputSpec& spec, std::string& error
     return createScreenOutput(spec);
   }
 #endif
+#if defined(WEBLINKED_WITH_KMS)
+  if (spec.kind == "kms") {
+    return createKmsOutput(spec);
+  }
+#endif
 #if defined(WEBLINKED_WITH_SHARED)
   if (spec.kind == "shared") {
     return createSharedOutput(spec);
@@ -108,7 +116,8 @@ std::unique_ptr<IOutput> createOutput(const OutputSpec& spec, std::string& error
   const auto compiled = compiledOutputKinds();
   const bool known = spec.kind == "ndi" || spec.kind == "omt" ||
                      spec.kind == "decklink" || spec.kind == "aja" ||
-                     spec.kind == "screen" || spec.kind == "shared" ||
+                     spec.kind == "screen" || spec.kind == "kms" ||
+                     spec.kind == "shared" ||
                      spec.kind == "stream" || spec.kind == "preview";
   if (known) {
     error = "output kind '" + spec.kind + "' was not compiled into this build";

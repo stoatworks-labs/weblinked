@@ -2780,6 +2780,67 @@ the next occurrence does. Linux has not been re-run: by section 29 its loop
 never returns, so it should now withdraw its outputs and exit at the deadline
 rather than needing SIGKILL, but that is a prediction, not a measurement.
 
+## 38. The KMS output: a display with no X, no compositor and no GPU
+
+2026-09-30, a native aarch64 Ubuntu 24.04 VM under `tart` on an M-series Mac,
+virtio-gpu, one connector `Virtual-1` at 1024x768. WebLinked built in a Debian
+trixie chroot with `-DWEBLINKED_WITH_KMS=ON -DWEBLINKED_WITH_SCREEN=OFF`: 130
+tests, 0 failures. It was then **run inside a chroot of the BirdDog PLAY's
+factory rootfs** (Debian 10, glibc 2.28, from `PLAY_1.0.30.img`), which is the
+userland this output was written for, with `/dev` bound in. The binary carried
+its own glibc and libdrm (the stock ones are too old for it) — how that runtime
+is assembled belongs to the PLAY module, not to this repo.
+
+**Why a new output.** The PLAY has a KMS driver and a Mali blob built for
+Wayland: no X server, so `screen` cannot run there. Every KMS driver offers
+dumb buffers, and a CPU-drawn picture is what a board with no usable GPU has
+anyway.
+
+**Method.** A test page of four coloured quadrants — red top-left, green
+top-right, blue bottom-left, white bottom-right, which unlike
+`tools/updown.html` distinguishes a 90° turn from a 270° one — rendered with
+`--rotate <n> --kms`, at 1280x720p25 for 0 and 180 and at 540x960p25 (portrait)
+for 90 and 270. The scanout was then read back by **ffmpeg's `kmsgrab`**, which
+shares no code with the output, and sampled at the centre of each quadrant:
+
+```
+ffmpeg -f kmsgrab -device /dev/dri/card0 -i - -vf 'hwdownload,format=bgr0' -frames:v 1 grab.png
+```
+
+| `--rotate` | top-left | top-right | bottom-left | bottom-right | predicted from a clockwise turn |
+|---|---|---|---|---|---|
+| 0 | red | green | blue | white | ✓ |
+| 90 | blue | red | white | green | ✓ |
+| 180 | white | blue | green | red | ✓ |
+| 270 | green | white | red | blue | ✓ |
+
+The predictions were written down before the runs. The top edge was black in
+all four — the letterbox bars of a 16:9 picture on a 4:3 head — and the left
+edge was picture, so fit mode places the picture as it should.
+
+**Counters, from `/api/state`** (rotate 0, about fifteen seconds in):
+`presented 2, repeats_skipped 372, dropped 0, copy_us 281`. The page is static,
+so after the first paint every tick is a repeat and is not copied again — which
+is the point of `repeats_skipped` on a CPU-drawn display.
+
+**A bug this found in the engine, not in the output.** The first run put a
+black screen up and never changed it: paints are numbered from 0, and so was the
+black stand-in the engine sends before the first paint, so the output took the
+real first paint for a repeat of the black. The black frame is now sequence -1
+("no paint yet"), set at both places it is created, and the composited variants
+inherit it. Nothing else read the black frame's sequence; the preview's
+`X-Frame-Sequence` now says -1 until the page first paints, which is true.
+
+**The unit tests** (`tests/test_rotated_blit.cpp`) check every pixel of all four
+turns on odd, unequal rasters against a reference written the obvious way —
+rotate, then scale — that shares no code with the blit's separable tables; plus
+fit bars, fill cropping, pixel-centre sampling and row padding on both sides.
+
+**Not verified:** any real display controller (the PLAY's RK3328 VOP is next),
+a mode change with `--kms-mode`, page-flip timing against a real refresh,
+hot-unplug, and the copy's cost on a slow CPU — `copy_us` of ~250 on this VM
+says nothing about four Cortex-A53s.
+
 ## Not verified
 
 Everything in this section is written against a real SDK header set and compiles.

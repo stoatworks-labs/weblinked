@@ -65,7 +65,7 @@ src/core/     formats, frames, pools, clock, FIFO, JSON, dlopen,
 src/diag/     logging, crash reports, bundles                    ─ NO CEF
 src/browser/  CefApp, CefClient (paint + audio), BrowserSource
 src/engine/   the clock loop and everything it owns
-src/outputs/  IOutput + preview | ndi | omt | decklink | aja | screen | shared | stream
+src/outputs/  IOutput + preview | ndi | omt | decklink | aja | screen | kms | shared | stream
 src/control/  HTTP server, OSC receiver, embedded control page
 src/app/      entry points, Info.plists, entitlements, the tray icon
 third_party/  cef, ndi, omt headers, and the vendored Syphon server subset

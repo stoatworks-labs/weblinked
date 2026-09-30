@@ -161,6 +161,16 @@ Ubuntu 24.04 needed only the packages listed below and took one `cmake` and one
   RandR heads, so a normal multi-monitor Linux desktop presents as one screen —
   which makes `--screen=1` there not yet useful. The Linux backend has now been
   run and renders correctly on software GL; the Windows one still has not.
+- **The KMS output needs libdrm's headers**, and nothing else — no X, no EGL. It
+  is Linux-only and disables itself at configure time without them:
+
+  ```bash
+  sudo apt-get install -y libdrm-dev
+  ```
+
+  For a board with no X server, build with `-DWEBLINKED_WITH_SCREEN=OFF` as
+  well, and the binary no longer links X11, EGL or GLES at all (libcef.so still
+  links X11 itself; run it with `--ozone-platform=headless`).
 
 ## Tests
 

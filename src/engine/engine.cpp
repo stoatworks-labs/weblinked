@@ -39,6 +39,11 @@ bool Engine::start(const Config& config, std::string& error) {
   blackFrame_ = blackPool_->acquire();
   fillBlackBgra(blackFrame_->data(), blackFrame_->rowBytes(), config.format.width,
                 config.format.height);
+  // Paints are numbered from 0, so the black stand-in sent before the first
+  // one must not also be 0: an output that skips frames it has already drawn
+  // (kms) would take the first real paint for a repeat of the black and never
+  // show it. -1 is "no paint yet", and the composited variants inherit it.
+  blackFrame_->setSequence(-1);
 
   browser_ = std::make_unique<BrowserSource>(config.format, &slot_, &audio_);
   browser_->setPacing(config.pacing);
@@ -864,6 +869,7 @@ bool Engine::setFormat(const VideoFormat& format, std::string& error) {
   blackFrame_ = blackPool_->acquire();
   fillBlackBgra(blackFrame_->data(), blackFrame_->rowBytes(), format.width,
                 format.height);
+  blackFrame_->setSequence(-1);  // "no paint yet" — see the constructor
 
   if (browser_ != nullptr) {
     browser_->setFormat(format);

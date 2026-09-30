@@ -2,7 +2,24 @@
 
 ## Unreleased
 
+### Added
+
+- **`--kms`: fullscreen on a Linux display with no X server and no GPU.** The
+  picture goes straight to the display through the kernel's DRM/KMS interface,
+  drawn by the CPU, for boards that have a display controller and little else
+  (a BirdDog PLAY, a Raspberry Pi without a desktop). `--rotate 90|180|270`
+  turns the picture on its way out, so a page rendered at 1080x1920 fills a
+  1920x1080 panel hung on its side; `--scaling` fits, fills or stretches as it
+  does for `--screen`, and `--kms-mode` picks the display mode. A static page
+  costs almost nothing: a frame the display already has is not copied again.
+  See docs/04-verification.md section 38.
+
 ### Fixed
+
+- **The black frame sent before a page first paints no longer shares a sequence
+  number with that first paint.** Both were 0, so an output that skips frames it
+  has already drawn could take the page for a repeat of the black and never show
+  it. The black stand-in is now -1, "no paint yet".
 
 - **SIGTERM could leave WebLinked running, still on the network.** A headless
   run on macOS logged the signal and then stayed up for over an hour, its NDI
