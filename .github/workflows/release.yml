@@ -330,13 +330,18 @@ jobs:
             under llvmpipe, and its Windows backend is verified on a software renderer but not
             yet on a real GPU.
 
-            Builds are unsigned. On macOS, after installing:
+            **macOS signing.** The macOS `.dmg` and `.pkg` are signed with a Developer ID and
+            notarised, so they open normally with no quarantine step. CI publishes them unsigned
+            first, and they are replaced with the signed, notarised copies shortly afterwards,
+            usually within half an hour of the release appearing. A macOS download taken in that
+            window is the unsigned build: download it again once the window has passed. If you
+            do keep an unsigned copy, clear its quarantine after installing:
 
             ```
             xattr -dr com.apple.quarantine "/Applications/WebLinked.app"
             ```
 
-            That step matters more here than usual — the app nests five CEF helper .apps, and
-            approving the outer bundle does not unquarantine them. A quarantined helper is
-            killed silently and looks like the renderer simply failing to start.
+            Approving the outer bundle is not enough for an unsigned copy. The app nests five
+            CEF helper .apps, a quarantined helper is killed silently, and that looks like the
+            renderer simply failing to start.
           generate_release_notes: true
