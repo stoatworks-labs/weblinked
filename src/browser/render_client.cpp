@@ -117,8 +117,20 @@ void RenderClient::OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
            frame->rowBytes(), width, height, /*flipVertically=*/false);
 
   frame->setSequence(sequence_.fetch_add(1, std::memory_order_relaxed));
-  slot_->publish(std::move(frame));
+  {
+    std::lock_guard<std::mutex> sinks(sinkMutex_);
+    if (slot_ == nullptr) {
+      return;
+    }
+    slot_->publish(std::move(frame));
+  }
   paints_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RenderClient::detach() {
+  std::lock_guard<std::mutex> sinks(sinkMutex_);
+  slot_ = nullptr;
+  audio_ = nullptr;
 }
 
 bool RenderClient::GetAudioParameters(CefRefPtr<CefBrowser> browser,
@@ -143,7 +155,13 @@ void RenderClient::OnAudioStreamStarted(CefRefPtr<CefBrowser> browser,
   // either side, shallow enough that recovering from one does not mean playing
   // out seconds of stale audio.
   const int capacity = std::max(params.sample_rate / 2, 4800);
-  audio_->configure(channels, params.sample_rate, capacity);
+  {
+    std::lock_guard<std::mutex> sinks(sinkMutex_);
+    if (audio_ == nullptr) {
+      return;
+    }
+    audio_->configure(channels, params.sample_rate, capacity);
+  }
 
   std::lock_guard<std::mutex> lock(mutex_);
   diag::info("browser: audio stream started, %d channels at %d Hz", channels,
@@ -158,7 +176,13 @@ void RenderClient::OnAudioStreamPacket(CefRefPtr<CefBrowser> browser,
   if (data == nullptr || frames <= 0) {
     return;
   }
-  audio_->write(data, frames);
+  {
+    std::lock_guard<std::mutex> sinks(sinkMutex_);
+    if (audio_ == nullptr) {
+      return;
+    }
+    audio_->write(data, frames);
+  }
   audioPackets_.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -167,7 +191,13 @@ void RenderClient::OnAudioStreamStopped(CefRefPtr<CefBrowser> browser) {
   // Leave the FIFO configured: the stream stops whenever the page has no
   // audible source, and tearing the buffer down would mean reconfiguring it
   // every time a video element pauses.
-  audio_->reset();
+  {
+    std::lock_guard<std::mutex> sinks(sinkMutex_);
+    if (audio_ == nullptr) {
+      return;
+    }
+    audio_->reset();
+  }
   diag::info("browser: audio stream stopped");
 }
 

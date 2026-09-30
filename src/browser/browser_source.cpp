@@ -116,6 +116,12 @@ void BrowserSource::setPacing(Pacing pacing) {
 }
 
 void BrowserSource::close() {
+  if (client_ != nullptr) {
+    // Before the close is posted, not in OnBeforeClose: the Engine owning the
+    // sinks is destroyed as soon as this returns, and the browser's last
+    // callbacks arrive after that.
+    client_->detach();
+  }
   auto browser = client_ != nullptr ? client_->browser() : nullptr;
   if (browser == nullptr) {
     return;

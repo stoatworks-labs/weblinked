@@ -50,6 +50,16 @@ class RenderClient : public CefClient,
 
   RenderClient(VideoFormat format, LatestFrameSlot* slot, AudioFifo* audio);
 
+  /// Stops every callback from touching the frame slot and the audio FIFO.
+  ///
+  /// Both belong to the Engine, and this client does not: CEF holds it until
+  /// the browser has finished closing, which is after the Engine that asked for
+  /// the close has been destroyed. Closing a browser that is playing audio
+  /// fires OnAudioStreamStopped on the way out, so without this, removing a tab
+  /// with sound reset a FIFO that no longer existed and took every other tab
+  /// off air with it. Called by BrowserSource::close before the close is posted.
+  void detach();
+
   /// Called on the UI thread once the browser exists.
   void setBrowserReadyCallback(std::function<void()> callback);
 
@@ -136,6 +146,9 @@ class RenderClient : public CefClient,
   CefRefPtr<CefBrowser> browser_;
   std::function<void()> readyCallback_;
 
+  /// Guards the two sinks against detach(). Separate from `mutex_` so a paint
+  /// and an audio packet never wait on diagnostics bookkeeping.
+  std::mutex sinkMutex_;
   LatestFrameSlot* slot_;
   AudioFifo* audio_;
   FramePoolPtr pool_;
