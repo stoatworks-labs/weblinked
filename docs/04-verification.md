@@ -2590,6 +2590,196 @@ path is the one the settings page already uses, but a card handed from one tab
 to another in a single load depends on the order tabs are applied, and has not
 been tried with a card.
 
+## 37. SIGTERM that logged the signal and never exited
+
+macOS 26.4.1, M4 Max, Release builds. The report: a headless WebLinked on port
+7694, launched with `nohup` from a background shell with two tabs from
+`--config` (one with an NDI output), was sent `pkill -TERM -f 'WebLinked
+--config'` and was still running more than an hour later, with its renderer
+helper, until SIGKILL. During the run tabs had been added and removed —
+including `tools/tone.html`, playing audio — and show files loaded several times,
+and the control page was open in a browser throughout.
+
+**What the failing run's own log says.** Its last line is the signal, and there
+is nothing after it:
+
+```
+2026-09-30T16:17:57Z INFO  source 'lower' started: about:blank at 1280x720p25
+2026-09-30T16:18:18Z INFO  shutdown requested by signal
+```
+
+So the handler ran and the watchdog posted `beginShutdown()` — the stop was
+somewhere after that, and no step after it logged anything, so the log could
+not say where. A second SIGTERM 75 minutes later also did nothing: the handler
+only sets a flag that was already set. This is the same shape section 29
+recorded on Linux, where instrumenting the chain proved `CefQuitMessageLoop()`
+is called on the UI thread and `CefRunMessageLoop()` never returns.
+
+### Reproduction: not on macOS
+
+The build that hung was the show-files branch with the audio-tab fix of
+section 36 already in it, i.e. the code now on `main`. Every condition from the
+report, and several more, exited cleanly within two seconds of SIGTERM — 34 runs
+of the unfixed code:
+
+| Condition | Runs | Result |
+|---|---|---|
+| Plain, tray on (the default), two tabs, NDI | 2 | exited in 1 s |
+| Three add/remove cycles of `tone.html` with audio | 1 | exited in 1 s |
+| The same, then show loads, with an audio tab still playing at TERM | 1 | exited in 1 s |
+| The failing session's add/remove and show-load sequence, on a two-tab config | 5 | exited in 1 s |
+| The failing session's exact config and sequence, `ndi_probe` receiving just before TERM | 2 | exited in 1 s |
+| Control page open in a real browser (6 keep-alive connections), incl. the full sequence and 60 s idle | 2 | exited in 2 s |
+| An instance aborted (SIGABRT) on the same port and profile first | 1 | exited in 2 s |
+| Stress: 20 launches, TERM at random points incl. mid show-load, API polled throughout | 20 | all exited in 1–2 s |
+
+So on macOS it is intermittent at worst, and what triggers it is not
+established. What *is* established, from the failing log and section 29, is
+the failure mode: after `CefQuitMessageLoop()`, nothing guaranteed that the rest
+of the shutdown ran — and the part that mattered, withdrawing the NDI senders
+and the mDNS record, only ran after the loop returned.
+
+### The fix: withdraw first, then bound the rest
+
+- **`beginShutdown()` withdraws everything the network can see before it asks
+  the loop to quit**: the menu bar item, then `ControlApi::stop()` (mDNS record,
+  OSC, HTTP), then `SourceManager::halt()` — a new `Engine::halt()` on every
+  source, which parks the clock and closes every output, so NDI senders are
+  destroyed and cards released. The offscreen browsers are left alone, per the
+  ordering rule in `AGENTS.md`; `engine.stop()` still closes them after the loop
+  returns.
+- **A deadline.** The watchdog that posts `beginShutdown()` then waits 10 s. If
+  the process is still here it logs the step it stuck in and `_exit`s — status 0
+  if the outputs were already closed, 1 if not.
+- **Every step logs**, so the next report names the step rather than stopping at
+  the signal.
+- **A second SIGTERM or SIGINT exits at once** (`_exit(1)`), which is what
+  whoever sent it is asking for.
+- **The HTTP server closes its keep-alive connections on stop.** Stopping the
+  listener used to leave them serving: the control page's poll went on reaching
+  engines that were being torn down. Each one is now `shutdown()`, and requests
+  already inside a handler get up to 2 s to finish.
+- **The listener is `shutdown()` before `close()`.** On Linux `close()` does not
+  wake a thread blocked in `accept()`, so the join in `HttpServer::stop()` could
+  wait for ever; macOS and Windows happen to wake on the close.
+- **`Engine::halt()` notifies the clock thread under `pauseMutex_`.** Unlocked, the
+  wake-up could fall between the clock thread testing `running_` and going to
+  sleep, and be lost — a join that waits for ever.
+
+### Verified: a real SIGTERM, normal path
+
+The failing session's config (`main` on `testcard.html` with NDI `WLShowA`,
+`lower` on `about:blank`), its three `tone.html` add/remove cycles and two
+rounds of show loads, then:
+
+```
+== before SIGTERM
+found source: MAC (WLShowA)
+received 25 video frames and 0 audio frames (0 samples) in 0.94 s — 26.63 fps measured
+PASS
+== kill -TERM 2196
+exited after 0.24 s
+== helpers left:
+       0
+== log
+INFO  shutdown requested by signal
+INFO  shutdown: removing the menu bar item
+INFO  shutdown: stopping the control API and withdrawing its mDNS record
+INFO  shutdown: closing every output
+INFO  shutdown: quitting the message loop
+INFO  shutdown: message loop returned; closing browsers
+INFO  shutdown: shutting Chromium down
+INFO  WebLinked exiting cleanly
+== after
+no NDI source matching 'WLShowA' found within 8 s
+== port
+7694 refused (released)
+```
+
+The same stress loop as above, re-run against the fixed build for nine
+launches, exited within two seconds every time and never hit the deadline.
+
+### Verified: the failing path, forced
+
+To exercise the case that hung, the loop's quit is stubbed out: lldb attached
+to the running process, SIGTERM passed straight through, and
+`cef_quit_message_loop` made to return without doing anything. That is section
+29's Linux failure, `CefRunMessageLoop()` never returning, made to happen on
+demand:
+
+```bash
+lldb -p $PID \
+  -o "process handle SIGTERM -s false -p true -n false" \
+  -o 'breakpoint set -n cef_quit_message_loop -C "thread return" -G true' \
+  -o "process continue"
+kill -TERM $PID
+```
+
+**Unfixed `origin/main` (5797dd2) — the failing run, reproduced:**
+
+```
+== 30 s after TERM: SNX
+found source: MAC (WLShowA)
+PASS
+control API still answering on 7694
+INFO  menu bar item installed
+INFO  shutdown requested by signal
+== after a second TERM: SNX
+```
+
+The log ends at the signal, exactly as in the report, the NDI source is still
+on the network and still passes the bars check, and a second SIGTERM does
+nothing.
+
+**This change:**
+
+```
+== before
+found source: MAC (WLShowA)
+PASS
+== 3 s after TERM: alive? SNX
+== NDI while the loop is stuck:
+no NDI source matching 'WLShowA' found within 5 s
+control API down
+exited after 10.2 s
+(lldb)  thread return
+Process 3114 exited with status = 0 (0x00000000)
+INFO  shutdown requested by signal
+INFO  shutdown: removing the menu bar item
+INFO  shutdown: stopping the control API and withdrawing its mDNS record
+INFO  shutdown: closing every output
+INFO  shutdown: quitting the message loop
+WARN  shutdown: still 'quitting the message loop' after 10 s — outputs and the control API are already down, so exiting without the rest
+WebLinked: shutdown stuck at 'quitting the message loop' — exiting
+       0
+```
+
+With the loop stuck, the NDI source and the control API are gone within three
+seconds, the process leaves at the deadline naming the step, and no helper
+survives it (the trailing `0` is `pgrep -f profiles/7694 | wc -l`).
+
+**A second SIGTERM** under the same stub, two seconds after the first:
+
+```
+second TERM at 2.0 s; exited after 2.10 s
+Process 4332 exited with status = 1 (0x00000001)
+```
+
+**A keep-alive connection opened before the signal** is closed rather than
+served:
+
+```
+before TERM, keep-alive request: 200 keep-alive
+after TERM, same connection: RemoteDisconnected Remote end closed connection without response
+```
+
+**Not verified.** What made the loop, or a step after it, stick on macOS on
+2026-09-30 — it has not recurred in 34 runs of the unfixed build. The fix makes that
+question matter less but does not answer it, and the step logging is there so
+the next occurrence does. Linux has not been re-run: by section 29 its loop
+never returns, so it should now withdraw its outputs and exit at the deadline
+rather than needing SIGKILL, but that is a prediction, not a measurement.
+
 ## Not verified
 
 Everything in this section is written against a real SDK header set and compiles.

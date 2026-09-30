@@ -66,7 +66,13 @@ need a local build on a machine that has them.
 See `docs/04-verification.md` §29. The old "only macOS has ever been run" line is
 retired. What that run cost: the Linux tarball had been shipping with **no
 `weblinked` binary in it at all** since v1.0.1, and SIGTERM does not stop the
-process on Linux.
+process on Linux. **Update 2026-09-30:** the same thing happened once on macOS (the signal
+logged, then nothing for 75 minutes, NDI source still up) and did not recur in 34
+runs of the unfixed build. Rather than chase an intermittent trigger, shutdown
+now withdraws NDI, mDNS and the control API *before* quitting the loop, and
+exits at a 10 s deadline naming the stuck step — §37. The failing path was
+forced with lldb (`cef_quit_message_loop` → `thread return`), which is the
+recipe for testing any change to shutdown. Linux not yet re-run against it.
 
 **Multi-source shipped 2026-07-31** (unreleased, on `main` after v0.3.0):
 `SourceManager` runs N independent Engines from `--config <file>`; HTTP takes

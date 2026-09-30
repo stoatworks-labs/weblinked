@@ -88,25 +88,32 @@ bool Engine::start(const Config& config, std::string& error) {
   return true;
 }
 
-void Engine::stop() {
+void Engine::halt() {
   if (running_.exchange(false)) {
     // The clock thread may be parked waiting on a format change; wake it or the
-    // join below waits forever.
-    pauseCv_.notify_all();
+    // join below waits forever. Notified under the lock: unlocked, the wake-up
+    // could land between the clock thread testing running_ and going to sleep,
+    // and be lost.
+    {
+      std::lock_guard<std::mutex> lock(pauseMutex_);
+      pauseCv_.notify_all();
+    }
     if (clockThread_.joinable()) {
       clockThread_.join();
     }
   }
 
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& entry : outputs_) {
-      if (entry.output != nullptr) {
-        entry.output->stop();
-      }
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (auto& entry : outputs_) {
+    if (entry.output != nullptr) {
+      entry.output->stop();
     }
-    outputs_.clear();
   }
+  outputs_.clear();
+}
+
+void Engine::stop() {
+  halt();
 
   if (browser_ != nullptr) {
     browser_->close();

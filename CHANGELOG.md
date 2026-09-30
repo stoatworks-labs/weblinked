@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **SIGTERM could leave WebLinked running, still on the network.** A headless
+  run on macOS logged the signal and then stayed up for over an hour, its NDI
+  source still advertised and its control port still bound, until it was
+  killed; Linux did this every time. The shutdown now takes down the NDI
+  outputs, the mDNS advertisement and the control API first, before anything
+  that can stall, and if the rest has not finished ten seconds later the
+  process leaves anyway and the log says which step it was stuck on. Every
+  shutdown step is logged, and a second SIGTERM or Ctrl-C exits at once. The
+  control API also closes the page's open connections when it stops, instead of
+  serving them while the process shuts down. See docs/04-verification.md
+  section 37.
+
 ## v1.1.0 — 2026-09-30
 
 ### Added

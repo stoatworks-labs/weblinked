@@ -1,6 +1,7 @@
 #include "control/http_server.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <limits>
 #include <sstream>
@@ -14,6 +15,7 @@
 using socket_t = SOCKET;
 #define WL_INVALID_SOCKET INVALID_SOCKET
 #define WL_CLOSE_SOCKET closesocket
+#define WL_SHUT_BOTH SD_BOTH
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -24,6 +26,7 @@ using socket_t = SOCKET;
 using socket_t = int;
 #define WL_INVALID_SOCKET (-1)
 #define WL_CLOSE_SOCKET ::close
+#define WL_SHUT_BOTH SHUT_RDWR
 #endif
 
 #include "core/socket_inherit.h"
@@ -294,12 +297,38 @@ void HttpServer::stop() {
     return;
   }
   if (listenSocket_ >= 0) {
-    // Closing the listener is what breaks the blocking accept().
+    // shutdown() before close(), because close() alone does not wake a thread
+    // blocked in accept() on Linux: the join below then waited for a connection
+    // that never came, and SIGTERM never finished. macOS and Windows happen to
+    // wake on the close; shutdown() is what every platform agrees on.
+    ::shutdown(static_cast<socket_t>(listenSocket_), WL_SHUT_BOTH);
     WL_CLOSE_SOCKET(static_cast<socket_t>(listenSocket_));
     listenSocket_ = -1;
   }
   if (acceptThread_.joinable()) {
     acceptThread_.join();
+  }
+
+  // The listener is shut, but a keep-alive connection is not: the control page
+  // polls on one, and its thread would go on handing requests to engines that
+  // are being torn down. Shut each one — that wakes the recv() it is parked in
+  // — then give a request already inside the handler a moment to finish.
+  // Bounded, because a handler waiting on the thread calling this (a screen or
+  // shared output marshalling to the main thread) would otherwise never finish.
+  {
+    std::lock_guard<std::mutex> lock(connectionsMutex_);
+    for (const int connection : connections_) {
+      ::shutdown(static_cast<socket_t>(connection), WL_SHUT_BOTH);
+    }
+  }
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (activeConnections_.load() > 0 &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (activeConnections_.load() > 0) {
+    diag::warn("control: %d HTTP connection(s) still busy after stop",
+               activeConnections_.load());
   }
 }
 
@@ -328,6 +357,10 @@ void HttpServer::acceptLoop() {
     // Detached, with a counter so shutdown can at least report stragglers. A
     // join-all would mean waiting on a client that has wandered off.
     ++activeConnections_;
+    {
+      std::lock_guard<std::mutex> lock(connectionsMutex_);
+      connections_.insert(static_cast<int>(client));
+    }
     std::thread([this, client]() {
       serveConnection(static_cast<int>(client));
       --activeConnections_;
@@ -482,6 +515,12 @@ void HttpServer::serveConnection(int rawSocket) {
     }
   }
 
+  // Out of the set before the close, so stop() can never shut a descriptor
+  // number that has already been handed to something else.
+  {
+    std::lock_guard<std::mutex> lock(connectionsMutex_);
+    connections_.erase(rawSocket);
+  }
   WL_CLOSE_SOCKET(socket);
 }
 

@@ -71,6 +71,17 @@ void SourceManager::stop() {
   }
 }
 
+void SourceManager::halt() {
+  // Shared, like withSource(): nothing is removed, and holding it stops a
+  // concurrent remove() destroying an engine while it is being halted.
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  for (auto& entry : sources_) {
+    if (entry.engine != nullptr) {
+      entry.engine->halt();
+    }
+  }
+}
+
 bool SourceManager::add(const SourceConfig& config, std::string& error) {
   SourceConfig prepared = config;
   prepared.ensurePreview();

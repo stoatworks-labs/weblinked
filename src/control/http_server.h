@@ -3,6 +3,8 @@
 #include <atomic>
 #include <functional>
 #include <map>
+#include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -96,6 +98,11 @@ class HttpServer {
   Handler handler_;
   std::thread acceptThread_;
   std::atomic<int> activeConnections_{0};
+
+  /// Every connection still open, so stop() can end the keep-alive ones rather
+  /// than leave them serving requests into a process that is shutting down.
+  std::mutex connectionsMutex_;
+  std::set<int> connections_;
 };
 
 }  // namespace weblinked

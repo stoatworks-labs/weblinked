@@ -179,6 +179,17 @@ released before `CefShutdown()` — a global holding the window's client hung it
 silently. All three present identically: a process that logs a clean exit and
 never exits.
 
+**Never trust the loop to return once asked.** On Linux `CefRunMessageLoop()`
+never returns after `CefQuitMessageLoop()`, and on macOS a run on 2026-09-30
+logged the signal and then nothing for over an hour. So `beginShutdown()`
+withdraws everything the network can see *before* asking the loop to quit — the
+control API and its mDNS record, then every output via `SourceManager::halt()`
+(clocks parked, NDI senders destroyed, cards released, browsers untouched) — and
+the watchdog `_exit`s 10 s later if the rest has not finished, naming the step.
+Each step logs. A second SIGTERM exits at once. Don't move output teardown back
+behind the loop, and don't let `halt()` close a browser. See
+`docs/04-verification.md` section 37.
+
 **Never let Chromium reach the OS keyring.** `--password-store=basic` and
 `--use-mock-keychain` are in `cef_app.cpp` because without them macOS raises a
 Keychain dialog on every launch. A modal dialog on a machine that is live to air

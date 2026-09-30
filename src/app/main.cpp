@@ -743,23 +743,68 @@ bool resolveSources(Options& options, std::string& error) {
 
 std::atomic<bool> g_quitRequested{false};
 
-/// UI thread. Begins an orderly shutdown.
-///
-/// Quitting the loop directly is correct now that this process never owns a
-/// browser *window*: CefRunMessageLoop() returns as soon as it is asked to.
-/// Closing the offscreen browsers here would be wrong — their destruction then
-/// never gets pumped and CefShutdown() waits for them forever. They are closed
-/// after the loop returns, in engine.stop(), which is where it was already being
-/// done and which works.
-void beginShutdown() { CefQuitMessageLoop(); }
+/// What the first half of a shutdown acts on. Set by main() on the UI thread
+/// before the message loop runs, and only read there, by beginShutdown().
+weblinked::ControlApi* g_control = nullptr;
+weblinked::SourceManager* g_sources = nullptr;
 
-void requestQuit(int) {
-  // Only a flag: the watchdog below does the real work, because CefPostTask is
-  // not something to call from a signal handler.
-  g_quitRequested.store(true);
+/// The shutdown step in progress, for the deadline to name if one never ends.
+std::atomic<const char*> g_shutdownStep{"waiting for the UI thread"};
+
+/// How long an orderly shutdown may take before the process leaves without the
+/// rest of it. A clean one takes about a second, CefShutdown included.
+constexpr int kShutdownDeadlineSeconds = 10;
+
+/// Set once every output is closed and the control API is down: from then on,
+/// leaving early costs nothing a receiver or a fleet list can see.
+std::atomic<bool> g_withdrawn{false};
+
+void shutdownStep(const char* step) {
+  g_shutdownStep.store(step);
+  weblinked::diag::info("shutdown: %s", step);
 }
 
-/// Turns SIGINT and SIGTERM into an orderly shutdown.
+/// UI thread. Begins an orderly shutdown.
+///
+/// Everything the network can see is withdrawn *here*, before the loop is
+/// asked to quit, because nothing guarantees that it returns once asked: on
+/// Linux CefRunMessageLoop() never returns at all (docs/04-verification.md
+/// section 29), and on macOS a launch on 2026-09-30 logged the signal and then
+/// nothing for over an hour (section 37). The SIGTERM handler exists to withdraw
+/// the NDI senders and the mDNS record, so that is done first, while it can
+/// still be done: the control API and its advertisement go, then every output.
+///
+/// The offscreen browsers are *not* closed here — their destruction would then
+/// never be pumped and CefShutdown() would wait for them forever. halt() leaves
+/// them alone; engine.stop(), after the loop returns, closes them as before.
+void beginShutdown() {
+  // The icon first, so it goes when the operator asks rather than lingering.
+  shutdownStep("removing the menu bar item");
+  weblinked::removeTray();
+  if (g_control != nullptr) {
+    shutdownStep("stopping the control API and withdrawing its mDNS record");
+    g_control->stop();
+  }
+  if (g_sources != nullptr) {
+    shutdownStep("closing every output");
+    g_sources->halt();
+  }
+  g_withdrawn.store(g_control != nullptr && g_sources != nullptr);
+  shutdownStep("quitting the message loop");
+  CefQuitMessageLoop();
+}
+
+void requestQuit(int) {
+  // A second signal means whoever sent it is done waiting. Only async-signal-
+  // safe calls here: an atomic exchange, then _exit.
+  if (g_quitRequested.exchange(true)) {
+    _exit(1);
+  }
+  // Only a flag: the watchdog below does the real work, because CefPostTask is
+  // not something to call from a signal handler.
+}
+
+/// Turns SIGINT and SIGTERM into an orderly shutdown, and makes sure one ends.
 ///
 /// This matters more than it looks for a headless renderer. Without it, a
 /// `kill` or a Ctrl-C tears the process down without destroying the NDI and OMT
@@ -767,6 +812,12 @@ void requestQuit(int) {
 /// on the network that receivers keep trying to connect to, and a card that the
 /// next application cannot claim. Learned by doing exactly that during
 /// verification and then wondering why nothing could discover the next run.
+///
+/// And an orderly shutdown that never finishes is worse than none: the process
+/// holds its port, so the next start refuses, and whatever sent the signal —
+/// systemd, Docker, the Resolume plugin, an operator — is left with a process
+/// that says it is exiting. So once the quit is posted this thread gives it
+/// kShutdownDeadlineSeconds, then names the step it stuck in and leaves.
 void installSignalHandlers() {
   std::signal(SIGINT, requestQuit);
   std::signal(SIGTERM, requestQuit);
@@ -784,6 +835,27 @@ void installSignalHandlers() {
     weblinked::diag::info("shutdown requested by signal");
     // Must run on the UI thread.
     CefPostTask(TID_UI, base::BindOnce(&beginShutdown));
+
+    // Nothing to wait for on success: main() returns and takes this thread
+    // with it.
+    std::this_thread::sleep_for(std::chrono::seconds(kShutdownDeadlineSeconds));
+    const bool withdrawn = g_withdrawn.load();
+    const char* step = g_shutdownStep.load();
+    if (withdrawn) {
+      weblinked::diag::warn(
+          "shutdown: still '%s' after %d s — outputs and the control API are "
+          "already down, so exiting without the rest",
+          step, kShutdownDeadlineSeconds);
+    } else {
+      weblinked::diag::error(
+          "shutdown: still '%s' after %d s, before every output was closed — "
+          "exiting anyway; an NDI source may linger until receivers time it out",
+          step, kShutdownDeadlineSeconds);
+    }
+    std::fprintf(stderr, "WebLinked: shutdown stuck at '%s' — exiting\n", step);
+    // _exit, not exit: whatever is stuck may be holding a lock a static
+    // destructor or an atexit handler would need.
+    _exit(withdrawn ? 0 : 1);
   }).detach();
 }
 
@@ -1040,15 +1112,22 @@ int main(int argc, char** argv) {
   //
   // Blocks until beginShutdown() quits it. Everything else runs on its own
   // thread: the engine's clock, the HTTP connections, the OSC receiver.
+  g_control = &control;
+  g_sources = &sources;
   CefRunMessageLoop();
-  // Before the outputs go, so the icon disappears when the operator asks rather
-  // than lingering while NDI senders and cards are released.
+  shutdownStep("message loop returned; closing browsers");
+  // beginShutdown() normally did these already; each is safe to repeat, and
+  // they still matter if the loop ended some other way.
   if (trayInstalled) {
     weblinked::removeTray();
   }
   control.stop();
   sources.stop();
+  g_control = nullptr;
+  g_sources = nullptr;
+  shutdownStep("shutting Chromium down");
   CefShutdown();
+  g_shutdownStep.store("exiting");
   weblinked::diag::info("WebLinked exiting cleanly");
   weblinked::diag::shutdown();
   return 0;

@@ -61,6 +61,12 @@ class SourceManager {
   /// Stops and destroys every source. Safe to call twice.
   void stop();
 
+  /// Engine::halt() on every source: clocks parked, outputs closed, browsers
+  /// left alone and every source left in the map. The first half of a
+  /// shutdown, run while the message loop is still up — see beginShutdown() in
+  /// main.cpp. stop() still has to follow.
+  void halt();
+
   /// Adds and starts one source. Fails on a duplicate or invalid id.
   bool add(const SourceConfig& config, std::string& error);
 

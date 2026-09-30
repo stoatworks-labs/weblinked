@@ -66,6 +66,14 @@ class Engine {
   bool start(const Config& config, std::string& error);
   void stop();
 
+  /// The half of stop() that does not touch the browser: parks the clock for
+  /// good and closes every output, which withdraws NDI senders and releases
+  /// cards. Safe to call on the UI thread while the message loop is still
+  /// running — unlike closing the offscreen browser, which must wait until the
+  /// loop has returned (see beginShutdown() in main.cpp). stop() calls it too,
+  /// so calling both is fine.
+  void halt();
+
   // --- control surface, all thread-safe -------------------------------------
 
   void setUrl(const std::string& url);
