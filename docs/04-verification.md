@@ -2494,6 +2494,102 @@ A side effect: the process now sees its real OS version everywhere, including
 samples ship, so nothing is expected there, but only Windows 11 (build 26200)
 has run it.
 
+## 36. Show files, and the crash that removing a tab with sound caused
+
+macOS 26.4.1, M4 Max, Release build of this change. Two tabs from a `--config`
+file on port 7694: `main` on `tools/testcard.html` at 720p25 with an NDI output
+`WLShowA`, and `lower` on `about:blank`.
+
+**The crash came first.** The first run of "load both halves" killed the
+process. It was loading a show that closed `extra`, a tab playing
+`tools/tone.html`. The crash report's backtrace:
+
+```
+_ZN9weblinked9AudioFifo5resetEv
+_ZThn16_N9weblinked12RenderClient20OnAudioStreamStoppedE...
+...
+_ZN20CefBrowserHostCToCpp12CloseBrowserEb
+... BrowserSource5closeEv ...
+libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument
+```
+
+It was not the show code. The same thing happens with the endpoints that were
+already there:
+
+```
+$ curl -XPOST :7694/api/sources/add -d '{"source":{"id":"extra","url":"file://.../tools/tone.html","format":"720p25"}}'
+{"ok":true,"id":"extra"}
+$ curl -XPOST :7694/api/sources/remove -d '{"id":"extra"}'
+{"ok":true}
+DEAD — WebLinked-crash-20260930-161610.json
+```
+
+`RenderClient` holds raw pointers to its engine's `AudioFifo` and frame slot,
+but CEF keeps the client alive until the browser has finished closing, which is
+after `SourceManager::remove` has destroyed the engine. A page that is playing
+audio gets `OnAudioStreamStopped` on the way out, and that reset a FIFO that had
+been freed. A silent page never touches the FIFO, which is how `about:blank`
+tabs had been removed safely all along. `RenderClient::detach()` now clears both
+sinks under a lock of their own, `BrowserSource::close` calls it before posting
+the close, and every callback checks for null. After the fix, three add/remove
+cycles of the tone page:
+
+```
+{"ok":true,"id":"extra"}{"ok":true}     x3, "audio stream started" logged 3 times
+ALIVE, no crash report
+```
+
+**Show recall.** One `GET /api/show` saved first, then each mode through
+`POST /api/show/load`. Each state below is read back from `/api/show`:
+
+```
+1 tabs only    (file: main→clock.html, new "extra"→tone.html; an outputs half naming a
+                different rig, not asked for)
+   main  clock.html 1280x720p25 ['preview', 'ndi:WLShowA']        rig kept
+   extra tone.html  1280x720p25 ['preview']                       new tab: preview only
+   ("lower" closed)
+2 outputs only (the first save, main set to 1080p25 plus an NDI "WLShowB")
+   {"ok":true,"notes":["no tab 'lower' is open, so its outputs were skipped"]}
+   main  clock.html 1920x1080p25 ['preview', 'ndi:WLShowA', 'ndi:WLShowB']   page kept
+   extra tone.html  1280x720p25  ['preview']                                 untouched
+3 both         (the first save)
+   main  testcard.html 1280x720p25 ['preview', 'ndi:WLShowA']
+   lower about:blank   1280x720p25 ['preview']                    extra (with sound) closed
+4 a settings.json by mistake
+   {"error":"not a WebLinked show file"}
+```
+
+**The page**, driven from the browser pane. The download was captured by
+wrapping `URL.createObjectURL`, and loads were fed to the file input through
+`DataTransfer`:
+
+```
+Save show, name "Friday keynote"   → Friday keynote.weblinked.json, keys weblinked_show/tabs/outputs/name/saved
+Load, tabs only, show lacks "lower" → confirm: "Loading these tabs closes 'lower'. Their outputs go off air."
+                                     toast "loaded 'Tabs swap' (tabs)"; an NDI output in the file's
+                                     outputs half did not appear
+Load, outputs only                  → toast "loaded 'Rig' (outputs) — no tab 'lower' is open, so its outputs were skipped"
+Load, both                          → the saved state exactly
+Tabs-only file with only Outputs ticked → refused in the page: "onlytabs.json has none of what is ticked"
+```
+
+**What arrived.** After all of the above, `WLShowA` measured by the independent
+receiver:
+
+```
+$ ./ndi_probe --source WLShowA --frames 100 --bars
+received 100 video frames ... in 3.93 s — 25.43 fps measured
+PASS
+```
+
+`tests/test_show_file.cpp` covers the merge rules: each half alone, both, new
+tabs getting a preview only, rigs replaced rather than merged, and refusals.
+
+**Not verified.** A show recalled onto DeckLink or AJA outputs. The reconcile
+path is the one the settings page already uses, but a card handed from one tab
+to another in a single load depends on the order tabs are applied, and has not
+been tried with a card.
+
 ## Not verified
 
 Everything in this section is written against a real SDK header set and compiles.

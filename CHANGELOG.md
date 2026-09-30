@@ -2,8 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- **Show files.** Settings → Show file saves the running show to the computer
+  you are sitting at, and loads it back. A show has two halves, **tabs** (which
+  pages are open) and **outputs** (each tab's format and where it goes), and
+  either can be recalled on its own. Tabs alone swaps the pages under an
+  unchanged rig; outputs alone restores the rig on the tabs already open. Also
+  available as `GET /api/show` and `POST /api/show/load`. See
+  `docs/05-settings.md`.
+
 ### Fixed
 
+- **Removing a tab that was playing sound crashed WebLinked, taking every other
+  tab off air.** Closing the browser fires its "audio stream stopped" callback,
+  which arrived after the tab's engine had been destroyed and reset an audio
+  buffer that no longer existed. The browser's callbacks are now cut off from
+  the engine before the close starts. See §36 of `docs/04-verification.md`.
 - **Pages ran their animations twenty to two hundred times faster than the
   output.** `disable-frame-rate-limit` uncapped the offscreen page: at 1080p50,
   `requestAnimationFrame` ran about 1,400 times a second on a Windows PC and

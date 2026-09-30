@@ -229,6 +229,12 @@ advertisement — the *live* result, not the setting:
 The two differ in exactly the case that generates support questions, and
 `blocked_because` is the answer to "why can rookery not see this machine".
 
+### GET `/api/show`
+
+The running show as a show file (see `docs/05-settings.md`). `?tabs=0` or
+`?outputs=0` leaves that half out. The control page adds `name` and `saved`
+before offering it as a download.
+
 ## Discovery
 
 WebLinked advertises its control API over mDNS so that fleet controllers
@@ -313,6 +319,7 @@ All take a JSON body and return `{"ok":true}` or `{"error":"..."}`.
 | `/api/settings/apply` | `{"source": { ... }}` | Applies a whole source configuration; see below |
 | `/api/settings/save` | `{}` | Writes the live configuration to the settings file. Returns `{"ok":true,"path":"..."}` |
 | `/api/settings/reload` | `{}` | Reads the settings file and applies it |
+| `/api/show/load` | `{"show": { ... }, "tabs": true, "outputs": false}` | Recalls a show file. Either half may be `false`; both default to `true`. Returns `{"ok":true,"notes":[...]}`, where the notes name any saved rigs skipped because their tab is not open. 400 for a file that is not a show or lacks a half that was asked for; 409 if some of it applied |
 | `/api/log/level` | `{"level": "debug"}` | Returns the level actually in force |
 | `/api/diagnostics/report` | `{"reason": "..."}` | Writes a crash report without a crash. Returns its path |
 | `/api/input` | see below | Pointer and keyboard input to the page |

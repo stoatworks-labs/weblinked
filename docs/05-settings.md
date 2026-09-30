@@ -5,7 +5,7 @@ things disagree.
 
 ## The page
 
-`http://127.0.0.1:7654/` → **Settings**. Three groups:
+`http://127.0.0.1:7654/` → **Settings**. Four groups:
 
 **Outputs.** One editor per output, showing only the fields that backend
 actually has — an NDI sender gets a name and an alpha checkbox, a DeckLink gets
@@ -30,6 +30,9 @@ the preview arms itself on load. **Apply** sends the lot as one request, which
 the engine reconciles: anything that has not actually changed is left running.
 
 **Saved settings.** Where the file is, and Save / Reload.
+
+**Show file.** Save and load a show on the operator's own computer, as tabs,
+outputs or both. See [Show files](#show-files).
 
 ## The file
 
@@ -120,6 +123,55 @@ offers. Changing it takes effect next launch.
 The control surface's own bind address, port and token are saved, but the
 running process does not re-bind itself from a reload. They are there so the
 file describes a whole deployment.
+
+## Show files
+
+**Settings → Show file** saves the running show to the operator's own computer
+and loads it back through a file picker. Nothing is written on the machine that
+renders, which is usually not the one being sat at. The page offers a name, and
+the download is `<name>.weblinked.json`.
+
+A show has two halves, and each save or load can take either or both:
+
+```json
+{
+  "weblinked_show": 1,
+  "name": "Friday keynote",
+  "tabs": [
+    { "id": "main", "url": "https://example.com/graphic.html",
+      "interactive": true, "popups": "navigate" }
+  ],
+  "outputs": [
+    { "tab": "main", "format": "1920x1080p50", "matrix": "auto", "pacing": "external",
+      "outputs": [ { "kind": "preview", "name": "preview", "options": { "factor": 4 } },
+                   { "kind": "ndi", "name": "Graphic" } ] }
+  ]
+}
+```
+
+**Tabs** are the pages: which tabs are open, what each one shows, and how the
+page behaves. **Outputs** are the rig, keyed by tab id: format, colour matrix,
+pacing and the output list. Format goes with the outputs because the
+destinations have to agree with it. An SDI card set up for 1080i25 does not care
+which page is playing, and cares a great deal about the raster.
+
+What a load does:
+
+| Recalled | Result |
+|---|---|
+| Tabs | The open tabs become the show's tabs, in its order. A tab that is already open changes page and keeps its outputs. A new tab gets the first tab's format and a preview only, so it cannot claim a card or an NDI name another tab is using. Tabs the show does not have are closed; the page asks first. |
+| Outputs | Each tab the show names has its format, matrix, pacing and outputs replaced, not merged, so an output removed since the save does not survive the load. Tabs it does not name are left alone. A rig for a tab that is not open is skipped, and the page says which. |
+| Both | The show's tabs, each with its saved rig. |
+
+Either way the result goes through the same reconcile as the settings page, so
+an output that ends up unchanged is not reopened. The preview is always put
+back, because the control page cannot show anything without it.
+
+A show is not a settings file, and the two do not mix. `settings.json` is the
+instance's own start-up configuration, including control ports and tokens; a show
+is a document that belongs to whoever runs it. Loading a settings file as a show
+is refused: it has no `weblinked_show` marker. The page also refuses a file that
+has none of the halves that are ticked.
 
 ## The profile directory
 

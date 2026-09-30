@@ -135,6 +135,19 @@ Override with `--settings <file>` or `$WEBLINKED_SETTINGS`; `--no-settings` igno
 The settings file is deliberately *not* in the log directory — logs are disposable, settings are
 not.
 
+### Show files
+
+**Settings → Show file** saves the running show to the computer you are sitting at and loads it
+back. A show has two halves, and the two ticks choose which ones a save writes or a load recalls:
+
+- **Tabs** — which pages are open. Loading tabs alone changes the pages and keeps every output,
+  so one rig can play a different running order each session. Tabs the show does not have are
+  closed, after a prompt; a tab it adds starts with a preview only.
+- **Outputs** — each tab's format and where it goes. Loading outputs alone restores the rig on
+  the tabs already open and leaves the pages alone.
+
+A show is not the settings file: it lives wherever you keep it, and it carries no ports or tokens.
+
 ---
 
 ## Control from a show

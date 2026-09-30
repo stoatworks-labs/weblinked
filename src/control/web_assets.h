@@ -344,6 +344,33 @@ inline constexpr const char* kControlPage = R"WEBLINKED(<!doctype html>
         wins over the file at the next launch.
       </p>
     </section>
+
+    <section>
+      <h2>Show file</h2>
+      <div class="field">
+        <label for="show-name">Name</label>
+        <input type="text" id="show-name" spellcheck="false" value="show">
+      </div>
+      <label class="check">
+        <input type="checkbox" id="show-tabs" checked>
+        Tabs &mdash; which pages are open
+      </label>
+      <label class="check">
+        <input type="checkbox" id="show-outputs" checked>
+        Outputs &mdash; each tab's format and where it goes
+      </label>
+      <div class="buttons">
+        <button class="primary" id="save-show">Save show&hellip;</button>
+        <button id="load-show">Load show&hellip;</button>
+        <input type="file" id="show-file" accept=".json,application/json" hidden>
+      </div>
+      <p class="note">
+        Saved to and loaded from <em>this</em> computer, not the one rendering.
+        Tick one half to recall it on its own: tabs alone changes the pages and
+        keeps every output; outputs alone restores the rig on the tabs already
+        open. Loading tabs closes any tab the show does not have.
+      </p>
+    </section>
   </div>
 
   <div style="display:flex;flex-direction:column;gap:14px">
@@ -931,6 +958,100 @@ document.getElementById('reload-settings').onclick = async () => {
     renderSettings(lastState);
   }
 };
+
+// --- show files --------------------------------------------------------------
+//
+// Kept on the operator's machine: the page downloads the file and reads it back
+// through a file picker, so nothing is written on the render box and a show can
+// be carried to the next venue on whatever the operator has with them.
+
+function showParts() {
+  return {
+    tabs: document.getElementById('show-tabs').checked,
+    outputs: document.getElementById('show-outputs').checked,
+  };
+}
+
+document.getElementById('save-show').onclick = async () => {
+  const parts = showParts();
+  if (!parts.tabs && !parts.outputs) {
+    toast('tick tabs, outputs or both', true);
+    return;
+  }
+  let doc;
+  try {
+    doc = await get('/api/show?tabs=' + (parts.tabs ? 1 : 0) +
+                    '&outputs=' + (parts.outputs ? 1 : 0));
+  } catch (err) {
+    toast(String(err), true);
+    return;
+  }
+  const name = document.getElementById('show-name').value.trim() || 'show';
+  doc.name = name;
+  doc.saved = new Date().toISOString();
+  const blob = new Blob([JSON.stringify(doc, null, 2) + '\n'], { type: 'application/json' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = name.replace(/[\\/:*?"<>|]+/g, '-') + '.weblinked.json';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  toast('show saved' + (parts.tabs && parts.outputs ? '' : parts.tabs ? ' (tabs)' : ' (outputs)'));
+};
+
+const showFileInput = document.getElementById('show-file');
+document.getElementById('load-show').onclick = () => {
+  showFileInput.value = '';
+  showFileInput.click();
+};
+
+showFileInput.addEventListener('change', async () => {
+  const file = showFileInput.files && showFileInput.files[0];
+  if (!file) return;
+  let doc;
+  try {
+    doc = JSON.parse(await file.text());
+  } catch (err) {
+    toast(file.name + ' is not JSON', true);
+    return;
+  }
+  const asked = showParts();
+  const has = { tabs: Array.isArray(doc.tabs), outputs: Array.isArray(doc.outputs) };
+  const parts = { tabs: asked.tabs && has.tabs, outputs: asked.outputs && has.outputs };
+  if (!parts.tabs && !parts.outputs) {
+    toast(file.name + (has.tabs || has.outputs
+      ? ' has none of what is ticked'
+      : ' is not a WebLinked show'), true);
+    return;
+  }
+
+  // Loading tabs closes the ones the show lacks, and they may be on air — the
+  // same reason removing a single tab asks first.
+  if (parts.tabs) {
+    const keep = new Set(doc.tabs.map((t) => t && t.id));
+    const closing = knownSources.map((s) => s.id).filter((id) => !keep.has(id));
+    if (closing.length &&
+        !confirm('Loading these tabs closes ' + closing.map((id) => "'" + id + "'").join(', ') +
+                 '. Their outputs go off air.')) {
+      return;
+    }
+  }
+
+  const result = await post('/api/show/load', { show: doc, tabs: parts.tabs, outputs: parts.outputs });
+  if (!result) return;
+  const skipped = [];
+  if (asked.tabs && !parts.tabs) skipped.push('it has no tabs');
+  if (asked.outputs && !parts.outputs) skipped.push('it has no outputs');
+  const notes = (result.notes || []).concat(skipped);
+  toast("loaded '" + (doc.name || file.name) + "'" +
+        (parts.tabs && parts.outputs ? '' : parts.tabs ? ' (tabs)' : ' (outputs)') +
+        (notes.length ? ' — ' + notes.join('; ') : ''), notes.length > 0);
+  if (doc.name) document.getElementById('show-name').value = doc.name;
+  await pullSources();
+  await refresh();
+  renderSettings(lastState);
+});
 
 // --- diagnostics -------------------------------------------------------------
 

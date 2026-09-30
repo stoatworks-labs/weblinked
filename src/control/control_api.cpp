@@ -11,6 +11,7 @@
 #include "control/web_assets.h"
 #include "core/json.h"
 #include "core/settings_store.h"
+#include "core/show_file.h"
 #include "diag/diag.h"
 #include "engine/engine.h"
 #include "engine/source_manager.h"
@@ -417,6 +418,20 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
     value.set("discovery", discovery);
 
     response.json(value.serialize());
+    return;
+  }
+
+  // A show file: the running tabs and/or their outputs, for the page to hand
+  // the operator as a download. `?tabs=0` or `?outputs=0` leaves a half out.
+  if (path == "/api/show") {
+    show::Parts parts;
+    parts.tabs = request.param("tabs", "1") != "0";
+    parts.outputs = request.param("outputs", "1") != "0";
+    if (!parts.tabs && !parts.outputs) {
+      response.error(400, "choose tabs, outputs or both");
+      return;
+    }
+    response.json(show::capture(sources_->configuration(), parts).serialize(true));
     return;
   }
 
@@ -839,6 +854,42 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
       return;
     }
     ok(response);
+    return;
+  }
+
+  // Recalls a show the page read from the operator's disk. Either half alone
+  // or both; see show::recall for what each leaves running. Reconciled like
+  // /api/sources/apply, so an output that ends up unchanged is not reopened.
+  if (path == "/api/show/load") {
+    show::Parts parts;
+    parts.tabs = body["tabs"].asBool(true);
+    parts.outputs = body["outputs"].asBool(true);
+    std::string error;
+    std::vector<std::string> notes;
+    const auto wanted = show::recall(sources_->configuration(), body["show"],
+                                     parts, &error, &notes);
+    if (!wanted) {
+      response.error(400, error);
+      return;
+    }
+    diag::info("show recalled (%s%s%s)", parts.tabs ? "tabs" : "",
+               parts.tabs && parts.outputs ? " + " : "",
+               parts.outputs ? "outputs" : "");
+    for (const auto& note : notes) {
+      diag::warn("show: %s", note.c_str());
+    }
+    if (!sources_->applyConfiguration(*wanted, error)) {
+      response.error(409, "show loaded, except: " + error);
+      return;
+    }
+    json::Value value = json::Value::object();
+    value.set("ok", json::Value(true));
+    json::Value list = json::Value::array();
+    for (const auto& note : notes) {
+      list.push(json::Value(note));
+    }
+    value.set("notes", list);
+    response.json(value.serialize());
     return;
   }
 

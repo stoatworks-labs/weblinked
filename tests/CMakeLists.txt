@@ -12,6 +12,7 @@ add_executable(weblinked_tests
   test_json.cpp
   test_source_config.cpp
   test_settings_store.cpp
+  test_show_file.cpp
   test_osc_server.cpp
   test_mdns_service.cpp
   test_screen_geometry.cpp

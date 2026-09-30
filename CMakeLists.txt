@@ -228,6 +228,8 @@ set(WEBLINKED_CORE_SOURCES
   src/core/stream_args.cpp
   src/core/stream_args.h
   src/core/settings_store.h
+  src/core/show_file.cpp
+  src/core/show_file.h
   # The OSC receiver is here rather than with the rest of the control surface
   # because it needs no CEF — only sockets — and its packet decoder is pure
   # parsing that the tests must be able to reach. It was in the engine target
