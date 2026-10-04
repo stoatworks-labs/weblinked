@@ -7,8 +7,8 @@
 > never been tested against a receiver or a card.** All three platforms now run:
 > Windows x86_64 and Linux were exercised on real systems in August 2026, NDI
 > included, on both. **Frame-rate performance is verified on macOS and Linux
-> only** — the Windows machine available for testing has no GPU and cannot
-> sustain a rate, so nothing here claims one for it.
+> only** — the Windows machine available for testing is a two-vCPU VM with no
+> GPU, so nothing here claims a rate for a real Windows PC.
 > [Status, honestly](#status-honestly) says which is which, and
 > [docs/04-verification.md](docs/04-verification.md) records exactly what was
 > measured and how.
@@ -228,7 +228,7 @@ macOS builds are signed and notarised and open normally. The Windows builds are 
 | **Preview** | Verified, and interactive — it is the control page's confidence monitor. |
 | **Several sources** | **Verified**: three at once on three rasters, each confirmed by a separate receiver, with one retargeted and a fourth added and removed mid-run without disturbing the others. Frame rates are a capacity question — see below. |
 | **Settings + diagnostics pages** | Verified against a running instance: outputs added, renamed and removed, settings saved and read back after a restart, the log and bundle served. |
-| **Screen (fullscreen GPU)** | **Verified on this Mac, across two displays**: picture, all three scaling modes, live add and remove, and pacing measured against the display's own refresh — a 50 Hz source on a 60 Hz head presents at 60.1/s, a ratio of 1.199 against a theoretical 1.200. No projector. **Linux verified too**: a 1920x1080 window under X11/EGL on software GL, checked by screenshotting it against the source page rather than by reading counters. **Windows is still written and never run** — the test machine has no GPU, so the Direct3D path cannot be exercised there. |
+| **Screen (fullscreen GPU)** | **Verified on this Mac, across two displays**: picture, all three scaling modes, live add and remove, and pacing measured against the display's own refresh — a 50 Hz source on a 60 Hz head presents at 60.1/s, a ratio of 1.199 against a theoretical 1.200. No projector. **Linux verified too**: a 1920x1080 window under X11/EGL on software GL, checked by screenshotting it against the source page rather than by reading counters. **Windows verified on a software renderer only**: on first contact it showed nothing but black while its counters reported frames presented; v1.0.5 fixed that, checked by reading the desktop back (`tools/screen_probe_win.cpp`) on the lab VM's Microsoft Basic Render Driver. **No real Windows GPU has run the fixed code.** |
 | **KMS (Linux, no X)** | **Verified on a virtual display, not a real one**: all four rotations and letterboxing, read back from the scanout by ffmpeg's `kmsgrab`, running inside the BirdDog PLAY's own Debian 10 rootfs. No real display controller or monitor yet, and no measurement of the copy's cost on a slow CPU. |
 | **Menu bar / tray icon** | **Verified on all three platforms, by using it.** macOS: icon photographed, menu opened, clean shutdown. Windows x86_64: icon confirmed present-then-absent by pixel diff, menu opened, *Copy control address* checked against the clipboard, Quit shut down in order. Linux: registered with KDE Plasma's own StatusNotifierWatcher, menu read over dbusmenu, Quit clean. **Not verified:** the icon's pixels on a healthy KDE desktop, and the Explorer-restart re-add path on Windows. |
 | **OMT** | Compiles against `libomt.h` 1.0.0.16. **Never tested against an OMT receiver.** |
@@ -245,9 +245,10 @@ tests, 26191 checks), the control API, OSC, mDNS and the tray work, and NDI was
 received and decoded by an independent receiver on another machine. Two things
 that run there are still unproven: DeckLink and AJA (no cards in either machine),
 and **Windows frame-rate performance** — that machine has two vCPUs and no GPU
-driver, so it renders at a few frames per second and can only demonstrate
-function, never throughput. See
-[docs/02-building.md](docs/02-building.md) and §32 of
+driver. Since v1.1.0 it publishes about 50 frames/s at 1080p50 (50.2/s over
+three one-minute runs, no held frames); no Windows PC with a GPU has been
+measured. See
+[docs/02-building.md](docs/02-building.md) and §32–34 of
 [docs/04-verification.md](docs/04-verification.md).
 
 ---
