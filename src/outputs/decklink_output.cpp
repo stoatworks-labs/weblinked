@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "DeckLinkAPI.h"
+#include "DeckLinkAPIVersion.h"
 #include "core/pixel_convert.h"
 #include "outputs/output.h"
 
@@ -82,6 +83,59 @@ void safeRelease(T*& object) {
     object = nullptr;
   }
 }
+
+/// Write access to a frame's pixels. SDK 14.3 moved the bytes off the frame onto
+/// IDeckLinkVideoBuffer, which must be bracketed by StartAccess/EndAccess; older
+/// SDKs hand them out directly. `data()` is null when the card refused.
+class FrameBytes {
+ public:
+  explicit FrameBytes(IDeckLinkMutableVideoFrame* frame) {
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+    if (frame->QueryInterface(IID_IDeckLinkVideoBuffer,
+                              reinterpret_cast<void**>(&buffer_)) != S_OK ||
+        buffer_ == nullptr) {
+      buffer_ = nullptr;
+      return;
+    }
+    if (buffer_->StartAccess(bmdBufferAccessWrite) != S_OK) {
+      buffer_->Release();
+      buffer_ = nullptr;
+      return;
+    }
+    accessing_ = true;
+    if (buffer_->GetBytes(&bytes_) != S_OK) {
+      bytes_ = nullptr;
+    }
+#else
+    if (frame->GetBytes(&bytes_) != S_OK) {
+      bytes_ = nullptr;
+    }
+#endif
+  }
+
+  ~FrameBytes() {
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+    if (buffer_ != nullptr) {
+      if (accessing_) {
+        buffer_->EndAccess(bmdBufferAccessWrite);
+      }
+      buffer_->Release();
+    }
+#endif
+  }
+
+  FrameBytes(const FrameBytes&) = delete;
+  FrameBytes& operator=(const FrameBytes&) = delete;
+
+  void* data() const { return bytes_; }
+
+ private:
+  void* bytes_ = nullptr;
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+  IDeckLinkVideoBuffer* buffer_ = nullptr;
+  bool accessing_ = false;
+#endif
+};
 
 /// Notifies us when the card has finished with a frame. We do not recycle
 /// frames from here — each scheduled frame owns its own buffer for its whole
@@ -314,8 +368,7 @@ class DeckLinkOutput final : public IOutput {
       return;
     }
 
-    void* bytes = nullptr;
-    if (frame->GetBytes(&bytes) == S_OK && bytes != nullptr) {
+    if (FrameBytes access(frame); void* bytes = access.data()) {
       const int cardStride = frame->GetRowBytes();
       const int ourStride = video.rowBytes();
       if (cardStride == ourStride) {
@@ -622,8 +675,7 @@ class DeckLinkOutput final : public IOutput {
       error = "CreateVideoFrame failed while pre-rolling";
       return false;
     }
-    void* bytes = nullptr;
-    if (frame->GetBytes(&bytes) == S_OK && bytes != nullptr) {
+    if (FrameBytes access(frame); void* bytes = access.data()) {
       if (keying_ == Keying::kOff) {
         fillBlackUyvy(static_cast<uint8_t*>(bytes), frame->GetRowBytes(),
                       format_.width, format_.height);
