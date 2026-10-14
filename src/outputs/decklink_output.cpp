@@ -236,7 +236,8 @@ class DeckLinkOutput final : public IOutput {
         audioChannels_(spec.optionInt("audio_channels", 2)),
         keying_(parseKeying(spec.optionString("keying", "off"))),
         keyLevel_(static_cast<uint8_t>(
-            std::clamp(spec.optionInt("key_level", 255), 0, 255))) {}
+            std::clamp(spec.optionInt("key_level", 255), 0, 255))),
+        premultipliedFill_(spec.optionBool("premultiplied_fill", false)) {}
 
   ~DeckLinkOutput() override { stop(); }
 
@@ -252,7 +253,12 @@ class DeckLinkOutput final : public IOutput {
     return keying_ == Keying::kOff ? PixelFormat::kUYVY : PixelFormat::kBGRA;
   }
 
-  bool wantsStraightAlpha() const override { return keying_ != Keying::kOff; }
+  /// Chromium paints premultiplied. A keyer set to straight alpha needs that
+  /// undone; one set to premultiplied key (an ATEM DSK with Pre Multiplied
+  /// Key on) takes Chromium's buffer as it is.
+  bool wantsStraightAlpha() const override {
+    return keying_ != Keying::kOff && !premultipliedFill_;
+  }
 
   BMDPixelFormat cardPixelFormat() const {
     return keying_ == Keying::kOff ? bmdFormat8BitYUV : bmdFormat8BitBGRA;
@@ -407,6 +413,7 @@ class DeckLinkOutput final : public IOutput {
     value.set("keying", json::Value(keyingToString(keying_)));
     if (keying_ != Keying::kOff) {
       value.set("key_level", json::Value(static_cast<int>(keyLevel_)));
+      value.set("premultiplied_fill", json::Value(premultipliedFill_));
       value.set("keyer_active", json::Value(keyer_ != nullptr));
     }
 
@@ -758,6 +765,7 @@ class DeckLinkOutput final : public IOutput {
   int audioChannels_;
   Keying keying_;
   uint8_t keyLevel_;
+  bool premultipliedFill_;
   bool videoEnabled_ = false;
   bool audioEnabled_ = false;
   bool playing_ = false;

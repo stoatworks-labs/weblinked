@@ -223,6 +223,9 @@ Outputs (repeatable; without any, only the preview runs)
                            external (default) puts fill and key on separate SDI
                            connectors; internal composites over the card's input
   --key-level <0-255>      Overall keyer opacity. Default: 255
+  --key-premultiplied      Applies to the next --decklink only (AJA ignores it),
+                           with --key: send the fill premultiplied, for a keyer
+                           set to premultiplied key
   --no-preview             Do not run the preview output (the control page needs it)
 
 Control
@@ -301,6 +304,7 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
   std::string nextRotate;
   std::string nextKmsMode;
   int keyLevel = 255;
+  bool nextKeyPremultiplied = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string argument = argv[i];
@@ -369,6 +373,7 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
     if (argument == "--verbose") { options.verbose = true; continue; }
     if (argument == "--no-preview") { options.wantPreview = false; continue; }
     if (argument == "--alpha") { nextAlpha = true; continue; }
+    if (argument == "--key-premultiplied") { nextKeyPremultiplied = true; continue; }
     if (argument.rfind("--key-level", 0) == 0) {
       std::string text;
       if (!needsValue(text)) return false;
@@ -559,8 +564,10 @@ bool parseArguments(int argc, char** argv, Options& options, bool& shouldExit) {
       if (!nextKeying.empty()) {
         spec.options.set("keying", json::Value(nextKeying));
         spec.options.set("key_level", json::Value(keyLevel));
+        spec.options.set("premultiplied_fill", json::Value(nextKeyPremultiplied));
         nextKeying.clear();
       }
+      nextKeyPremultiplied = false;
       options.outputs.push_back(spec);
       options.given.outputs = true;
       continue;
