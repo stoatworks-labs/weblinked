@@ -37,7 +37,7 @@ class CallGate {
   /// without running `fn` if not.
   template <typename Fn>
   bool tryRun(Clock::time_point deadline, Fn&& fn) {
-    if (busyNanos() > wedgedAfterNanos_) {
+    if (wedged()) {
       deadline = Clock::now();
     }
     std::unique_lock<std::timed_mutex> lock(mutex_, std::defer_lock);
@@ -65,6 +65,11 @@ class CallGate {
 
   /// How many callers gave up waiting.
   int64_t refusals() const { return refusals_.load(std::memory_order_relaxed); }
+
+  /// Whether the call holding the gate has been running for longer than
+  /// `wedgedAfter`. Below that it is merely busy — a submit, a card opening —
+  /// and a caller that could not wait should not call it stuck.
+  bool wedged() const { return busyNanos() > wedgedAfterNanos_; }
 
  private:
   static int64_t nowNanos() {

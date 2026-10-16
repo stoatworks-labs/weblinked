@@ -13,18 +13,25 @@
 // completions on a separate thread and releases its own reference after each,
 // as the SDK does, and blocks DisableVideoOutput until every scheduled frame
 // has been completed or flushed. It also counts what #12 was about: frames
-// created or destroyed while playback runs, and frames destroyed on the
-// completion thread — the path that deadlocked inside Desktop Video 16.4.
+// whose memory comes from the SDK's pool (CreateVideoFrame) created or
+// destroyed while playback runs, and destroyed on the completion thread — the
+// path that deadlocked inside Desktop Video 16.4 — against frames wrapping the
+// application's own memory (CreateVideoFrameWithBuffer), which leave the pool
+// alone. While a frame wrapping an application buffer is with the card, the
+// card holds a read access open on that buffer, as a transfer would; the
+// output counts any write that starts during one.
 //
 // What it therefore proves and does not:
 //   * proves — the ring hands out, recycles and finally releases every frame
-//     exactly once; no frame is written while the card has it; nothing is
-//     allocated or freed during playback; after a stall longer than the queue
+//     exactly once; no frame is written while the card has it; on SDK 14.3 and
+//     later no frame comes from the SDK's pool at all, and the memory is made
+//     once and kept across stop/start; after a stall longer than the queue
 //     the schedule re-anchors once and later frames are on time; stop/start
 //     cycles leave nothing behind.
 //   * does NOT prove — anything about real hardware or the real SDK: its
-//     allocator, its threads, its timing, or whether its playhead behaves like
-//     this one. That waits for a card. See docs/04-verification.md section 40.
+//     allocator, its threads, its timing, what it does with application
+//     buffers, or whether its playhead behaves like this one. That waits for a
+//     card. See docs/04-verification.md section 40.
 //
 // Build (SDK 14.3 or later — the frame here speaks IDeckLinkVideoBuffer):
 //   SDK=~/sdk/decklink-16.0/Mac/include
@@ -69,6 +76,8 @@ bool sameIid(REFIID a, REFIID b) { return std::memcmp(&a, &b, sizeof(a)) == 0; }
 struct Ledger {
   std::atomic<int64_t> created{0};
   std::atomic<int64_t> destroyed{0};
+  std::atomic<int64_t> poolFrames{0};  ///< made by CreateVideoFrame: SDK memory
+  std::atomic<int64_t> appFrames{0};   ///< made by CreateVideoFrameWithBuffer
   std::atomic<int64_t> createdWhilePlaying{0};
   std::atomic<int64_t> destroyedWhilePlaying{0};
   std::atomic<int64_t> destroyedOnCompletionThread{0};
@@ -80,19 +89,33 @@ struct Ledger {
   std::atomic<int64_t> flushed{0};
   std::atomic<bool> playing{false};
   std::thread::id completionThread;
+  std::mutex buffersMutex;
+  std::set<IDeckLinkVideoBuffer*> buffers;  ///< distinct application buffers seen
 };
 Ledger gLedger;
 
 class FakeFrame final : public IDeckLinkMutableVideoFrame, public IDeckLinkVideoBuffer {
  public:
-  FakeFrame(long width, long height, long rowBytes, BMDPixelFormat format)
+  /// `external` null: the SDK's own memory, as CreateVideoFrame gives.
+  /// Otherwise the application's buffer, held for the frame's life.
+  FakeFrame(long width, long height, long rowBytes, BMDPixelFormat format,
+            IDeckLinkVideoBuffer* external)
       : width_(width), height_(height), rowBytes_(rowBytes), format_(format),
-        bytes_(static_cast<size_t>(rowBytes) * static_cast<size_t>(height)) {
+        external_(external) {
     ++gLedger.created;
-    if (gLedger.playing.load()) {
-      ++gLedger.createdWhilePlaying;
+    if (external_ != nullptr) {
+      external_->AddRef();
+      ++gLedger.appFrames;
+    } else {
+      bytes_.resize(static_cast<size_t>(rowBytes) * static_cast<size_t>(height));
+      ++gLedger.poolFrames;
+      if (gLedger.playing.load()) {
+        ++gLedger.createdWhilePlaying;
+      }
     }
   }
+
+  IDeckLinkVideoBuffer* external() const { return external_; }
 
   std::atomic<bool> scheduled{false};
   BMDTimeValue displayTime = 0;
@@ -100,6 +123,9 @@ class FakeFrame final : public IDeckLinkMutableVideoFrame, public IDeckLinkVideo
   // IUnknown — one implementation for both bases.
   HRESULT QueryInterface(REFIID iid, LPVOID* out) override {
     if (sameIid(iid, IID_IDeckLinkVideoBuffer)) {
+      if (external_ != nullptr) {
+        return external_->QueryInterface(iid, out);
+      }
       *out = static_cast<IDeckLinkVideoBuffer*>(this);
       AddRef();
       return S_OK;
@@ -118,11 +144,17 @@ class FakeFrame final : public IDeckLinkMutableVideoFrame, public IDeckLinkVideo
     const ULONG left = --refs_;
     if (left == 0) {
       ++gLedger.destroyed;
-      if (gLedger.playing.load()) {
-        ++gLedger.destroyedWhilePlaying;
-      }
-      if (std::this_thread::get_id() == gLedger.completionThread) {
-        ++gLedger.destroyedOnCompletionThread;
+      // Only a frame of the SDK's own memory reaches its allocator when it
+      // goes; one wrapping an application buffer releases that and nothing else.
+      if (external_ == nullptr) {
+        if (gLedger.playing.load()) {
+          ++gLedger.destroyedWhilePlaying;
+        }
+        if (std::this_thread::get_id() == gLedger.completionThread) {
+          ++gLedger.destroyedOnCompletionThread;
+        }
+      } else {
+        external_->Release();
       }
       delete this;
     }
@@ -173,6 +205,7 @@ class FakeFrame final : public IDeckLinkMutableVideoFrame, public IDeckLinkVideo
   std::atomic<ULONG> refs_{1};
   long width_, height_, rowBytes_;
   BMDPixelFormat format_;
+  IDeckLinkVideoBuffer* external_ = nullptr;
   std::vector<uint8_t> bytes_;
 };
 
@@ -340,16 +373,33 @@ class FakeOutput final : public IDeckLinkOutput {
   HRESULT CreateVideoFrame(int32_t width, int32_t height, int32_t rowBytes,
                            BMDPixelFormat format, BMDFrameFlags,
                            IDeckLinkMutableVideoFrame** out) override {
-    *out = new FakeFrame(width, height, rowBytes, format);
+    *out = new FakeFrame(width, height, rowBytes, format, nullptr);
     return S_OK;
   }
-  HRESULT CreateVideoFrameWithBuffer(int32_t, int32_t, int32_t, BMDPixelFormat, BMDFrameFlags,
-                                     IDeckLinkVideoBuffer*,
-                                     IDeckLinkMutableVideoFrame**) override {
-    return E_NOTIMPL;
+  HRESULT CreateVideoFrameWithBuffer(int32_t width, int32_t height, int32_t rowBytes,
+                                     BMDPixelFormat format, BMDFrameFlags,
+                                     IDeckLinkVideoBuffer* buffer,
+                                     IDeckLinkMutableVideoFrame** out) override {
+    // The manual's one requirement on the buffer: at least
+    // RowBytesForPixelFormat x height bytes.
+    int32_t minimum = 0;
+    RowBytesForPixelFormat(format, width, &minimum);
+    uint64_t size = 0;
+    if (buffer == nullptr || buffer->GetSize(&size) != S_OK || rowBytes < minimum ||
+        size < static_cast<uint64_t>(rowBytes) * static_cast<uint64_t>(height)) {
+      return E_INVALIDARG;
+    }
+    {
+      std::lock_guard<std::mutex> lock(gLedger.buffersMutex);
+      gLedger.buffers.insert(buffer);
+    }
+    *out = new FakeFrame(width, height, rowBytes, format, buffer);
+    return S_OK;
   }
-  HRESULT RowBytesForPixelFormat(BMDPixelFormat, int32_t, int32_t*) override {
-    return E_NOTIMPL;
+  HRESULT RowBytesForPixelFormat(BMDPixelFormat format, int32_t width,
+                                 int32_t* rowBytes) override {
+    *rowBytes = format == bmdFormat8BitYUV ? width * 2 : width * 4;
+    return S_OK;
   }
   HRESULT CreateAncillaryData(BMDPixelFormat, IDeckLinkVideoFrameAncillary**) override {
     return E_NOTIMPL;
@@ -370,6 +420,10 @@ class FakeOutput final : public IDeckLinkOutput {
     }
     fake->AddRef();  // the card's own reference, released after completion
     fake->scheduled.store(true);
+    if (fake->external() != nullptr) {
+      // A transfer reads the application's buffer from now until completion.
+      fake->external()->StartAccess(bmdBufferAccessRead);
+    }
     fake->displayTime = time;
     queue_.emplace(time, fake);
     return S_OK;
@@ -512,6 +566,9 @@ class FakeOutput final : public IDeckLinkOutput {
         default: ++gLedger.flushed; break;
       }
       next.frame->scheduled.store(false);
+      if (next.frame->external() != nullptr) {
+        next.frame->external()->EndAccess(bmdBufferAccessRead);
+      }
       if (callback != nullptr) {
         callback->ScheduledFrameCompleted(next.frame, next.result);
         callback->Release();
@@ -656,11 +713,19 @@ int main() {
 
     std::string error;
     const int64_t createdBefore = gLedger.created.load();
+    // Counted per output: the last one's buffers are freed with it, and a new
+    // allocation may land at an old address.
+    const size_t buffersBefore = 0;
+    {
+      std::lock_guard<std::mutex> lock(gLedger.buffersMutex);
+      gLedger.buffers.clear();
+    }
     expect(output->start(format, error), "start");
     if (!error.empty()) std::printf("    %s\n", error.c_str());
     json::Value status = output->status();
     expect(field(status, "ring_size") == 10, "ring of 2 x preroll + 4 frames, made at start");
     expect(gLedger.created.load() - createdBefore == 10, "exactly the ring's frames created");
+    expect(status["frame_memory"].asString() == "app", "frames wrap the output's own memory");
 
     // Steady playback.
     run(*output, frame, 150, period);
@@ -721,6 +786,21 @@ int main() {
     }
     expect(gLedger.created.load() == gLedger.destroyed.load(),
            "20 stop/start cycles: nothing left behind");
+    status = output->status();
+    size_t buffersAfter = 0;
+    {
+      std::lock_guard<std::mutex> lock(gLedger.buffersMutex);
+      buffersAfter = gLedger.buffers.size();
+    }
+    std::printf("    pixel buffers handed to the card over 21 starts: %zu; "
+                "buffer_allocations=%lld buffer_overlaps=%lld\n",
+                buffersAfter - buffersBefore,
+                (long long)field(status, "buffer_allocations"),
+                (long long)field(status, "buffer_overlaps"));
+    expect(buffersAfter - buffersBefore == 10 && field(status, "buffer_allocations") == 1,
+           "the same 10 buffers across every stop/start");
+    expect(field(status, "buffer_overlaps") == 0,
+           "no write while the card was reading a buffer");
   }
 
   std::printf("\nacross everything:\n");
@@ -729,10 +809,13 @@ int main() {
               (long long)gLedger.created.load(), (long long)gLedger.destroyed.load(),
               (long long)gLedger.onTime.load(), (long long)gLedger.late.load(),
               (long long)gLedger.dropped.load(), (long long)gLedger.flushed.load());
-  expect(gLedger.createdWhilePlaying.load() == 0, "no frame created while playing");
-  expect(gLedger.destroyedWhilePlaying.load() == 0, "no frame destroyed while playing");
+  std::printf("    frames of SDK pool memory %lld, wrapping application memory %lld\n",
+              (long long)gLedger.poolFrames.load(), (long long)gLedger.appFrames.load());
+  expect(gLedger.poolFrames.load() == 0, "nothing taken from the SDK's allocator pool (#12)");
+  expect(gLedger.createdWhilePlaying.load() == 0, "no pool frame created while playing");
+  expect(gLedger.destroyedWhilePlaying.load() == 0, "no pool frame destroyed while playing");
   expect(gLedger.destroyedOnCompletionThread.load() == 0,
-         "no frame destroyed on the completion thread (#12)");
+         "no pool frame destroyed on the completion thread (#12)");
   expect(gLedger.writesWhileScheduled.load() == 0, "no frame written while the card had it");
   expect(gLedger.slotsScheduledTwice.load() == 0, "no slot scheduled twice");
 

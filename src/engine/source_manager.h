@@ -2,12 +2,13 @@
 
 #include <functional>
 #include <memory>
-#include <shared_mutex>
+#include <mutex>
 #include <string>
 #include <vector>
 
 #include "core/json.h"
 #include "core/source_config.h"
+#include "core/source_table.h"
 #include "engine/engine.h"
 
 namespace weblinked {
@@ -20,16 +21,19 @@ namespace weblinked {
 /// or a raster change on one source must not touch the others, and none of them
 /// can, because no engine ever learns that the others exist.
 ///
-/// **Lifetime is the hard part, and the lock is how it is solved.** Engine reads
-/// `browser_` without a lock and `Engine::stop()` destroys it, which was
-/// perfectly safe while there was exactly one engine torn down at exit and
-/// nothing else running. A source that can be removed from a running show breaks
-/// that assumption: an HTTP request holding a bare `Engine*` would be walking
-/// into a destructor. So every call that reaches into an engine goes through
-/// withSource(), which holds a *shared* lock for the duration, while add(),
-/// remove() and stop() take the *exclusive* one. Two requests against different
-/// sources still run at the same time; a removal simply waits for the requests
-/// already inside to come out.
+/// **Lifetime is the hard part.** Engine reads `browser_` without a lock and
+/// `Engine::stop()` destroys it, which was perfectly safe while there was
+/// exactly one engine torn down at exit and nothing else running. A source that
+/// can be removed from a running show breaks that assumption: an HTTP request
+/// holding a bare `Engine*` would be walking into a destructor. So every call
+/// that reaches into an engine goes through withSource(), which holds that
+/// source open for the duration, and a removal waits for the calls already
+/// inside to come out before it stops anything.
+///
+/// It used to be one shared_mutex held across every call, and that is how a
+/// wedged driver in one source could stop them all (issue #12): see
+/// SourceTable, which now holds the map. Its own lock is only ever held to copy
+/// a pointer, so nothing one source does can make a request to another wait.
 ///
 /// The expensive halves of add() and remove() — starting a browser, joining a
 /// clock thread — deliberately happen outside the lock. Holding it across those
@@ -70,18 +74,22 @@ class SourceManager {
   /// Adds and starts one source. Fails on a duplicate or invalid id.
   bool add(const SourceConfig& config, std::string& error);
 
-  /// Stops and removes one source. Fails if there is no such id.
+  /// Stops and removes one source. Fails if there is no such id, or if a
+  /// request inside it has not come out within kRemoveWait — then nothing is
+  /// changed, and the source stays.
   bool remove(const std::string& id, std::string& error);
+
+  using Access = SourceTable<Engine>::Access;
 
   /// Runs `fn` against the named source, holding it open for the call.
   ///
-  /// This is the only sanctioned way to touch an engine. Returns false if there
-  /// is no such source, in which case `fn` is never called.
+  /// This is the only sanctioned way to touch an engine. kMissing if there is
+  /// no such source, kClosing if it is being removed; `fn` is not called in
+  /// either case.
   ///
-  /// `fn` must not call back into the manager: it runs under the shared lock,
-  /// and add()/remove() want the exclusive one.
-  bool withSource(const std::string& id,
-                  const std::function<void(Engine&)>& fn) const;
+  /// `fn` must not remove its own source: the removal would wait for `fn`.
+  Access withSource(const std::string& id,
+                    const std::function<void(Engine&)>& fn) const;
 
   /// The id every un-addressed request falls back to — the first source, which
   /// for a command-line launch is the only one. This is what keeps the
@@ -110,16 +118,9 @@ class SourceManager {
   bool applyConfiguration(const AppConfig& config, std::string& error);
 
  private:
-  struct Entry {
-    std::string id;
-    std::shared_ptr<Engine> engine;
-  };
+  SourceTable<Engine> sources_;
 
-  /// Caller must hold at least the shared lock.
-  const Entry* findLocked(const std::string& id) const;
-
-  mutable std::shared_mutex mutex_;
-  std::vector<Entry> sources_;
+  mutable std::mutex optionsMutex_;
   Options options_;
 };
 

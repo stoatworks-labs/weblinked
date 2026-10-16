@@ -22,6 +22,7 @@ add_executable(weblinked_tests
   test_recycle_ring.cpp
   test_output_slot.cpp
   test_http_server.cpp
+  test_source_table.cpp
 )
 
 set_target_properties(weblinked_tests PROPERTIES

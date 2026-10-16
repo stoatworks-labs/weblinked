@@ -23,12 +23,12 @@ namespace weblinked {
 ///   call (issue #12) then holds one gate, not the mutex every control request
 ///   needs.
 /// - Nobody waits on a gate for ever (see CallGate). The state report falls
-///   back to the last status that completed, marked stale, with how long the
-///   call in the way has been running.
+///   back to the last status that completed, and marks it stale once the call
+///   in the way has been running long enough to count as stuck.
 /// - The output is only ever replaced or destroyed under the gate, by a control
-///   path, so no call is ever in flight on an object being destroyed. A copy of
-///   the slot can outlive the entry it came from; by then the slot is empty, and
-///   call() on an empty slot does nothing.
+///   path, through replace(), so no call is ever in flight on an object being
+///   destroyed. A copy of the slot can outlive the entry it came from; by then
+///   the slot is empty, and call() on an empty slot does nothing.
 ///
 /// Header-only and free of CEF so that the tests can drive it with a fake
 /// output whose calls block.
@@ -47,6 +47,17 @@ class OutputSlot {
     bool straightAlpha = false;
     bool wantsAudio = false;
   };
+
+  /// A deadline shared by several calls, but never less than `minimum` from
+  /// now for this one. The clock and state() each give all their outputs one
+  /// budget; without the floor, slow calls early in the list used it up and
+  /// the later outputs got a single try — which a status() holding a gate for
+  /// a millisecond was enough to lose.
+  static Clock::time_point atLeast(Clock::time_point shared,
+                                   Clock::duration minimum) {
+    const auto floor = Clock::now() + minimum;
+    return shared > floor ? shared : floor;
+  }
 
   explicit OutputSlot(std::unique_ptr<IOutput> output,
                       Clock::duration wedgedAfter = std::chrono::seconds(1))
@@ -72,14 +83,35 @@ class OutputSlot {
     return ran;
   }
 
-  /// For the control paths: fn(std::unique_ptr<IOutput>&) holding the gate. fn
-  /// may stop, start, replace or destroy the output — which is why this is the
-  /// only place the pointer is handed out. The generation always moves on
-  /// afterwards: a replacement can land at the address of the object it
-  /// replaced, so comparing pointers would not be enough to tell. Returns
-  /// whether fn ran.
+  enum class Result { kRan, kBusy, kEmpty };
+
+  /// For the control paths that start or stop the output in the slot:
+  /// fn(IOutput&) holding the gate. The object stays the same, so the
+  /// generation does not move and a tick the clock has already planned for it
+  /// still goes out — re-enabling an output that is already running costs no
+  /// frame.
   template <typename Fn>
-  bool exclusive(Clock::time_point deadline, Fn&& fn) {
+  Result exclusive(Clock::time_point deadline, Fn&& fn) {
+    bool empty = false;
+    if (!gate_.tryRun(deadline, [&] {
+          if (output_ == nullptr) {
+            empty = true;
+            return;
+          }
+          fn(*output_);
+        })) {
+      return Result::kBusy;
+    }
+    return empty ? Result::kEmpty : Result::kRan;
+  }
+
+  /// For the control paths that replace or destroy the output:
+  /// fn(std::unique_ptr<IOutput>&) holding the gate, the only place the pointer
+  /// is handed out. The generation always moves on afterwards, whatever fn did:
+  /// a replacement can land at the address of the object it replaced, so
+  /// comparing pointers could not tell. Returns whether fn ran.
+  template <typename Fn>
+  bool replace(Clock::time_point deadline, Fn&& fn) {
     return gate_.tryRun(deadline, [&] {
       fn(output_);
       ++generation_;
@@ -88,8 +120,12 @@ class OutputSlot {
   }
 
   /// A fresh status() if the gate can be had by `deadline`, or else the last
-  /// one that completed, marked "stale" with how long the call in the way has
-  /// been running. An empty slot reports an empty object.
+  /// one that completed. That is marked "stale", with how long the call in the
+  /// way has been running, only once the call counts as stuck (see
+  /// CallGate::wedged): an output that was merely busy for a moment — opening a
+  /// card, or another reader got there first — is not "not answering", and
+  /// saying so would flicker the control page red. An empty slot reports an
+  /// empty object.
   json::Value status(Clock::time_point deadline) {
     json::Value fresh;
     bool got = false;
@@ -113,8 +149,11 @@ class OutputSlot {
       return json::Value::object();
     }
     json::Value value = haveStatus_ ? lastStatus_ : json::Value::object();
-    value.set("stale", json::Value(true));
-    value.set("driver_busy_ms", json::Value(busyMillis()));
+    const bool stuck = gate_.wedged();
+    value.set("stale", json::Value(stuck));
+    if (stuck) {
+      value.set("driver_busy_ms", json::Value(busyMillis()));
+    }
     return value;
   }
 
@@ -126,11 +165,15 @@ class OutputSlot {
   /// How long the call holding the gate has been running, in milliseconds.
   int64_t busyMillis() const { return gate_.busyNanos() / 1'000'000; }
 
+  /// Whether that call has been running long enough to count as stuck.
+  bool wedged() const { return gate_.wedged(); }
+
   /// How many callers gave up waiting for the gate.
   int64_t refusals() const { return gate_.refusals(); }
 
  private:
-  /// Under the gate (or before the slot is shared).
+  /// Under the gate (or before the slot is shared). The description is fixed
+  /// for an object's life, so only replace() needs to refresh it.
   void refreshDescription() {
     Description next;
     next.generation = generation_;

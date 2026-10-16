@@ -24,18 +24,45 @@ constexpr auto kStateLockWait = std::chrono::milliseconds(100);
 /// gets an answer inside it even with an output wedged.
 constexpr auto kStatusBudget = std::chrono::milliseconds(100);
 
+/// The minimum each output's status() gets inside that budget, so one slow
+/// output early in the list cannot use the whole budget and leave the healthy
+/// ones after it reporting from their last status.
+constexpr auto kStatusMinimum = std::chrono::milliseconds(10);
+
 /// How long the clock thread waits, per tick and for all outputs together, for
 /// a gate held by someone else. Normally that is a status() taking a few
 /// microseconds; an output being restarted is disabled first, so the clock is
 /// not waiting on its start().
 constexpr auto kClockGateBudget = std::chrono::milliseconds(5);
 
-/// Control paths: how long to wait behind another control request on the same
-/// source, and for an output's gate. Long enough for a card to open; short
-/// enough that a request behind a wedged driver fails while someone is still
-/// looking at it.
-constexpr auto kControlWait = std::chrono::seconds(5);
+/// The minimum each output gets inside that budget. Without it, slow submits
+/// early in the tick (the preview's scale, an 8 MB BGRA copy) used the budget
+/// up and a DeckLink later in the list got a single try: a state poll holding
+/// its gate at that moment cost it a frame, a preroll's worth of those emptied
+/// its queue, and the schedule re-anchored — a visible freeze on SDI that a
+/// 5 Hz poller could make recur.
+constexpr auto kClockGateMinimum = std::chrono::milliseconds(2);
+
+/// Control paths. A change queues behind another on the same source for up to
+/// 30 s, because a format change or a settings apply across several cards
+/// legitimately takes seconds, and failing the change behind it would lose an
+/// operator's edit for no reason. The wait for a single output's gate stays
+/// short: that is a driver call, and one that has not come back in 2 s is not
+/// coming back soon. A wedged driver therefore holds up the queue by its own
+/// gate waits, each of which gives up, never by waiting on the driver itself.
+constexpr auto kControlWait = std::chrono::seconds(30);
 constexpr auto kGateWait = std::chrono::seconds(2);
+
+/// How long the updateOutput "only the background changed" check asks the
+/// output whether it is running before using the engine's own record instead.
+/// It needs no driver call to apply, so it must not fail because the driver is
+/// busy.
+constexpr auto kRunningProbeWait = std::chrono::milliseconds(50);
+
+/// How long halt() waits for the clock thread before closing the outputs
+/// anyway. A clock stuck inside a driver must not keep the healthy outputs on
+/// the network.
+constexpr auto kClockExitWait = std::chrono::seconds(2);
 
 /// The preview is read a few times a second by the control page.
 constexpr auto kPreviewWait = std::chrono::milliseconds(250);
@@ -134,6 +161,10 @@ bool Engine::start(const Config& config, std::string& error) {
   }
 
   clock_ = std::make_unique<FrameClock>(config.format.rate);
+  {
+    std::lock_guard<std::mutex> lock(exitMutex_);
+    clockExited_ = false;
+  }
   running_.store(true);
   clockThread_ = std::thread([this] { clockLoop(); });
 
@@ -152,11 +183,39 @@ void Engine::halt() {
       std::lock_guard<std::mutex> lock(pauseMutex_);
       pauseCv_.notify_all();
     }
+    // Bounded first. A clock thread stuck inside an output's driver will not
+    // come out, and the healthy outputs must be closed regardless: an NDI
+    // source left advertised, or a card left claimed, is worse than a slow
+    // exit. Closing them under its feet is safe — it holds its own copies of
+    // the slots, and a call on a stopped or emptied slot does nothing.
+    bool exited = false;
+    {
+      std::unique_lock<std::mutex> lock(exitMutex_);
+      exited = exitCv_.wait_for(lock, kClockExitWait,
+                                [this] { return clockExited_; });
+    }
+    if (!exited) {
+      diag::error("engine '%s': the clock thread has not stopped after %lld s, "
+                  "most likely inside an output's driver; closing the outputs "
+                  "anyway, then waiting for it",
+                  id_.c_str(),
+                  static_cast<long long>(
+                      std::chrono::duration_cast<std::chrono::seconds>(kClockExitWait)
+                          .count()));
+    }
+    closeOutputs();
+    // Unbounded, and it has to be: the thread uses this engine and its browser,
+    // so nothing here can be destroyed while it might still come back. At
+    // shutdown the watchdog in main.cpp bounds it; a source removal waits.
     if (clockThread_.joinable()) {
       clockThread_.join();
     }
+    return;
   }
+  closeOutputs();
+}
 
+void Engine::closeOutputs() {
   // Behind any control request already in flight, but not for ever: this is
   // the shutdown path, and it has a watchdog waiting on it.
   std::unique_lock<std::timed_mutex> control(controlMutex_, std::defer_lock);
@@ -171,13 +230,13 @@ void Engine::halt() {
     entries.swap(outputs_);
   }
   for (auto& entry : entries) {
-    if (!entry.slot->exclusive(Clock::now() + kGateWait,
-                               [](std::unique_ptr<IOutput>& output) {
-                                 if (output != nullptr) {
-                                   output->stop();
-                                   output.reset();
-                                 }
-                               })) {
+    if (!entry.slot->replace(Clock::now() + kGateWait,
+                             [](std::unique_ptr<IOutput>& output) {
+                               if (output != nullptr) {
+                                 output->stop();
+                                 output.reset();
+                               }
+                             })) {
       // Never destroyed under a call in flight: the slot keeps it, and it goes
       // when whoever is inside the driver lets go of their copy.
       diag::error("output '%s' did not stop: a call into its driver has been "
@@ -510,8 +569,9 @@ void Engine::clockLoop() {
     // by a status() lasting microseconds — gets a few milliseconds, and one
     // whose driver has been stuck for a second is tried once and skipped. The
     // others still get their frame either way.
-    const auto gateDeadline = Clock::now() + kClockGateBudget;
+    const auto tickDeadline = Clock::now() + kClockGateBudget;
     for (const auto& target : targets_) {
+      const auto gateDeadline = OutputSlot::atLeast(tickDeadline, kClockGateMinimum);
       const VideoFrame* payload = frame.get();
       if (target.background.opaque) {
         // The composite comes out opaque, so a keyed output gets a solid key
@@ -547,6 +607,13 @@ void Engine::clockLoop() {
 
     ticks_.store(tick, std::memory_order_relaxed);
   }
+
+  targets_.clear();
+  {
+    std::lock_guard<std::mutex> lock(exitMutex_);
+    clockExited_ = true;
+  }
+  exitCv_.notify_all();
 }
 
 void Engine::setUrl(const std::string& url) {
@@ -758,31 +825,30 @@ bool Engine::setOutputEnabled(const std::string& name, bool enabled,
     }
   }
 
+  // The same object is started or stopped, so the generation stays put and a
+  // tick the clock has already planned for it still goes out: enabling an
+  // output that is already running costs no frame.
   bool acted = false;
   bool started = true;
   std::string startError;
-  const bool ran = slot->exclusive(
-      Clock::now() + kGateWait, [&](std::unique_ptr<IOutput>& output) {
-        if (output == nullptr) {
-          started = false;
-          startError = "output '" + name + "' has no device";
-          return;
-        }
-        if (enabled == wasEnabled && output->isRunning() == enabled) {
-          return;
-        }
-        acted = true;
-        if (enabled) {
-          started = output->start(format, startError);
-        } else {
-          output->stop();
-        }
-      });
+  const auto result = slot->exclusive(Clock::now() + kGateWait, [&](IOutput& output) {
+    if (enabled == wasEnabled && output.isRunning() == enabled) {
+      return;
+    }
+    acted = true;
+    if (enabled) {
+      started = output.start(format, startError);
+    } else {
+      output.stop();
+    }
+  });
 
   std::lock_guard<std::timed_mutex> lock(mutex_);
   Entry* entry = findEntry(name);
-  if (!ran) {
-    error = busyMessage(name, *slot);
+  if (result != OutputSlot::Result::kRan) {
+    error = result == OutputSlot::Result::kBusy
+                ? busyMessage(name, *slot)
+                : "output '" + name + "' has no device";
     if (entry != nullptr) {
       entry->enabled = wasEnabled;
     }
@@ -793,7 +859,6 @@ bool Engine::setOutputEnabled(const std::string& name, bool enabled,
     error = "output '" + name + "' was removed while it was being changed";
     return false;
   }
-  entry->desc = slot->description();
   if (!enabled) {
     entry->enabled = false;
     if (acted) {
@@ -902,6 +967,7 @@ bool Engine::updateOutput(const std::string& name, const OutputSpec& spec,
   OutputSlot::Description desc;
   OutputSpec previousSpec;
   bool wasEnabled = false;
+  bool healthy = false;
   VideoFormat format;
   {
     std::lock_guard<std::timed_mutex> lock(mutex_);
@@ -941,6 +1007,7 @@ bool Engine::updateOutput(const std::string& name, const OutputSpec& spec,
     desc = entry->desc;
     previousSpec = entry->spec;
     wasEnabled = entry->enabled;
+    healthy = entry->enabled && entry->lastError.empty();
     format = format_;
   }
 
@@ -952,12 +1019,16 @@ bool Engine::updateOutput(const std::string& name, const OutputSpec& spec,
   // Only for an output that is actually running, though — on a broken one,
   // Apply is how an operator retries a card that was not plugged in yet, and
   // that has to keep reaching the code below. Running is asked through the
-  // gate; an output that cannot answer is treated as not running, and the
-  // reopen below then reports it busy.
+  // gate, briefly. If the driver is too busy to say, the engine's own record
+  // decides: a background change needs no driver call, so it must not fail,
+  // or reopen the device, because the driver is busy.
   bool running = false;
-  if (desc.present) {
-    slot->call(Clock::now() + kGateWait, desc.generation,
-               [&](IOutput& output) { running = output.isRunning(); });
+  const bool answered =
+      desc.present &&
+      slot->call(Clock::now() + kRunningProbeWait, desc.generation,
+                 [&](IOutput& output) { running = output.isRunning(); });
+  if (!answered) {
+    running = desc.present && healthy;
   }
   if (running && spec.name == name && spec.kind == previousSpec.kind &&
       spec.deviceIndex == previousSpec.deviceIndex &&
@@ -992,7 +1063,7 @@ bool Engine::updateOutput(const std::string& name, const OutputSpec& spec,
   bool replaced = false;
   bool restored = false;
   std::string restoreError;
-  const bool ran = slot->exclusive(
+  const bool ran = slot->replace(
       Clock::now() + kGateWait, [&](std::unique_ptr<IOutput>& output) {
         if (output != nullptr) {
           output->stop();
@@ -1087,13 +1158,13 @@ bool Engine::removeOutput(const std::string& name, std::string* error) {
   // Stopped and destroyed under its gate, so never under a call in flight. If
   // the gate cannot be had the output stays in the list, as it was: removing
   // the entry would leave a device open with nothing left that could close it.
-  const bool ran = slot->exclusive(Clock::now() + kGateWait,
-                                   [](std::unique_ptr<IOutput>& output) {
-                                     if (output != nullptr) {
-                                       output->stop();
-                                       output.reset();
-                                     }
-                                   });
+  const bool ran = slot->replace(Clock::now() + kGateWait,
+                                 [](std::unique_ptr<IOutput>& output) {
+                                   if (output != nullptr) {
+                                     output->stop();
+                                     output.reset();
+                                   }
+                                 });
 
   std::lock_guard<std::timed_mutex> lock(mutex_);
   if (!ran) {
@@ -1119,11 +1190,13 @@ bool Engine::removeOutput(const std::string& name, std::string* error) {
 }
 
 bool Engine::setFormat(const VideoFormat& format, std::string& error) {
+  VideoFormat previous;
   {
     std::lock_guard<std::timed_mutex> lock(mutex_);
     if (format_ == format) {
       return true;
     }
+    previous = format_;
   }
 
   std::unique_lock<std::timed_mutex> control(controlMutex_, std::defer_lock);
@@ -1132,122 +1205,137 @@ bool Engine::setFormat(const VideoFormat& format, std::string& error) {
     return false;
   }
 
-  // Park the clock thread first. Everything below rebuilds state that thread
-  // owns, and the pools in particular cannot be swapped while it is reading
-  // them. Scoped, so an early return still releases it.
-  ClockPause pause(this);
-  if (!pause.parked()) {
-    // The clock did not stop within a second, which means it is stuck inside
-    // something — an output's driver, most likely. Rebuilding its pools
-    // underneath it would be the heap overflow this pause exists to prevent.
-    error = "the format was not changed: the clock did not stop for it, which "
-            "usually means an output's driver is not answering";
-    diag::error("%s", error.c_str());
-    return false;
-  }
-
   struct Item {
     std::string name;
     std::shared_ptr<OutputSlot> slot;
-    bool enabled = false;
+    bool wasEnabled = false;
     bool stopped = false;
     bool started = false;
     std::string startError;
   };
   std::vector<Item> items;
+
+  // 1. Stop feeding every output, then stop it, with the clock still running.
+  //    Every output has to be reopened — no SDI device can change mode while
+  //    running, and the IP senders advertise their raster at creation — but an
+  //    output whose driver will not stop must cost only itself: the clock keeps
+  //    ticking for the others, and nothing here waits on it for long.
   {
     std::lock_guard<std::timed_mutex> lock(mutex_);
-    for (const auto& entry : outputs_) {
+    for (auto& entry : outputs_) {
       items.push_back(Item{entry.spec.name, entry.slot, entry.enabled});
+      entry.enabled = false;
     }
   }
-
-  // Every output has to be reopened: no SDI device can change mode while
-  // running, and the IP senders advertise their raster at creation. Each one
-  // under its own gate, and without mutex_, so state() keeps answering through
-  // what can be several seconds of cards reopening.
   for (auto& item : items) {
     item.stopped = item.slot->exclusive(Clock::now() + kGateWait,
-                                        [](std::unique_ptr<IOutput>& output) {
-                                          if (output != nullptr) {
-                                            output->stop();
-                                          }
-                                        });
+                                        [](IOutput& output) { output.stop(); }) !=
+                   OutputSlot::Result::kBusy;
   }
 
+  // 2. Park the clock only for the swap of what it owns: the raster, the epoch,
+  //    the pools, the black frame. Seconds of cards reopening no longer happen
+  //    with it parked.
+  bool parked = false;
+  {
+    ClockPause pause(this);
+    parked = pause.parked();
+    if (parked) {
+      {
+        std::lock_guard<std::timed_mutex> lock(mutex_);
+        format_ = format;
+      }
+      formatEpoch_.fetch_add(1);
+      uyvyPool_ = FramePool::create(format, PixelFormat::kUYVY, 4);
+      blackPool_ = FramePool::create(format, PixelFormat::kBGRA, 2);
+      straightPool_ = FramePool::create(format, PixelFormat::kBGRA, 4);
+      backgroundPool_ = FramePool::create(format, PixelFormat::kBGRA, 4);
+      uyvyScratch_.reset();
+      straightScratch_.reset();
+      // Every composited frame belongs to the old raster. Dropping the variants
+      // rather than the buffers inside them keeps the "wrong shape" case
+      // impossible instead of merely guarded.
+      backgrounds_.clear();
+      blackFrame_ = blackPool_->acquire();
+      fillBlackBgra(blackFrame_->data(), blackFrame_->rowBytes(), format.width,
+                    format.height);
+      blackFrame_->setSequence(-1);  // "no paint yet" — see the constructor
+
+      if (browser_ != nullptr) {
+        browser_->setFormat(format);
+      }
+      if (clock_ != nullptr) {
+        clock_->setRate(format.rate);
+      }
+    }
+  }
+  // The clock did not stop within a second, which means it is stuck inside
+  // something — an output's driver, most likely. Rebuilding its pools
+  // underneath it would be the heap overflow the pause exists to prevent, so
+  // nothing is swapped and the outputs go back on at the raster they had.
+  const VideoFormat openAt = parked ? format : previous;
+
+  // 3. Reopen, with the clock running. Entries stay disabled until each one is
+  //    back, so the clock does not feed an output halfway through opening.
+  for (auto& item : items) {
+    if (!item.wasEnabled || !item.stopped) {
+      continue;
+    }
+    const auto result = item.slot->exclusive(
+        Clock::now() + kGateWait,
+        [&](IOutput& output) { item.started = output.start(openAt, item.startError); });
+    if (result == OutputSlot::Result::kBusy) {
+      item.started = false;
+      item.startError = busyMessage(item.name, *item.slot);
+    } else if (result == OutputSlot::Result::kEmpty) {
+      item.started = false;
+      item.startError = "output '" + item.name + "' has no device";
+    }
+  }
+
+  // 4. Feed the ones that came back.
+  bool allStarted = true;
   {
     std::lock_guard<std::timed_mutex> lock(mutex_);
-    format_ = format;
-  }
-  formatEpoch_.fetch_add(1);
-  uyvyPool_ = FramePool::create(format, PixelFormat::kUYVY, 4);
-  blackPool_ = FramePool::create(format, PixelFormat::kBGRA, 2);
-  straightPool_ = FramePool::create(format, PixelFormat::kBGRA, 4);
-  backgroundPool_ = FramePool::create(format, PixelFormat::kBGRA, 4);
-  uyvyScratch_.reset();
-  straightScratch_.reset();
-  // Every composited frame belongs to the old raster. Dropping the variants
-  // rather than the buffers inside them keeps the "wrong shape" case impossible
-  // instead of merely guarded.
-  backgrounds_.clear();
-  blackFrame_ = blackPool_->acquire();
-  fillBlackBgra(blackFrame_->data(), blackFrame_->rowBytes(), format.width,
-                format.height);
-  blackFrame_->setSequence(-1);  // "no paint yet" — see the constructor
-
-  if (browser_ != nullptr) {
-    browser_->setFormat(format);
-  }
-  if (clock_ != nullptr) {
-    clock_->setRate(format.rate);
-  }
-
-  for (auto& item : items) {
-    if (!item.enabled || !item.stopped) {
-      continue;
-    }
-    item.slot->exclusive(Clock::now() + kGateWait,
-                         [&](std::unique_ptr<IOutput>& output) {
-                           if (output == nullptr) {
-                             item.startError = "output has no device";
-                             return;
-                           }
-                           item.started = output->start(format, item.startError);
-                         });
-  }
-
-  bool allStarted = true;
-  std::lock_guard<std::timed_mutex> lock(mutex_);
-  for (auto& item : items) {
-    Entry* entry = findEntry(item.name);
-    if (entry == nullptr) {
-      continue;
-    }
-    entry->desc = item.slot->description();
-    if (!item.stopped) {
-      // Still open at the old raster, so it must not be fed the new one: the
-      // backend would copy a frame of one size into a buffer of another.
-      const std::string message =
-          "did not stop for the format change: " + busyMessage(item.name, *item.slot);
-      entry->enabled = false;
-      entry->lastError = message;
-      allStarted = false;
-      if (error.empty()) {
-        error = "'" + item.name + "' " + message;
+    for (auto& item : items) {
+      Entry* entry = findEntry(item.name);
+      if (entry == nullptr) {
+        continue;
       }
-      continue;
-    }
-    if (!item.enabled) {
-      continue;
-    }
-    if (!item.started) {
+      if (!item.stopped) {
+        // Still open at the old raster, so it must not be fed the new one: the
+        // backend would copy a frame of one size into a buffer of another.
+        const std::string message =
+            "did not stop for the format change: " + busyMessage(item.name, *item.slot);
+        entry->lastError = message;
+        allStarted = false;
+        if (error.empty()) {
+          error = "'" + item.name + "' " + message;
+        }
+        continue;
+      }
+      if (!item.wasEnabled) {
+        continue;
+      }
+      if (item.started) {
+        entry->enabled = true;
+        entry->lastError.clear();
+        continue;
+      }
       entry->lastError = item.startError;
-      entry->enabled = false;
       allStarted = false;
       if (error.empty()) {
         error = "'" + item.name + "': " + item.startError;
       }
     }
+  }
+
+  if (!parked) {
+    error = "the format was not changed: the clock did not stop for it, which "
+            "usually means an output's driver is not answering; the outputs "
+            "were reopened at " + previous.toString();
+    diag::error("%s", error.c_str());
+    return false;
   }
   diag::info("engine raster now %s", format.toString().c_str());
   return allStarted;
@@ -1361,11 +1449,14 @@ json::Value Engine::state() const {
     formatDetail.set("interlaced", json::Value(format.interlaced));
     root.set("format_detail", formatDetail);
 
-    // One deadline for every output together: a wedged one costs this call at
-    // most the budget once, and one wedged for over a second costs nothing.
-    const auto deadline = Clock::now() + kStatusBudget;
+    // One deadline for every output together, so a wedged one costs this call
+    // at most the budget once (and one wedged for over a second costs nothing),
+    // with a small floor per output so the ones after a slow one still get
+    // asked rather than reporting from their last status.
+    const auto sharedDeadline = Clock::now() + kStatusBudget;
     json::Value outputs = json::Value::array();
     for (const auto& row : rows) {
+      const auto deadline = OutputSlot::atLeast(sharedDeadline, kStatusMinimum);
       json::Value value =
           row.present ? row.slot->status(deadline) : json::Value::object();
       value.set("name", json::Value(row.spec.name));

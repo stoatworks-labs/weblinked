@@ -241,6 +241,7 @@ set(WEBLINKED_CORE_SOURCES
   src/core/playout_schedule.h
   src/core/recycle_ring.h
   src/core/call_gate.h
+  src/core/source_table.h
   src/core/pixel_convert.cpp
   src/core/pixel_convert.h
   src/core/rotated_blit.cpp

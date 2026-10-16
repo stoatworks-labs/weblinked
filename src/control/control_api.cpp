@@ -157,11 +157,17 @@ bool ControlApi::withRequestSource(const HttpServer::Request& request,
     response.error(503, "no sources are running");
     return false;
   }
-  if (!sources_->withSource(id, fn)) {
-    response.error(404, "no source called '" + id + "'");
-    return false;
+  switch (sources_->withSource(id, fn)) {
+    case SourceManager::Access::kDone:
+      return true;
+    case SourceManager::Access::kClosing:
+      response.error(503, "source '" + id + "' is being removed");
+      return false;
+    case SourceManager::Access::kMissing:
+      break;
   }
-  return true;
+  response.error(404, "no source called '" + id + "'");
+  return false;
 }
 
 ControlApi::~ControlApi() { stop(); }
@@ -819,7 +825,8 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
     }
     std::string error;
     if (!sources_->remove(id, error)) {
-      response.error(404, error);
+      // Busy is not "not found": the source is there, and still running.
+      response.error(sources_->has(id) ? 409 : 404, error);
       return;
     }
     ok(response);
@@ -974,9 +981,10 @@ void ControlApi::handleOsc(const OscServer::Message& message) {
   // One lookup for the whole message: every branch below needs the engine, and
   // holding it open once means a removal cannot land between the dispatch and
   // the call.
-  const bool delivered = sources_->withSource(target, [&](Engine& engine) {
-    handleOscForSource(engine, action, message);
-  });
+  const bool delivered =
+      sources_->withSource(target, [&](Engine& engine) {
+        handleOscForSource(engine, action, message);
+      }) == SourceManager::Access::kDone;
   if (!delivered) {
     diag::warn("osc: no source called '%s' for %s", target.c_str(),
                message.address.c_str());

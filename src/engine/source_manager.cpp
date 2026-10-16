@@ -7,24 +7,29 @@
 
 namespace weblinked {
 
+namespace {
+
+/// How long a removal waits for the requests already inside a source. Longer
+/// than a control request can legitimately take — up to 30 s queued behind
+/// another change on that source (Engine's kControlWait), plus its own gate
+/// waits — so that a removal behind ordinary traffic succeeds, and one behind
+/// a request that will never come out fails rather than waiting with it.
+constexpr auto kRemoveWait = std::chrono::seconds(40);
+
+/// At shutdown the control API has already been stopped, and has waited for
+/// its handlers; this is for the straggler that is stuck.
+constexpr auto kShutdownWait = std::chrono::seconds(2);
+
+}  // namespace
+
 SourceManager::SourceManager() = default;
 
 SourceManager::~SourceManager() { stop(); }
 
-const SourceManager::Entry* SourceManager::findLocked(
-    const std::string& id) const {
-  for (const auto& entry : sources_) {
-    if (entry.id == id) {
-      return &entry;
-    }
-  }
-  return nullptr;
-}
-
 bool SourceManager::start(const AppConfig& config, const Options& options,
                           std::string& error) {
   {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(optionsMutex_);
     options_ = options;
   }
 
@@ -56,30 +61,28 @@ bool SourceManager::start(const AppConfig& config, const Options& options,
 }
 
 void SourceManager::stop() {
-  std::vector<Entry> taken;
-  {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
-    taken = std::move(sources_);
-    sources_.clear();
+  std::vector<std::string> busy;
+  auto taken = sources_.takeAll(SourceTable<Engine>::Clock::now() + kShutdownWait,
+                                &busy);
+  for (const auto& id : busy) {
+    // Stopping it would destroy its browser under a request that is still
+    // inside. At shutdown the watchdog in main.cpp is the backstop.
+    diag::error("source '%s' still has a request inside it; not stopping it",
+                id.c_str());
   }
-  // Outside the lock: each stop() joins a clock thread, and nothing can reach
-  // these engines any more — they are no longer in the map.
-  for (auto& entry : taken) {
-    if (entry.engine != nullptr) {
-      entry.engine->stop();
+  // Outside any lock: each stop() joins a clock thread, and nothing can reach
+  // these engines any more — they are no longer in the table.
+  for (auto& engine : taken) {
+    if (engine != nullptr) {
+      engine->stop();
     }
   }
 }
 
 void SourceManager::halt() {
-  // Shared, like withSource(): nothing is removed, and holding it stops a
-  // concurrent remove() destroying an engine while it is being halted.
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  for (auto& entry : sources_) {
-    if (entry.engine != nullptr) {
-      entry.engine->halt();
-    }
-  }
+  // Each source held open as withSource() holds it, so a concurrent remove()
+  // cannot stop an engine while it is being halted. Nothing is removed.
+  sources_.forEach([](const std::string&, Engine& engine) { engine.halt(); });
 }
 
 bool SourceManager::add(const SourceConfig& config, std::string& error) {
@@ -88,37 +91,29 @@ bool SourceManager::add(const SourceConfig& config, std::string& error) {
   if (!prepared.validate(&error)) {
     return false;
   }
-
+  if (sources_.has(prepared.id)) {
+    error = "a source called '" + prepared.id + "' already exists";
+    return false;
+  }
   std::string cachePath;
   {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
-    if (findLocked(prepared.id) != nullptr) {
-      error = "a source called '" + prepared.id + "' already exists";
-      return false;
-    }
+    std::lock_guard<std::mutex> lock(optionsMutex_);
     cachePath = options_.cachePath;
   }
 
-  // Started outside the lock. Creating a browser is the slowest thing this class
-  // does, and doing it under the exclusive lock would stall every other source's
-  // control surface for the duration.
+  // Started before it is in the table. Creating a browser is the slowest thing
+  // this class does, and nothing else should wait on it.
   auto engine = std::make_shared<Engine>();
   if (!engine->start(engineConfigFromSource(prepared, cachePath), error)) {
     engine->stop();
     return false;
   }
-
-  {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
-    // Re-checked: the shared lock was dropped while the browser started, so
-    // another thread may have claimed this id in the meantime.
-    if (findLocked(prepared.id) != nullptr) {
-      lock.unlock();
-      engine->stop();
-      error = "a source called '" + prepared.id + "' already exists";
-      return false;
-    }
-    sources_.push_back(Entry{prepared.id, std::move(engine)});
+  // Checked again on the way in: another add may have claimed this id while the
+  // browser started.
+  if (!sources_.insert(prepared.id, engine)) {
+    engine->stop();
+    error = "a source called '" + prepared.id + "' already exists";
+    return false;
   }
 
   diag::info("source '%s' started: %s at %s", prepared.id.c_str(),
@@ -128,21 +123,22 @@ bool SourceManager::add(const SourceConfig& config, std::string& error) {
 
 bool SourceManager::remove(const std::string& id, std::string& error) {
   std::shared_ptr<Engine> taken;
-  {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
-    const auto it = std::find_if(
-        sources_.begin(), sources_.end(),
-        [&](const Entry& entry) { return entry.id == id; });
-    if (it == sources_.end()) {
+  switch (sources_.remove(id, kRemoveWait, &taken)) {
+    case SourceTable<Engine>::Removal::kMissing:
       error = "no source called '" + id + "'";
       return false;
-    }
-    taken = std::move(it->engine);
-    sources_.erase(it);
+    case SourceTable<Engine>::Removal::kBusy:
+      error = "source '" + id + "' was not removed: a request inside it has "
+              "not finished (an output's driver may not be answering — see "
+              "\"stale\" in /api/state)";
+      diag::warn("%s", error.c_str());
+      return false;
+    case SourceTable<Engine>::Removal::kRemoved:
+      break;
   }
-  // Outside the lock, and safe: the entry is gone from the map, so withSource()
-  // can no longer hand this engine to anyone, and every call that was already
-  // inside it finished before the exclusive lock above was granted.
+  // Safe: it is out of the table, so withSource() can no longer hand it to
+  // anyone, and every call that was inside it came out before remove()
+  // returned.
   if (taken != nullptr) {
     taken->stop();
   }
@@ -150,69 +146,36 @@ bool SourceManager::remove(const std::string& id, std::string& error) {
   return true;
 }
 
-bool SourceManager::withSource(const std::string& id,
-                               const std::function<void(Engine&)>& fn) const {
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  const Entry* entry = findLocked(id);
-  if (entry == nullptr || entry->engine == nullptr) {
-    return false;
-  }
-  fn(*entry->engine);
-  return true;
+SourceManager::Access SourceManager::withSource(
+    const std::string& id, const std::function<void(Engine&)>& fn) const {
+  return sources_.with(id, fn);
 }
 
-std::string SourceManager::primaryId() const {
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  return sources_.empty() ? std::string() : sources_.front().id;
-}
+std::string SourceManager::primaryId() const { return sources_.firstId(); }
 
-std::vector<std::string> SourceManager::ids() const {
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  std::vector<std::string> result;
-  result.reserve(sources_.size());
-  for (const auto& entry : sources_) {
-    result.push_back(entry.id);
-  }
-  return result;
-}
+std::vector<std::string> SourceManager::ids() const { return sources_.ids(); }
 
-bool SourceManager::has(const std::string& id) const {
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  return findLocked(id) != nullptr;
-}
+bool SourceManager::has(const std::string& id) const { return sources_.has(id); }
 
-size_t SourceManager::size() const {
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  return sources_.size();
-}
+size_t SourceManager::size() const { return sources_.size(); }
 
 json::Value SourceManager::state() const {
   json::Value root = json::Value::object();
   json::Value list = json::Value::array();
-  {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
-    for (const auto& entry : sources_) {
-      if (entry.engine != nullptr) {
-        list.push(entry.engine->state());
-      }
-    }
-    root.set("primary", json::Value(sources_.empty()
-                                        ? std::string()
-                                        : sources_.front().id));
-  }
+  // Each engine's state() is bounded (see Engine::state), and none of them is
+  // asked holding anything another source needs.
+  sources_.forEach(
+      [&list](const std::string&, Engine& engine) { list.push(engine.state()); });
+  root.set("primary", json::Value(sources_.firstId()));
   root.set("sources", list);
   return root;
 }
 
 AppConfig SourceManager::configuration() const {
   AppConfig config;
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  config.sources.reserve(sources_.size());
-  for (const auto& entry : sources_) {
-    if (entry.engine != nullptr) {
-      config.sources.push_back(entry.engine->configuration());
-    }
-  }
+  sources_.forEach([&config](const std::string&, Engine& engine) {
+    config.sources.push_back(engine.configuration());
+  });
   return config;
 }
 
@@ -244,11 +207,14 @@ bool SourceManager::applyConfiguration(const AppConfig& config,
       std::string applyError;
       // Held open for the whole reconcile: applyConfiguration can stop and
       // reopen every output, which must not race a removal.
-      withSource(source.id, [&](Engine& engine) {
+      const auto access = withSource(source.id, [&](Engine& engine) {
         if (!engine.applyConfiguration(source, applyError)) {
           note(applyError);
         }
       });
+      if (access == Access::kClosing) {
+        note("source '" + source.id + "' is being removed");
+      }
       continue;
     }
     std::string addError;

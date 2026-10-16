@@ -192,6 +192,10 @@ class Engine {
  private:
   void clockLoop();
 
+  /// The second half of halt(): stops and destroys every output through its
+  /// slot. Safe with the clock thread still running, or stuck.
+  void closeOutputs();
+
   /// Parks the clock thread and returns once it has acknowledged, or after a
   /// second if it has not — false then, and the caller must not touch
   /// clock-thread state: the thread is somewhere else, most likely inside an
@@ -328,6 +332,12 @@ class Engine {
   std::condition_variable pauseCv_;
   bool pauseRequested_ = false;
   bool paused_ = false;
+
+  /// Set by the clock thread as it leaves, so halt() can wait for it with a
+  /// deadline before falling back to an unbounded join.
+  std::mutex exitMutex_;
+  std::condition_variable exitCv_;
+  bool clockExited_ = false;
 
   /// Bumped on every format change so the clock thread knows to forget the frame
   /// it was holding, which belongs to the previous raster.

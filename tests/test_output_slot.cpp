@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -140,11 +141,14 @@ WEBLINKED_TEST(slot_status_returns_promptly_while_submit_is_wedged) {
 
   std::thread clock = wedgeInSubmit(slot, control, frame);
 
-  // The state poll: bounded by its own deadline, not by the driver.
+  // The state poll: bounded by its own deadline, not by the driver. Busy for
+  // less than the wedge threshold is only busy — the last figures, and not
+  // "stale", which would flicker the control page red for every card opening.
   auto start = Clock::now();
   json::Value status = slot->status(start + milliseconds(100));
   const int64_t firstWait = millisSince(start);
-  CHECK(status["stale"].asBool(false));
+  CHECK(!status["stale"].asBool(true));
+  CHECK(!status.has("driver_busy_ms"));
   CHECK_EQ(status["frames"].asInt(-1), 0);  // the last value that completed
   CHECK(firstWait >= 90);
   CHECK(firstWait < 2'000);
@@ -162,11 +166,10 @@ WEBLINKED_TEST(slot_status_returns_promptly_while_submit_is_wedged) {
   // A control request is refused, not parked.
   start = Clock::now();
   bool stopped = false;
-  CHECK(!slot->exclusive(start + std::chrono::seconds(5),
-                         [&](std::unique_ptr<IOutput>& output) {
-                           output->stop();
-                           stopped = true;
-                         }));
+  CHECK(slot->exclusive(start + std::chrono::seconds(5), [&](IOutput& output) {
+          output.stop();
+          stopped = true;
+        }) == OutputSlot::Result::kBusy);
   CHECK(!stopped);
   CHECK(millisSince(start) < 1'000);
   CHECK(slot->refusals() >= 3);
@@ -187,8 +190,8 @@ WEBLINKED_TEST(slot_never_destroys_an_output_with_a_call_in_flight) {
 
   // Removal while the driver is inside submit(): the gate is held, so the
   // output cannot be destroyed under the call — removal is refused instead.
-  CHECK(!slot->exclusive(Clock::now() + milliseconds(100),
-                         [](std::unique_ptr<IOutput>& output) { output.reset(); }));
+  CHECK(!slot->replace(Clock::now() + milliseconds(100),
+                       [](std::unique_ptr<IOutput>& output) { output.reset(); }));
   CHECK_EQ(control->destroyed.load(), 0);
 
   unwedge(control);
@@ -198,11 +201,11 @@ WEBLINKED_TEST(slot_never_destroys_an_output_with_a_call_in_flight) {
   // clock thread's list for this tick — finds it empty and does nothing.
   std::shared_ptr<OutputSlot> heldByClock = slot;
   const uint64_t oldGeneration = slot->description().generation;
-  CHECK(slot->exclusive(Clock::now() + milliseconds(100),
-                        [](std::unique_ptr<IOutput>& output) {
-                          output->stop();
-                          output.reset();
-                        }));
+  CHECK(slot->replace(Clock::now() + milliseconds(100),
+                      [](std::unique_ptr<IOutput>& output) {
+                        output->stop();
+                        output.reset();
+                      }));
   CHECK_EQ(control->destroyed.load(), 1);
   slot.reset();
   bool ran = false;
@@ -224,11 +227,11 @@ WEBLINKED_TEST(slot_generation_stops_a_tick_planned_for_the_old_output) {
   CHECK(planned.present);
   CHECK(planned.pixelFormat == PixelFormat::kUYVY);
 
-  CHECK(slot->exclusive(Clock::now() + milliseconds(100),
-                        [&](std::unique_ptr<IOutput>& output) {
-                          output = std::make_unique<FakeOutput>(control,
-                                                                PixelFormat::kBGRA);
-                        }));
+  CHECK(slot->replace(Clock::now() + milliseconds(100),
+                      [&](std::unique_ptr<IOutput>& output) {
+                        output = std::make_unique<FakeOutput>(control,
+                                                              PixelFormat::kBGRA);
+                      }));
   const auto now = slot->description();
   CHECK(now.generation != planned.generation);
   CHECK(now.pixelFormat == PixelFormat::kBGRA);
@@ -241,9 +244,72 @@ WEBLINKED_TEST(slot_generation_stops_a_tick_planned_for_the_old_output) {
                    [&](IOutput&) { ran = true; }));
   CHECK(ran);
 
-  // Even a start or stop that leaves the same object moves the generation on:
-  // a replacement can be allocated at the address of what it replaced.
-  CHECK(slot->exclusive(Clock::now() + milliseconds(100),
-                        [](std::unique_ptr<IOutput>&) {}));
-  CHECK(slot->description().generation != now.generation);
+  // A replace() moves the generation on even when it leaves the same object:
+  // a replacement can be allocated at the address of what it replaced, so the
+  // slot cannot tell by looking.
+  CHECK(slot->replace(Clock::now() + milliseconds(100),
+                      [](std::unique_ptr<IOutput>&) {}));
+  const auto afterReplace = slot->description();
+  CHECK(afterReplace.generation != now.generation);
+
+  // But starting or stopping the same object does not: re-enabling an output
+  // that is already running must not cost the tick the clock planned for it.
+  CHECK(slot->exclusive(Clock::now() + milliseconds(100), [](IOutput& output) {
+          output.stop();
+          std::string error;
+          output.start(VideoFormat{}, error);
+        }) == OutputSlot::Result::kRan);
+  CHECK(slot->description().generation == afterReplace.generation);
+  ran = false;
+  CHECK(slot->call(Clock::now() + milliseconds(100), afterReplace.generation,
+                   [&](IOutput&) { ran = true; }));
+  CHECK(ran);
+
+  // And an empty slot says so, rather than "busy".
+  CHECK(slot->replace(Clock::now() + milliseconds(100),
+                      [](std::unique_ptr<IOutput>& output) { output.reset(); }));
+  CHECK(slot->exclusive(Clock::now() + milliseconds(100), [](IOutput&) {}) ==
+        OutputSlot::Result::kEmpty);
+}
+
+WEBLINKED_TEST(slot_a_spent_budget_still_gives_each_output_a_fair_wait) {
+  // Issue #12 review: the clock gave all its outputs one 5 ms deadline, so by
+  // the time a DeckLink late in the list came up after slow submits, the
+  // deadline had passed and it got a single try. A state poll holding its gate
+  // for a moment then cost it a frame. Here the fake's status() holds the gate
+  // for 20 ms, and the "clock" arrives with its shared budget already spent.
+  class SlowStatus final : public IOutput {
+   public:
+    SlowStatus() : IOutput("slow") { running_ = true; }
+    std::string kind() const override { return "slow"; }
+    PixelFormat pixelFormat() const override { return PixelFormat::kUYVY; }
+    bool start(const VideoFormat&, std::string&) override { return true; }
+    void stop() override {}
+    void submit(const VideoFrame&, const AudioBlock&) override {}
+    json::Value status() const override {
+      std::this_thread::sleep_for(milliseconds(20));
+      return json::Value::object();
+    }
+  };
+  auto slot = std::make_shared<OutputSlot>(std::make_unique<SlowStatus>());
+  const uint64_t generation = slot->description().generation;
+
+  const auto pollWhile = [&](const std::function<bool()>& callFromClock) {
+    std::thread poll([&] { slot->status(Clock::now() + milliseconds(500)); });
+    std::this_thread::sleep_for(milliseconds(5));  // the poll has the gate
+    const bool ran = callFromClock();
+    poll.join();
+    return ran;
+  };
+
+  const auto spent = Clock::now() - milliseconds(1);
+  // Before: the spent deadline alone — one try, and the tick is lost.
+  CHECK(!pollWhile([&] {
+    return slot->call(spent, generation, [](IOutput&) {});
+  }));
+  // After: never less than a floor of its own, which outlasts the poll.
+  CHECK(pollWhile([&] {
+    return slot->call(OutputSlot::atLeast(spent, milliseconds(50)), generation,
+                      [](IOutput&) {});
+  }));
 }

@@ -876,7 +876,13 @@ function outputEditor(output, isNew) {
     if (shown.includes('keying') && field('keying').value) {
       body.options.keying = field('keying').value;
       body.options.key_level = Number(field('key_level').value);
-      if (field('premultiplied_fill').checked) body.options.premultiplied_fill = true;
+      // Sent whenever the output already had it, ticked or not: the command
+      // line writes it for every keyed --decklink, and leaving it out when
+      // unticked made an unchanged Apply look like a new spec, which reopens
+      // the card. Left out only when it was never there and is not wanted.
+      if (field('premultiplied_fill').checked || 'premultiplied_fill' in options) {
+        body.options.premultiplied_fill = field('premultiplied_fill').checked;
+      }
     }
     if (shown.includes('factor')) body.options.factor = Number(field('factor').value);
     if (shown.includes('display')) body.options.display = Number(field('display').value);

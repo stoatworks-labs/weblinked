@@ -16,7 +16,10 @@
 // them back — never created per tick and never destroyed by the completion
 // thread. Creating one per tick let the SDK's buffer allocator be emptied on the
 // completion thread while the clock thread was inside CreateVideoFrame, and on
-// Desktop Video 16.4 that deadlocks inside the SDK (issue #12). The display time
+// Desktop Video 16.4 that deadlocks inside the SDK (issue #12). On SDK 14.3 and
+// later the pixel memory is WebLinked's own, wrapped with
+// CreateVideoFrameWithBuffer, so the SDK's allocator pool is not used at all,
+// and it is kept across a stop and start at the same raster. The display time
 // of each frame comes from PlayoutSchedule, in the display mode's own exact time
 // base, and is moved forward when the card's playhead has overtaken it (#13).
 //
@@ -27,10 +30,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "DeckLinkAPI.h"
@@ -111,21 +117,23 @@ class FrameBytes {
       buffer_ = nullptr;
       return;
     }
-    if (buffer_->StartAccess(bmdBufferAccessWrite) != S_OK) {
-      buffer_->Release();
-      buffer_ = nullptr;
-      return;
-    }
-    accessing_ = true;
-    if (buffer_->GetBytes(&bytes_) != S_OK) {
-      bytes_ = nullptr;
-    }
+    open();
 #else
     if (frame->GetBytes(&bytes_) != S_OK) {
       bytes_ = nullptr;
     }
 #endif
   }
+
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+  /// A buffer WebLinked owns, written directly rather than through the frame
+  /// that wraps it — but bracketed the same way, so the SDK and the overlap
+  /// count in AppVideoBuffer see every write.
+  explicit FrameBytes(IDeckLinkVideoBuffer* buffer) : buffer_(buffer) {
+    buffer_->AddRef();
+    open();
+  }
+#endif
 
   ~FrameBytes() {
 #if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
@@ -144,6 +152,20 @@ class FrameBytes {
   void* data() const { return bytes_; }
 
  private:
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+  void open() {
+    if (buffer_->StartAccess(bmdBufferAccessWrite) != S_OK) {
+      buffer_->Release();
+      buffer_ = nullptr;
+      return;
+    }
+    accessing_ = true;
+    if (buffer_->GetBytes(&bytes_) != S_OK) {
+      bytes_ = nullptr;
+    }
+  }
+#endif
+
   void* bytes_ = nullptr;
 #if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
   IDeckLinkVideoBuffer* buffer_ = nullptr;
@@ -151,13 +173,122 @@ class FrameBytes {
 #endif
 };
 
-/// Every DeckLink output in the process draws its frames from the SDK's one
-/// allocator pool, and the deadlock in #12 is that pool being emptied on two
-/// threads at once. Rings are only ever filled and emptied under this, so two
-/// outputs starting or stopping together cannot reproduce it between them.
-/// Namespace scope rather than a function-local static: the engine is built
-/// with -fno-threadsafe-statics.
-std::mutex gFrameAllocationMutex;
+/// Every DeckLink output in the process draws its frames from the SDK, and the
+/// deadlock in #12 was the SDK's allocator pool being emptied on two threads at
+/// once. Rings are only ever filled and emptied under this, so two outputs
+/// starting or stopping together cannot reproduce it between them. Timed: a
+/// driver wedged inside one card's CreateVideoFrame must not stop every other
+/// DeckLink, in every source, from starting or stopping too. Namespace scope
+/// rather than a function-local static: the engine is built with
+/// -fno-threadsafe-statics.
+std::timed_mutex gFrameAllocationMutex;
+constexpr auto kAllocationWait = std::chrono::seconds(5);
+
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+/// Pixel memory WebLinked owns, given to the SDK with CreateVideoFrameWithBuffer.
+///
+/// The point is what it keeps out: a frame made this way has no buffer from the
+/// SDK's VideoBufferAllocatorPool, so nothing WebLinked does can empty that
+/// pool — not a frame released on the completion thread, not a ring released
+/// at a stop. That pool emptying under a concurrent allocation is where #12
+/// deadlocked. The contract is the SDK manual's (2.5.53) and its KeyerOutput
+/// sample's: at least RowBytesForPixelFormat x height bytes, GetBytes giving
+/// the CPU address, StartAccess/EndAccess counted per kind of access.
+///
+/// It also keeps count of one thing worth knowing on a real card: a write
+/// starting while a read is open, or the reverse. The ring never writes a
+/// frame the card has, so if the SDK brackets its own reads, this stays 0.
+class AppVideoBuffer final : public IDeckLinkVideoBuffer {
+ public:
+  static AppVideoBuffer* create(size_t size) {
+    // Page-aligned, and rounded up to a page: memory a card transfers from.
+    constexpr size_t kAlignment = 4096;
+    const size_t rounded = (size + kAlignment - 1) / kAlignment * kAlignment;
+    void* bytes = ::operator new(rounded, std::align_val_t(kAlignment), std::nothrow);
+    if (bytes == nullptr) {
+      return nullptr;
+    }
+    return new (std::nothrow) AppVideoBuffer(bytes, size);
+  }
+
+  HRESULT QueryInterface(REFIID iid, LPVOID* out) override {
+    // IUnknown's IID, 00000000-0000-0000-C000-000000000046, as bytes: the same
+    // sixteen on every platform, where the SDK spells the constant three ways.
+    static const uint8_t kUnknown[16] = {0, 0, 0, 0, 0, 0, 0, 0,
+                                         0xC0, 0, 0, 0, 0, 0, 0, 0x46};
+    if (out == nullptr) {
+      return E_INVALIDARG;
+    }
+    if (std::memcmp(&iid, &IID_IDeckLinkVideoBuffer, sizeof(kUnknown)) == 0 ||
+        std::memcmp(&iid, kUnknown, sizeof(kUnknown)) == 0) {
+      *out = static_cast<IDeckLinkVideoBuffer*>(this);
+      AddRef();
+      return S_OK;
+    }
+    *out = nullptr;
+    return E_NOINTERFACE;
+  }
+  ULONG AddRef() override { return ++refs_; }
+  ULONG Release() override {
+    const ULONG left = --refs_;
+    if (left == 0) {
+      delete this;
+    }
+    return left;
+  }
+
+  HRESULT GetBytes(void** buffer) override {
+    if (buffer == nullptr) {
+      return E_INVALIDARG;
+    }
+    *buffer = bytes_;
+    return S_OK;
+  }
+  HRESULT GetSize(uint64_t* size) override {
+    if (size == nullptr) {
+      return E_INVALIDARG;
+    }
+    *size = size_;
+    return S_OK;
+  }
+  HRESULT StartAccess(BMDBufferAccessFlags flags) override {
+    const bool reading = (flags & bmdBufferAccessRead) != 0;
+    const bool writing = (flags & bmdBufferAccessWrite) != 0;
+    if ((writing && readers_.load() > 0) || (reading && writers_.load() > 0)) {
+      ++overlaps_;
+    }
+    if (reading) ++readers_;
+    if (writing) ++writers_;
+    return S_OK;
+  }
+  HRESULT EndAccess(BMDBufferAccessFlags flags) override {
+    const bool reading = (flags & bmdBufferAccessRead) != 0;
+    const bool writing = (flags & bmdBufferAccessWrite) != 0;
+    if ((reading && readers_.load() <= 0) || (writing && writers_.load() <= 0)) {
+      return E_INVALIDARG;  // the manual's answer to an unmatched EndAccess
+    }
+    if (reading) --readers_;
+    if (writing) --writers_;
+    return S_OK;
+  }
+
+  int64_t overlaps() const { return overlaps_.load(); }
+
+ private:
+  AppVideoBuffer(void* bytes, size_t size) : bytes_(bytes), size_(size) {}
+  // Private, and virtual through the interface: only Release() destroys one.
+  ~AppVideoBuffer() override {
+    ::operator delete(bytes_, std::align_val_t(4096));
+  }
+
+  void* bytes_;
+  size_t size_;
+  std::atomic<ULONG> refs_{1};
+  std::atomic<int> readers_{0};
+  std::atomic<int> writers_{0};
+  std::atomic<int64_t> overlaps_{0};
+};
+#endif
 
 using FrameRing = RecycleRing<IDeckLinkMutableVideoFrame>;
 
@@ -287,7 +418,12 @@ class DeckLinkOutput final : public IOutput {
             std::clamp(spec.optionInt("key_level", 255), 0, 255))),
         premultipliedFill_(spec.optionBool("premultiplied_fill", false)) {}
 
-  ~DeckLinkOutput() override { stop(); }
+  ~DeckLinkOutput() override {
+    stop();
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+    releaseBuffers();
+#endif
+  }
 
   std::string kind() const override { return "decklink"; }
 
@@ -447,7 +583,7 @@ class DeckLinkOutput final : public IOutput {
     // is StartAccess/EndAccess on the frame's IDeckLinkVideoBuffer. The access
     // ends with this block, before the frame is scheduled.
     bool written = false;
-    if (FrameBytes access(frame); void* bytes = access.data()) {
+    if (FrameBytes access = bytesOf(frame); void* bytes = access.data()) {
       const int cardStride = frame->GetRowBytes();
       const int ourStride = video.rowBytes();
       if (cardStride == ourStride) {
@@ -508,6 +644,19 @@ class DeckLinkOutput final : public IOutput {
                                            : 0));
     value.set("ring_misses",
               json::Value(ringMisses_ + (ring_ != nullptr ? ring_->misses() : 0)));
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+    // Whose memory the frames are in: ours, so the SDK's allocator pool is out
+    // of it. buffer_allocations counts how often the ring's memory was made —
+    // once per raster, not once per start. buffer_overlaps counts a write and a
+    // read of one buffer open at once; the ring never writes a frame the card
+    // has, so a non-zero value means the SDK reads at a time this did not
+    // expect, and is worth reporting.
+    value.set("frame_memory", json::Value("app"));
+    value.set("buffer_allocations", json::Value(bufferAllocations_));
+    value.set("buffer_overlaps", json::Value(liveOverlaps()));
+#else
+    value.set("frame_memory", json::Value("sdk"));
+#endif
     // Re-anchoring (#13): how often the schedule had fallen behind the card's
     // playhead and was moved forward, and how many frame slots that skipped.
     value.set("reanchors", json::Value(reanchors_));
@@ -785,32 +934,131 @@ class DeckLinkOutput final : public IOutput {
   /// Creates every frame this run will use, while nothing else is running on
   /// this output. Our reference to each is held by the ring until
   /// releaseRing().
+  /// Creates every frame this run will use, while nothing else is running on
+  /// this output. Our reference to each is held by the ring until
+  /// releaseRing().
   bool buildRing(std::string& error) {
+    std::unique_lock<std::timed_mutex> allocation(gFrameAllocationMutex,
+                                                  std::defer_lock);
+    if (!allocation.try_lock_for(kAllocationWait)) {
+      error = "another DeckLink output has been creating or releasing frames for "
+              "over 5 s, so its driver may not be answering; '" + deviceName_ +
+              "' was not started";
+      return false;
+    }
     auto ring = std::make_shared<FrameRing>();
-    std::lock_guard<std::mutex> allocation(gFrameAllocationMutex);
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+    if (!prepareBuffers(error)) {
+      return false;
+    }
+#endif
     for (int i = 0; i < ringFrames_; ++i) {
       IDeckLinkMutableVideoFrame* frame = nullptr;
-      if (output_->CreateVideoFrame(format_.width, format_.height,
-                                    format_.rowBytes(pixelFormat()),
-                                    cardPixelFormat(), bmdFrameFlagDefault,
-                                    &frame) != S_OK ||
-          frame == nullptr) {
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+      AppVideoBuffer* buffer = buffers_[static_cast<size_t>(i)];
+      const HRESULT made = output_->CreateVideoFrameWithBuffer(
+          format_.width, format_.height, bufferRowBytes_, cardPixelFormat(),
+          bmdFrameFlagDefault, buffer, &frame);
+      const char* call = "CreateVideoFrameWithBuffer";
+#else
+      const HRESULT made = output_->CreateVideoFrame(
+          format_.width, format_.height, format_.rowBytes(pixelFormat()),
+          cardPixelFormat(), bmdFrameFlagDefault, &frame);
+      const char* call = "CreateVideoFrame";
+#endif
+      if (made != S_OK || frame == nullptr) {
         ++createFailures_;
-        error = "CreateVideoFrame failed for frame " + std::to_string(i + 1) +
+        error = std::string(call) + " failed for frame " + std::to_string(i + 1) +
                 " of " + std::to_string(ringFrames_) + " on '" + deviceName_ + "'";
-        for (IDeckLinkMutableVideoFrame* made : ring->close()) {
-          made->Release();
+        for (IDeckLinkMutableVideoFrame* done : ring->close()) {
+          done->Release();
         }
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+        frameBuffers_.clear();
+#endif
         return false;
       }
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+      frameBuffers_.emplace_back(frame, buffer);
+#endif
       ring->add(frame);
     }
     ring_ = std::move(ring);
     return true;
   }
 
-  /// Our references go last, after DisableVideoOutput has had every frame back
-  /// from the card — see stop().
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+  /// The ring's pixel memory: ours, one buffer per frame, kept from one start
+  /// to the next while the raster and pixel format are the same — so an
+  /// operator disabling and enabling an output, as #12's rig did, allocates and
+  /// frees nothing at all. Only the frames wrapping them are made per start, and
+  /// those take nothing from the SDK's pool.
+  bool prepareBuffers(std::string& error) {
+    int32_t rowBytes = 0;
+    if (output_->RowBytesForPixelFormat(cardPixelFormat(), format_.width,
+                                        &rowBytes) != S_OK ||
+        rowBytes <= 0) {
+      rowBytes = format_.rowBytes(pixelFormat());
+    }
+    const size_t bytes = static_cast<size_t>(rowBytes) *
+                         static_cast<size_t>(format_.height);
+    if (buffers_.size() == static_cast<size_t>(ringFrames_) &&
+        bufferRowBytes_ == rowBytes && bufferBytes_ == bytes) {
+      return true;
+    }
+    releaseBuffers();
+    for (int i = 0; i < ringFrames_; ++i) {
+      AppVideoBuffer* buffer = AppVideoBuffer::create(bytes);
+      if (buffer == nullptr) {
+        error = "could not allocate " + std::to_string(bytes) +
+                " bytes for frame " + std::to_string(i + 1) + " of " +
+                std::to_string(ringFrames_);
+        releaseBuffers();
+        return false;
+      }
+      buffers_.push_back(buffer);
+    }
+    bufferRowBytes_ = rowBytes;
+    bufferBytes_ = bytes;
+    ++bufferAllocations_;
+    return true;
+  }
+
+  void releaseBuffers() {
+    for (AppVideoBuffer* buffer : buffers_) {
+      bufferOverlaps_ += buffer->overlaps();
+      buffer->Release();  // ours; a frame still holding one keeps it alive
+    }
+    buffers_.clear();
+    bufferRowBytes_ = 0;
+    bufferBytes_ = 0;
+  }
+
+  /// The buffer a ring frame wraps. frameBuffers_ is fixed for the whole run,
+  /// so this reads it without a lock.
+  AppVideoBuffer* bufferFor(IDeckLinkMutableVideoFrame* frame) const {
+    for (const auto& [wrapped, buffer] : frameBuffers_) {
+      if (wrapped == frame) {
+        return buffer;
+      }
+    }
+    return nullptr;
+  }
+
+  int64_t liveOverlaps() const {
+    int64_t total = bufferOverlaps_;
+    for (const AppVideoBuffer* buffer : buffers_) {
+      total += buffer->overlaps();
+    }
+    return total;
+  }
+#endif
+
+  /// Our references to the frames go last, after DisableVideoOutput has had
+  /// every frame back from the card — see stop(). On SDK 14.3 and later that
+  /// releases only the SDK's frame objects, and our buffers stay for the next
+  /// start; before 14.3 it is the last release of SDK-allocated memory, which
+  /// is why it is serialised across outputs.
   void releaseRing() {
     if (ring_ == nullptr) {
       return;
@@ -825,13 +1073,41 @@ class DeckLinkOutput final : public IOutput {
       diag::warn("decklink '%s': %zu of %zu frames were still with the card at "
                  "stop", name_.c_str(), outstanding, frames.size());
     }
-    {
-      std::lock_guard<std::mutex> allocation(gFrameAllocationMutex);
-      for (IDeckLinkMutableVideoFrame* frame : frames) {
-        frame->Release();
-      }
+    std::unique_lock<std::timed_mutex> allocation(gFrameAllocationMutex,
+                                                  std::defer_lock);
+    const bool serialised = allocation.try_lock_for(kAllocationWait);
+#if BLACKMAGIC_DECKLINK_API_VERSION < 0x0e030000
+    if (!serialised) {
+      // Before 14.3 these are the SDK's own buffers, and another output's
+      // driver is wedged inside the allocator they go back to. Releasing them
+      // now would walk into the same lock. Leaking them is the lesser harm.
+      diag::error("decklink '%s': %zu frames not released, because another "
+                  "DeckLink output has held the frame allocator for over 5 s",
+                  name_.c_str(), frames.size());
+      ring_.reset();
+      return;
     }
+#else
+    (void)serialised;  // our own memory: no SDK allocator to wait for
+#endif
+    for (IDeckLinkMutableVideoFrame* frame : frames) {
+      frame->Release();
+    }
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+    frameBuffers_.clear();
+#endif
     ring_.reset();
+  }
+
+  /// Write access to a ring frame's pixels: our own buffer directly on SDK 14.3
+  /// and later, the frame's otherwise.
+  FrameBytes bytesOf(IDeckLinkMutableVideoFrame* frame) const {
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+    if (AppVideoBuffer* buffer = bufferFor(frame)) {
+      return FrameBytes(static_cast<IDeckLinkVideoBuffer*>(buffer));
+    }
+#endif
+    return FrameBytes(frame);
   }
 
   bool scheduleBlackFrame(std::string& error) {
@@ -840,7 +1116,7 @@ class DeckLinkOutput final : public IOutput {
       error = "the frame ring is smaller than the preroll";
       return false;
     }
-    if (FrameBytes access(frame); void* bytes = access.data()) {
+    if (FrameBytes access = bytesOf(frame); void* bytes = access.data()) {
       if (keying_ == Keying::kOff) {
         fillBlackUyvy(static_cast<uint8_t*>(bytes), frame->GetRowBytes(),
                       format_.width, format_.height);
@@ -978,6 +1254,14 @@ class DeckLinkOutput final : public IOutput {
   int64_t createFailures_ = 0;
   int64_t scheduleFailures_ = 0;
   int64_t ringMisses_ = 0;  ///< from rings already released
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+  std::vector<AppVideoBuffer*> buffers_;  ///< ours, kept across stop/start
+  std::vector<std::pair<IDeckLinkMutableVideoFrame*, AppVideoBuffer*>> frameBuffers_;
+  int32_t bufferRowBytes_ = 0;
+  size_t bufferBytes_ = 0;
+  int64_t bufferAllocations_ = 0;
+  int64_t bufferOverlaps_ = 0;  ///< from buffers already released
+#endif
   int64_t reanchors_ = 0;
   int64_t reanchoredFrames_ = 0;
   int64_t refusedFrames_ = 0;

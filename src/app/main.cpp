@@ -1150,8 +1150,10 @@ int main(int argc, char** argv) {
   //
   // After CefInitialize so NSApp is fully stood up, and on this thread because
   // it is the main one. The status callback runs on the UI thread when the menu
-  // opens, so it only reads SourceManager::size(), which takes its own lock and
-  // does not wait on the clock.
+  // opens, so it only reads SourceManager::size(). That takes the source
+  // table's lock, which is only ever held to copy a pointer — never across a
+  // call into an engine — so a wedged output cannot stall the UI thread, and
+  // every browser with it, through here (issue #12).
   bool trayInstalled = false;
   if (options.wantTray) {
     weblinked::TrayOptions tray;
