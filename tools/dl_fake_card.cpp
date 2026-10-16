@@ -313,6 +313,29 @@ class FakeOutput final : public IDeckLinkOutput {
     completionThread_.join();
   }
 
+  /// A driver that says it has flushed everything and has not: the next
+  /// DisableVideoOutput keeps one queued frame — its reference, and the read
+  /// access open on its buffer — until releaseHeld().
+  void holdOneAtDisable(bool hold) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    holdOne_ = hold;
+  }
+  void releaseHeld() {
+    FakeFrame* held = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      held = held_;
+      held_ = nullptr;
+    }
+    if (held != nullptr) {
+      held->scheduled.store(false);
+      if (held->external() != nullptr) {
+        held->external()->EndAccess(bmdBufferAccessRead);
+      }
+      held->Release();
+    }
+  }
+
   /// A SIGSTOP of the process stops the SDK's completion thread too, while
   /// the hardware carries on. This is that.
   void pauseCompletions(bool paused) {
@@ -356,6 +379,10 @@ class FakeOutput final : public IDeckLinkOutput {
     // "DisableVideoOutput will block until all scheduled frames are completed
     // or flushed" — the SDK's SignalGenerator sample, and what stop() relies on.
     std::unique_lock<std::mutex> lock(mutex_);
+    if (holdOne_ && !queue_.empty() && held_ == nullptr) {
+      held_ = queue_.begin()->second;
+      queue_.erase(queue_.begin());
+    }
     for (auto& [time, frame] : queue_) {
       pending_.push_back({frame, bmdOutputFrameFlushed});
     }
@@ -592,6 +619,8 @@ class FakeOutput final : public IDeckLinkOutput {
   bool hardwareStop_ = false;
   bool completionsPaused_ = false;
   bool delivering_ = false;
+  bool holdOne_ = false;
+  FakeFrame* held_ = nullptr;
   int64_t playhead_ = 0;
   std::multimap<BMDTimeValue, FakeFrame*> queue_;
   std::deque<Completion> pending_;
@@ -801,6 +830,38 @@ int main() {
            "the same 10 buffers across every stop/start");
     expect(field(status, "buffer_overlaps") == 0,
            "no write while the card was reading a buffer");
+  }
+
+  {
+    std::printf("\na frame the card keeps past a stop\n");
+    OutputSpec spec;
+    spec.kind = "decklink";
+    spec.name = "decklink0";
+    spec.options = json::Value::object();
+    auto output = createDeckLinkOutput(spec);
+    VideoFrame frame(format, output->pixelFormat());
+    std::string error;
+    output->start(format, error);
+    run(*output, frame, 25, period);
+    card.holdOneAtDisable(true);
+    output->stop();  // the card keeps one frame, and reading its buffer
+    card.holdOneAtDisable(false);
+    card.resetSlots();
+    output->start(format, error);
+    run(*output, frame, 50, period);
+    json::Value status = output->status();
+    std::printf("    after the restart: buffer_allocations=%lld buffer_overlaps=%lld\n",
+                (long long)field(status, "buffer_allocations"),
+                (long long)field(status, "buffer_overlaps"));
+    expect(field(status, "buffer_allocations") == 2,
+           "fresh memory after the card kept a frame");
+    expect(field(status, "buffer_overlaps") == 0,
+           "nothing written into the kept frame's buffer");
+    card.releaseHeld();  // the driver lets go at last
+    output->stop();
+    card.resetSlots();
+    expect(gLedger.created.load() == gLedger.destroyed.load(),
+           "the kept frame released once the card let go");
   }
 
   std::printf("\nacross everything:\n");

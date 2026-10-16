@@ -44,14 +44,16 @@ constexpr auto kClockGateBudget = std::chrono::milliseconds(5);
 constexpr auto kClockGateMinimum = std::chrono::milliseconds(2);
 
 /// Control paths. A change queues behind another on the same source for up to
-/// 30 s, because a format change or a settings apply across several cards
-/// legitimately takes seconds, and failing the change behind it would lose an
-/// operator's edit for no reason. The wait for a single output's gate stays
-/// short: that is a driver call, and one that has not come back in 2 s is not
-/// coming back soon. A wedged driver therefore holds up the queue by its own
-/// gate waits, each of which gives up, never by waiting on the driver itself.
-constexpr auto kControlWait = std::chrono::seconds(30);
+/// 30 s (controlQueue_ in engine.h), because a format change or a settings
+/// apply across several cards legitimately takes seconds, and failing the
+/// change behind it would lose an operator's edit for no reason. The wait for
+/// a single output's gate stays short: that is a driver call, and one that has
+/// not come back in 2 s is not coming back soon.
 constexpr auto kGateWait = std::chrono::seconds(2);
+
+/// A clock that has not started a tick for this long is stuck, not slow: at
+/// the slowest rate a format can name, a tick is under 42 ms.
+constexpr int64_t kClockStuckNanos = 1'000'000'000;
 
 /// How long the updateOutput "only the background changed" check asks the
 /// output whether it is running before using the engine's own record instead.
@@ -74,8 +76,8 @@ int64_t steadyNanos() {
 }
 
 const char* kControlBusy =
-    "another change to this source's outputs is still in progress — if this "
-    "persists, an output's driver may have stopped answering (see the "
+    "another change to this source's outputs has been in progress for 30 s — "
+    "if this persists, an output's driver may have stopped answering (see the "
     "\"stale\" outputs in /api/state)";
 
 }  // namespace
@@ -218,7 +220,7 @@ void Engine::halt() {
 void Engine::closeOutputs() {
   // Behind any control request already in flight, but not for ever: this is
   // the shutdown path, and it has a watchdog waiting on it.
-  std::unique_lock<std::timed_mutex> control(controlMutex_, std::defer_lock);
+  std::unique_lock<std::timed_mutex> control(controlQueue_.mutex(), std::defer_lock);
   if (!control.try_lock_for(kGateWait)) {
     diag::warn("engine '%s': halting with a control request still in progress",
                id_.c_str());
@@ -793,11 +795,46 @@ std::string Engine::busyMessage(const std::string& name, const OutputSlot& slot)
   return message + "; nothing was changed";
 }
 
+bool Engine::enterControl(std::unique_lock<std::timed_mutex>& control,
+                          std::string& error) {
+  std::string stuckName;
+  int64_t stuckMillis = 0;
+  const auto result = controlQueue_.enter(control, [&] {
+    std::shared_ptr<OutputSlot> slot;
+    {
+      std::lock_guard<std::mutex> lock(controlCallMutex_);
+      slot = controlCallSlot_;
+      stuckName = controlCallName_;
+    }
+    if (slot == nullptr || !slot->wedged()) {
+      return false;
+    }
+    stuckMillis = slot->busyMillis();
+    return true;
+  });
+  switch (result) {
+    case ControlQueue::Result::kHeld:
+      return true;
+    case ControlQueue::Result::kTooMany:
+      error = "four other changes to this source are already waiting; nothing "
+              "was changed — try again when they are done";
+      return false;
+    case ControlQueue::Result::kHolderStuck:
+      error = "the change in progress on this source is stuck inside output '" +
+              stuckName + "''s driver (for " + std::to_string(stuckMillis / 1000) +
+              " s); nothing was changed";
+      return false;
+    case ControlQueue::Result::kTimedOut:
+      break;
+  }
+  error = kControlBusy;
+  return false;
+}
+
 bool Engine::setOutputEnabled(const std::string& name, bool enabled,
                               std::string& error) {
-  std::unique_lock<std::timed_mutex> control(controlMutex_, std::defer_lock);
-  if (!control.try_lock_for(kControlWait)) {
-    error = kControlBusy;
+  std::unique_lock<std::timed_mutex> control(controlQueue_.mutex(), std::defer_lock);
+  if (!enterControl(control, error)) {
     return false;
   }
 
@@ -831,6 +868,7 @@ bool Engine::setOutputEnabled(const std::string& name, bool enabled,
   bool acted = false;
   bool started = true;
   std::string startError;
+  ControlCall call(this, slot, name);
   const auto result = slot->exclusive(Clock::now() + kGateWait, [&](IOutput& output) {
     if (enabled == wasEnabled && output.isRunning() == enabled) {
       return;
@@ -881,9 +919,8 @@ bool Engine::setOutputEnabled(const std::string& name, bool enabled,
 }
 
 bool Engine::addOutput(const OutputSpec& spec, std::string& error) {
-  std::unique_lock<std::timed_mutex> control(controlMutex_, std::defer_lock);
-  if (!control.try_lock_for(kControlWait)) {
-    error = kControlBusy;
+  std::unique_lock<std::timed_mutex> control(controlQueue_.mutex(), std::defer_lock);
+  if (!enterControl(control, error)) {
     return false;
   }
 
@@ -914,7 +951,7 @@ bool Engine::addOutput(const OutputSpec& spec, std::string& error) {
 
   // Created and opened before anyone else can see it, so with no lock at all.
   // The name stays reserved meanwhile because every other path that could add
-  // one is waiting on controlMutex_.
+  // one is waiting on the control queue.
   auto output = createOutput(spec, error);
   if (output == nullptr) {
     return false;
@@ -957,9 +994,8 @@ bool Engine::setOutputBackground(const std::string& name,
 
 bool Engine::updateOutput(const std::string& name, const OutputSpec& spec,
                           std::string& error) {
-  std::unique_lock<std::timed_mutex> control(controlMutex_, std::defer_lock);
-  if (!control.try_lock_for(kControlWait)) {
-    error = kControlBusy;
+  std::unique_lock<std::timed_mutex> control(controlQueue_.mutex(), std::defer_lock);
+  if (!enterControl(control, error)) {
     return false;
   }
 
@@ -1063,6 +1099,7 @@ bool Engine::updateOutput(const std::string& name, const OutputSpec& spec,
   bool replaced = false;
   bool restored = false;
   std::string restoreError;
+  ControlCall call(this, slot, name);
   const bool ran = slot->replace(
       Clock::now() + kGateWait, [&](std::unique_ptr<IOutput>& output) {
         if (output != nullptr) {
@@ -1122,12 +1159,15 @@ bool Engine::updateOutput(const std::string& name, const OutputSpec& spec,
 }
 
 bool Engine::removeOutput(const std::string& name, std::string* error) {
-  std::unique_lock<std::timed_mutex> control(controlMutex_, std::defer_lock);
-  if (!control.try_lock_for(kControlWait)) {
-    if (error != nullptr) {
-      *error = kControlBusy;
+  std::unique_lock<std::timed_mutex> control(controlQueue_.mutex(), std::defer_lock);
+  {
+    std::string busy;
+    if (!enterControl(control, busy)) {
+      if (error != nullptr) {
+        *error = busy;
+      }
+      return false;
     }
-    return false;
   }
 
   std::shared_ptr<OutputSlot> slot;
@@ -1158,6 +1198,7 @@ bool Engine::removeOutput(const std::string& name, std::string* error) {
   // Stopped and destroyed under its gate, so never under a call in flight. If
   // the gate cannot be had the output stays in the list, as it was: removing
   // the entry would leave a device open with nothing left that could close it.
+  ControlCall call(this, slot, name);
   const bool ran = slot->replace(Clock::now() + kGateWait,
                                  [](std::unique_ptr<IOutput>& output) {
                                    if (output != nullptr) {
@@ -1199,9 +1240,21 @@ bool Engine::setFormat(const VideoFormat& format, std::string& error) {
     previous = format_;
   }
 
-  std::unique_lock<std::timed_mutex> control(controlMutex_, std::defer_lock);
-  if (!control.try_lock_for(kControlWait)) {
-    error = kControlBusy;
+  std::unique_lock<std::timed_mutex> control(controlQueue_.mutex(), std::defer_lock);
+  if (!enterControl(control, error)) {
+    return false;
+  }
+
+  // A clock that is not ticking is inside a driver, and would not park for the
+  // swap below. Refusing here changes nothing; finding out at the swap would
+  // have stopped and reopened every output for no change — NDI senders
+  // re-advertised, cards prerolled again.
+  const int64_t lastTick = lastTickNanos_.load();
+  if (running_.load() && lastTick != 0 && steadyNanos() - lastTick > kClockStuckNanos) {
+    error = "the format was not changed: the clock has not ticked for " +
+            std::to_string((steadyNanos() - lastTick) / 1'000'000) +
+            " ms, which usually means an output's driver is not answering";
+    diag::error("%s", error.c_str());
     return false;
   }
 
@@ -1228,6 +1281,7 @@ bool Engine::setFormat(const VideoFormat& format, std::string& error) {
     }
   }
   for (auto& item : items) {
+    ControlCall call(this, item.slot, item.name);
     item.stopped = item.slot->exclusive(Clock::now() + kGateWait,
                                         [](IOutput& output) { output.stop(); }) !=
                    OutputSlot::Result::kBusy;
@@ -1281,6 +1335,7 @@ bool Engine::setFormat(const VideoFormat& format, std::string& error) {
     if (!item.wasEnabled || !item.stopped) {
       continue;
     }
+    ControlCall call(this, item.slot, item.name);
     const auto result = item.slot->exclusive(
         Clock::now() + kGateWait,
         [&](IOutput& output) { item.started = output.start(openAt, item.startError); });

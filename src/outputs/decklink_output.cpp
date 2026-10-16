@@ -208,7 +208,11 @@ class AppVideoBuffer final : public IDeckLinkVideoBuffer {
     if (bytes == nullptr) {
       return nullptr;
     }
-    return new (std::nothrow) AppVideoBuffer(bytes, size);
+    AppVideoBuffer* buffer = new (std::nothrow) AppVideoBuffer(bytes, size);
+    if (buffer == nullptr) {
+      ::operator delete(bytes, std::align_val_t(kAlignment));
+    }
+    return buffer;
   }
 
   HRESULT QueryInterface(REFIID iid, LPVOID* out) override {
@@ -1072,6 +1076,13 @@ class DeckLinkOutput final : public IOutput {
       // driver did not finish with them when it said it had.
       diag::warn("decklink '%s': %zu of %zu frames were still with the card at "
                  "stop", name_.c_str(), outstanding, frames.size());
+#if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0e030000
+      // And their memory must not be reused: the next start would wrap new
+      // frames round buffers those old frames still wrap. Let go of ours; the
+      // frames the SDK still holds keep their buffers alive until it lets go,
+      // and the next start allocates afresh.
+      releaseBuffers();
+#endif
     }
     std::unique_lock<std::timed_mutex> allocation(gFrameAllocationMutex,
                                                   std::defer_lock);

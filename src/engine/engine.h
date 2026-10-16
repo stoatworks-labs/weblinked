@@ -12,6 +12,7 @@
 
 #include "browser/browser_source.h"
 #include "core/audio_fifo.h"
+#include "core/control_queue.h"
 #include "core/frame.h"
 #include "core/frame_clock.h"
 #include "core/frame_ring.h"
@@ -292,11 +293,43 @@ class Engine {
   VideoFormat format_;
 
   /// Serialises the control paths that change the output list or open and
-  /// close devices: add, remove, update, enable and format changes. Held across
-  /// their driver calls — which is exactly why neither the clock thread nor
-  /// state() ever takes it — and waited for with a deadline, so a control
-  /// request behind a wedged one fails rather than queueing for ever.
-  std::timed_mutex controlMutex_;
+  /// close devices: add, remove, update, enable and format changes. Its mutex
+  /// (controlMutex()) is held across their driver calls — which is exactly why
+  /// neither the clock thread nor state() ever takes it. A change waits up to
+  /// 30 s for the one in front, but gives up at once if four are already
+  /// waiting or the one in front is stuck in a driver (see ControlQueue): each
+  /// waiter is an HTTP thread, and the server has 64.
+  ControlQueue controlQueue_{std::chrono::seconds(30), 4};
+
+  /// Takes the control queue for a change, or fills `error` with why not.
+  bool enterControl(std::unique_lock<std::timed_mutex>& control, std::string& error);
+
+  /// The output the change holding the queue is calling into, so a waiter can
+  /// tell a slow change from a stuck one. Set and cleared by ControlCall.
+  mutable std::mutex controlCallMutex_;
+  std::shared_ptr<OutputSlot> controlCallSlot_;
+  std::string controlCallName_;
+
+  /// Marks a control path's call into one output for as long as it lasts.
+  class ControlCall {
+   public:
+    ControlCall(Engine* engine, std::shared_ptr<OutputSlot> slot, const std::string& name)
+        : engine_(engine) {
+      std::lock_guard<std::mutex> lock(engine_->controlCallMutex_);
+      engine_->controlCallSlot_ = std::move(slot);
+      engine_->controlCallName_ = name;
+    }
+    ~ControlCall() {
+      std::lock_guard<std::mutex> lock(engine_->controlCallMutex_);
+      engine_->controlCallSlot_.reset();
+      engine_->controlCallName_.clear();
+    }
+    ControlCall(const ControlCall&) = delete;
+    ControlCall& operator=(const ControlCall&) = delete;
+
+   private:
+    Engine* engine_;
+  };
 
   /// The last complete state(), for when mutex_ cannot be had in time.
   mutable std::mutex lastStateMutex_;

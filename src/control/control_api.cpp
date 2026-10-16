@@ -981,11 +981,13 @@ void ControlApi::handleOsc(const OscServer::Message& message) {
   // One lookup for the whole message: every branch below needs the engine, and
   // holding it open once means a removal cannot land between the dispatch and
   // the call.
-  const bool delivered =
-      sources_->withSource(target, [&](Engine& engine) {
-        handleOscForSource(engine, action, message);
-      }) == SourceManager::Access::kDone;
-  if (!delivered) {
+  const auto access = sources_->withSource(target, [&](Engine& engine) {
+    handleOscForSource(engine, action, message);
+  });
+  if (access == SourceManager::Access::kClosing) {
+    diag::warn("osc: source '%s' is being removed; dropped %s", target.c_str(),
+               message.address.c_str());
+  } else if (access == SourceManager::Access::kMissing) {
     diag::warn("osc: no source called '%s' for %s", target.c_str(),
                message.address.c_str());
   }

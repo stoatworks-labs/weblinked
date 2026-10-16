@@ -202,6 +202,8 @@ WEBLINKED_TEST(source_table_two_removals_of_one_source_stop_it_once) {
     thread.join();
   }
   caller.join();
+  // One stops it; the other is told it is already being removed (or, if it
+  // looked after the first had finished, that there is no such source).
   CHECK_EQ(removedCount.load(), 1);
   CHECK(!table.has("x"));
 }
@@ -218,16 +220,51 @@ WEBLINKED_TEST(source_table_shutdown_leaves_a_stuck_source_alone) {
   });
   stuckEngine->waitInside();
 
-  std::vector<std::string> busy;
   const auto start = Clock::now();
-  const auto taken = table.takeAll(Clock::now() + milliseconds(100), &busy);
+  auto taken = table.takeAll(Clock::now() + milliseconds(100));
   CHECK(millisSince(start) < 2'000);
-  CHECK_EQ(taken.size(), size_t{1});
-  CHECK(taken.size() == 1 && taken.front() == idleEngine);
-  CHECK_EQ(busy.size(), size_t{1});
-  CHECK(busy.size() == 1 && busy.front() == "stuck");
+  CHECK_EQ(taken.idle.size(), size_t{1});
+  CHECK(taken.idle.size() == 1 && taken.idle.front() == idleEngine);
+  // Handed back, not dropped: dropping it would leave the straggler holding
+  // the last reference, and the engine destroyed on its thread, late.
+  CHECK_EQ(taken.busy.size(), size_t{1});
+  CHECK(taken.busy.size() == 1 && taken.busy.front().first == "stuck" &&
+        taken.busy.front().second == stuckEngine);
   CHECK_EQ(table.size(), size_t{0});
 
   stuckEngine->release();
+  stuck.join();
+}
+
+WEBLINKED_TEST(source_table_a_removal_overtaken_by_shutdown_hands_it_over) {
+  // A removal is waiting on a source when shutdown takes everything. Whatever
+  // happens next, the source has one owner: the removal neither reopens an
+  // entry the table no longer has nor stops it a second time.
+  Table table;
+  auto engine = std::make_shared<FakeEngine>();
+  table.insert("s", engine);
+  engine->arm();
+  std::thread stuck([&] {
+    table.with("s", [](FakeEngine& e) { e.wedgedCall(); });
+  });
+  engine->waitInside();
+
+  std::atomic<int> outcome{-1};
+  std::shared_ptr<FakeEngine> removedByRemove;
+  std::thread remover([&] {
+    outcome.store(static_cast<int>(
+        table.remove("s", milliseconds(400), &removedByRemove)));
+  });
+  std::this_thread::sleep_for(milliseconds(50));
+  auto taken = table.takeAll(Clock::now() + milliseconds(100));
+  CHECK_EQ(taken.busy.size(), size_t{1});
+  remover.join();
+  CHECK(outcome.load() == static_cast<int>(Table::Removal::kBusy) ||
+        outcome.load() == static_cast<int>(Table::Removal::kRemoving));
+  CHECK(removedByRemove == nullptr);
+  CHECK(!table.has("s"));
+  CHECK(table.with("s", [](FakeEngine&) {}) == Table::Access::kMissing);
+
+  engine->release();
   stuck.join();
 }

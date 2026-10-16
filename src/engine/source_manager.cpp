@@ -20,6 +20,13 @@ constexpr auto kRemoveWait = std::chrono::seconds(40);
 /// its handlers; this is for the straggler that is stuck.
 constexpr auto kShutdownWait = std::chrono::seconds(2);
 
+/// Engines still busy at shutdown, kept so that none is destroyed late (see
+/// stop()). Never freed. Namespace scope rather than a function-local static:
+/// the engine is built with -fno-threadsafe-statics.
+std::mutex gKeptMutex;
+std::vector<std::shared_ptr<Engine>>* const gKept =
+    new std::vector<std::shared_ptr<Engine>>();
+
 }  // namespace
 
 SourceManager::SourceManager() = default;
@@ -61,18 +68,23 @@ bool SourceManager::start(const AppConfig& config, const Options& options,
 }
 
 void SourceManager::stop() {
-  std::vector<std::string> busy;
-  auto taken = sources_.takeAll(SourceTable<Engine>::Clock::now() + kShutdownWait,
-                                &busy);
-  for (const auto& id : busy) {
+  auto taken = sources_.takeAll(SourceTable<Engine>::Clock::now() + kShutdownWait);
+  for (auto& [id, engine] : taken.busy) {
     // Stopping it would destroy its browser under a request that is still
-    // inside. At shutdown the watchdog in main.cpp is the backstop.
-    diag::error("source '%s' still has a request inside it; not stopping it",
+    // inside. Nor may it simply be dropped: the straggler would then hold the
+    // last reference, and ~Engine — which closes a browser — would run on an
+    // HTTP thread, possibly after CefShutdown. So it is kept for the life of
+    // the process, deliberately: halt() has already closed its outputs and
+    // joined its clock (beginShutdown in main.cpp), and the watchdog bounds
+    // whatever is left.
+    diag::error("source '%s' still has a request inside it; leaving it be",
                 id.c_str());
+    std::lock_guard<std::mutex> lock(gKeptMutex);
+    gKept->push_back(std::move(engine));
   }
   // Outside any lock: each stop() joins a clock thread, and nothing can reach
   // these engines any more — they are no longer in the table.
-  for (auto& engine : taken) {
+  for (auto& engine : taken.idle) {
     if (engine != nullptr) {
       engine->stop();
     }
@@ -132,6 +144,9 @@ bool SourceManager::remove(const std::string& id, std::string& error) {
               "not finished (an output's driver may not be answering — see "
               "\"stale\" in /api/state)";
       diag::warn("%s", error.c_str());
+      return false;
+    case SourceTable<Engine>::Removal::kRemoving:
+      error = "source '" + id + "' is already being removed";
       return false;
     case SourceTable<Engine>::Removal::kRemoved:
       break;

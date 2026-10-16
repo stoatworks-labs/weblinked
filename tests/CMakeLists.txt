@@ -23,6 +23,7 @@ add_executable(weblinked_tests
   test_output_slot.cpp
   test_http_server.cpp
   test_source_table.cpp
+  test_control_queue.cpp
 )
 
 set_target_properties(weblinked_tests PROPERTIES

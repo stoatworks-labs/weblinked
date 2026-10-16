@@ -45,7 +45,8 @@ class SourceTable {
   using Clock = std::chrono::steady_clock;
 
   enum class Access { kDone, kMissing, kClosing };
-  enum class Removal { kRemoved, kMissing, kBusy };
+  /// kRemoving: another removal of the same entry is already under way.
+  enum class Removal { kRemoved, kMissing, kBusy, kRemoving };
 
   /// False, changing nothing, if `id` is already present.
   bool insert(const std::string& id, std::shared_ptr<T> value) {
@@ -105,12 +106,17 @@ class SourceTable {
     }
     switch (entry->close(Clock::now() + wait)) {
       case Closed::kAlready:
-        return Removal::kBusy;  // another removal has it; not ours to reopen
+        return Removal::kRemoving;  // another removal has it; not ours to reopen
       case Closed::kTimedOut:
         entry->reopen();
         return Removal::kBusy;
       case Closed::kEmpty:
         break;
+    }
+    if (entry->isRetired()) {
+      // takeAll() took it while this removal waited, and it stops it; two
+      // owners stopping one thing at once is how a browser gets closed twice.
+      return Removal::kRemoving;
     }
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -123,26 +129,32 @@ class SourceTable {
     return Removal::kRemoved;
   }
 
-  /// Takes everything out, for shutdown: each entry is closed and given until
-  /// `deadline` for its calls to come out. Those that came out are returned to
-  /// be stopped; the ids of any that did not are put in `busy`, and those are
-  /// left alone rather than stopped under a call.
-  std::vector<std::shared_ptr<T>> takeAll(Clock::time_point deadline,
-                                          std::vector<std::string>* busy) {
+  /// What takeAll() hands back: the entries whose calls came out, to be
+  /// stopped, and the ones that did not, which must not be.
+  struct Taken {
+    std::vector<std::shared_ptr<T>> idle;
+    std::vector<std::pair<std::string, std::shared_ptr<T>>> busy;
+  };
+
+  /// Takes everything out, for shutdown: each entry is retired — no removal
+  /// still waiting on it will reopen it — and given until `deadline` for its
+  /// calls to come out.
+  Taken takeAll(Clock::time_point deadline) {
     std::vector<std::shared_ptr<Entry>> entries;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       entries.swap(entries_);
     }
-    std::vector<std::shared_ptr<T>> idle;
+    Taken taken;
     for (const auto& entry : entries) {
+      entry->retire();
       if (entry->close(deadline) == Closed::kEmpty) {
-        idle.push_back(entry->value);
-      } else if (busy != nullptr) {
-        busy->push_back(entry->id);
+        taken.idle.push_back(entry->value);
+      } else {
+        taken.busy.emplace_back(entry->id, entry->value);
       }
     }
-    return idle;
+    return taken;
   }
 
   std::vector<std::string> ids() const {
@@ -182,6 +194,7 @@ class SourceTable {
     mutable std::condition_variable idle;
     mutable int users = 0;
     mutable bool closing = false;
+    mutable bool retired = false;  ///< out of the table for good; never reopened
 
     bool enter() const {
       std::lock_guard<std::mutex> lock(mutex);
@@ -198,10 +211,12 @@ class SourceTable {
       }
       idle.notify_all();
     }
-    /// Closes to new calls and waits for the ones inside to come out.
+    /// Closes to new calls and waits for the ones inside to come out. An entry
+    /// another removal is already closing is kAlready, except to takeAll(),
+    /// which waits for it too.
     Closed close(Clock::time_point deadline) const {
       std::unique_lock<std::mutex> lock(mutex);
-      if (closing) {
+      if (closing && !retired) {
         return Closed::kAlready;
       }
       closing = true;
@@ -211,7 +226,19 @@ class SourceTable {
     }
     void reopen() const {
       std::lock_guard<std::mutex> lock(mutex);
-      closing = false;
+      if (!retired) {
+        closing = false;
+      }
+    }
+    bool isRetired() const {
+      std::lock_guard<std::mutex> lock(mutex);
+      return retired;
+    }
+    /// For takeAll(): a removal that times out afterwards must not reopen an
+    /// entry the table no longer has.
+    void retire() const {
+      std::lock_guard<std::mutex> lock(mutex);
+      retired = true;
     }
   };
 
