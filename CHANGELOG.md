@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.3.0 — 2026-10-16
 
 All four of these come from Daniel Nyström (@speakman), who found them on a real
 rig (an UltraStudio Mini Replay 12G keying into an ATEM) and wrote the first two
