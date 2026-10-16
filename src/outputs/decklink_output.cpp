@@ -12,12 +12,23 @@
 // Ownership follows COM rules: everything obtained from the API is Release()d,
 // and the completion callback is reference counted independently of this class.
 //
-// UNVERIFIED AGAINST HARDWARE. This compiles against DeckLink SDK 12.2 headers
-// and the API use follows the SDK's documented scheduled-playback sequence, but
-// no DeckLink card has ever been connected to it. See docs/04-verification.md.
+// Frames are created once, at start, into a ring, and recycled as the card hands
+// them back — never created per tick and never destroyed by the completion
+// thread. Creating one per tick let the SDK's buffer allocator be emptied on the
+// completion thread while the clock thread was inside CreateVideoFrame, and on
+// Desktop Video 16.4 that deadlocks inside the SDK (issue #12). The display time
+// of each frame comes from PlayoutSchedule, in the display mode's own exact time
+// base, and is moved forward when the card's playhead has overtaken it (#13).
+//
+// Verified against a DeckLink Duo 2 since v0.6.1 (docs/04-verification.md,
+// sections 19 and 19a). The ring and the re-anchoring are not yet: no card was
+// attached when they were written, and they await a run on the rig that found
+// both bugs. See section 40.
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -25,6 +36,9 @@
 #include "DeckLinkAPI.h"
 #include "DeckLinkAPIVersion.h"
 #include "core/pixel_convert.h"
+#include "core/playout_schedule.h"
+#include "core/recycle_ring.h"
+#include "diag/diag.h"
 #include "outputs/output.h"
 
 namespace weblinked {
@@ -137,20 +151,42 @@ class FrameBytes {
 #endif
 };
 
-/// Notifies us when the card has finished with a frame. We do not recycle
-/// frames from here — each scheduled frame owns its own buffer for its whole
-/// life — but the completion result is the only place the card tells us it is
-/// running late or has run dry, and that is worth surfacing.
+/// Every DeckLink output in the process draws its frames from the SDK's one
+/// allocator pool, and the deadlock in #12 is that pool being emptied on two
+/// threads at once. Rings are only ever filled and emptied under this, so two
+/// outputs starting or stopping together cannot reproduce it between them.
+/// Namespace scope rather than a function-local static: the engine is built
+/// with -fno-threadsafe-statics.
+std::mutex gFrameAllocationMutex;
+
+using FrameRing = RecycleRing<IDeckLinkMutableVideoFrame>;
+
+/// What the completion thread reports, shared with the output. Cumulative
+/// across restarts, as the counters always were.
+struct PlayoutCounters {
+  std::atomic<int64_t> completed{0};
+  std::atomic<int64_t> late{0};
+  std::atomic<int64_t> dropped{0};
+  std::atomic<int64_t> flushed{0};
+  /// Completions for a frame the ring did not recognise, or already had back.
+  std::atomic<int64_t> strays{0};
+  /// Set by a late or dropped completion, cleared by the clock thread when it
+  /// next asks where the card's playhead is.
+  std::atomic<bool> lateSinceCheck{false};
+};
+
+/// Notifies us when the card has finished with a frame, which is where frames
+/// come back to the ring — the SDK's own documented place to reuse them — and
+/// the only place the card says it is running late or has run dry.
+///
+/// Holds the counters and the ring by shared_ptr: the SDK owns a reference to
+/// this object, and a completion that arrived after the output had gone must
+/// find memory that still exists.
 class CompletionCallback final : public IDeckLinkVideoOutputCallback {
  public:
-  struct Counters {
-    std::atomic<int64_t> completed{0};
-    std::atomic<int64_t> late{0};
-    std::atomic<int64_t> dropped{0};
-    std::atomic<int64_t> flushed{0};
-  };
-
-  explicit CompletionCallback(Counters* counters) : counters_(counters) {}
+  CompletionCallback(std::shared_ptr<PlayoutCounters> counters,
+                     std::shared_ptr<FrameRing> ring)
+      : counters_(std::move(counters)), ring_(std::move(ring)) {}
 
   HRESULT ScheduledFrameCompleted(IDeckLinkVideoFrame* completedFrame,
                                   BMDOutputFrameCompletionResult result) override {
@@ -158,9 +194,11 @@ class CompletionCallback final : public IDeckLinkVideoOutputCallback {
     switch (result) {
       case bmdOutputFrameDisplayedLate:
         ++counters_->late;
+        counters_->lateSinceCheck.store(true);
         break;
       case bmdOutputFrameDropped:
         ++counters_->dropped;
+        counters_->lateSinceCheck.store(true);
         break;
       case bmdOutputFrameFlushed:
         ++counters_->flushed;
@@ -168,10 +206,13 @@ class CompletionCallback final : public IDeckLinkVideoOutputCallback {
       default:
         break;
     }
-    // The frame was created by us and handed to ScheduleVideoFrame, which took
-    // its own reference; releasing ours here completes the handover.
-    if (completedFrame != nullptr) {
-      completedFrame->Release();
+    // Back to the ring, and not Release()d: the ring holds our reference for
+    // as long as the output runs, so the SDK's own release after this call
+    // returns can never be the last one. That is the whole fix for #12 — no
+    // frame is destroyed on this thread, so this thread never reaches the
+    // allocator.
+    if (completedFrame != nullptr && !ring_->release(completedFrame)) {
+      ++counters_->strays;
     }
     return S_OK;
   }
@@ -192,7 +233,8 @@ class CompletionCallback final : public IDeckLinkVideoOutputCallback {
  private:
   ~CompletionCallback() override = default;
 
-  Counters* counters_;
+  std::shared_ptr<PlayoutCounters> counters_;
+  std::shared_ptr<FrameRing> ring_;
   std::atomic<ULONG> refCount_{1};
 };
 
@@ -233,6 +275,12 @@ class DeckLinkOutput final : public IOutput {
       : IOutput(spec.name.empty() ? "decklink" : spec.name),
         deviceIndex_(spec.deviceIndex),
         prerollFrames_(std::max(2, spec.optionInt("preroll", 3))),
+        // The ring has to cover everything the card holds at once, which is
+        // more than the preroll: a Duo 2 at preroll 3 sat at 6 buffered frames
+        // for minutes on end (sections 19 and 19a). Twice the preroll plus four
+        // leaves room over that; the option is there for a card that needs more.
+        ringFrames_(std::clamp(spec.optionInt("ring", 2 * prerollFrames_ + 4),
+                               prerollFrames_ + 2, std::max(64, prerollFrames_ + 2))),
         audioChannels_(spec.optionInt("audio_channels", 2)),
         keying_(parseKeying(spec.optionString("keying", "off"))),
         keyLevel_(static_cast<uint8_t>(
@@ -290,7 +338,13 @@ class DeckLinkOutput final : public IOutput {
     }
     videoEnabled_ = true;
 
-    callback_ = new CompletionCallback(&counters_);
+    if (!buildRing(error)) {
+      stop();
+      return false;
+    }
+    schedule_ = PlayoutSchedule(modeFrameDuration_, modeTimeScale_, prerollFrames_);
+
+    callback_ = new CompletionCallback(counters_, ring_);
     if (output_->SetScheduledFrameCompletionCallback(callback_) != S_OK) {
       error = "SetScheduledFrameCompletionCallback failed";
       stop();
@@ -320,7 +374,7 @@ class DeckLinkOutput final : public IOutput {
       }
     }
 
-    if (output_->StartScheduledPlayback(0, kTimeScale, 1.0) != S_OK) {
+    if (output_->StartScheduledPlayback(0, schedule_.timeScale(), 1.0) != S_OK) {
       error = "StartScheduledPlayback failed on '" + deviceName_ + "'";
       stop();
       return false;
@@ -330,50 +384,69 @@ class DeckLinkOutput final : public IOutput {
     return true;
   }
 
+  /// In the order the SDK's own samples use. DisableVideoOutput blocks until
+  /// every scheduled frame has completed or been flushed, and it runs with the
+  /// callback still installed, so each frame comes back to the ring first. Only
+  /// then is the callback removed and the ring emptied: by that point the card
+  /// holds no frame, the completion thread has nothing left to do, and the last
+  /// release of every frame happens here, on one thread.
   void stop() override {
     if (output_ != nullptr) {
       if (playing_) {
         BMDTimeValue actualStop = 0;
-        output_->StopScheduledPlayback(0, &actualStop, kTimeScale);
+        output_->StopScheduledPlayback(0, &actualStop, schedule_.timeScale());
         playing_ = false;
-      }
-      output_->SetScheduledFrameCompletionCallback(nullptr);
-      if (audioEnabled_) {
-        output_->DisableAudioOutput();
-        audioEnabled_ = false;
       }
       if (videoEnabled_) {
         output_->DisableVideoOutput();
         videoEnabled_ = false;
       }
+      if (audioEnabled_) {
+        output_->DisableAudioOutput();
+        audioEnabled_ = false;
+      }
+      output_->SetScheduledFrameCompletionCallback(nullptr);
     }
     if (keyer_ != nullptr) {
       keyer_->Disable();
     }
+    releaseRing();
     safeRelease(keyer_);
     safeRelease(callback_);
     safeRelease(output_);
     safeRelease(device_);
     running_ = false;
-    scheduledFrames_ = 0;
+    schedule_.reset();
+    framesScheduled_ = 0;
     scheduledAudioFrames_ = 0;
   }
 
   void submit(const VideoFrame& video, const AudioBlock& audio) override {
-    if (!running_ || output_ == nullptr) {
+    if (!running_ || output_ == nullptr || ring_ == nullptr) {
+      return;
+    }
+    // Rule 5: never copy a frame into a buffer sized for another raster. The
+    // engine already refuses to send one; this is the half that does not
+    // depend on the engine being right.
+    if (video.format().width != format_.width ||
+        video.format().height != format_.height ||
+        video.pixelFormat() != pixelFormat()) {
+      ++refusedFrames_;
       return;
     }
 
-    IDeckLinkMutableVideoFrame* frame = nullptr;
-    if (output_->CreateVideoFrame(format_.width, format_.height,
-                                  format_.rowBytes(pixelFormat()),
-                                  cardPixelFormat(), bmdFrameFlagDefault,
-                                  &frame) != S_OK ||
-        frame == nullptr) {
-      ++createFailures_;
+    // A free frame, or none: never wait for the card to hand one back. Every
+    // other output on this clock would wait too. The ring counts the miss.
+    IDeckLinkMutableVideoFrame* frame = ring_->acquire();
+    if (frame == nullptr) {
       return;
     }
 
+    // Written only between the card handing the frame back and it being
+    // scheduled again, and bracketed by FrameBytes, which on SDK 14.3 and later
+    // is StartAccess/EndAccess on the frame's IDeckLinkVideoBuffer. The access
+    // ends with this block, before the frame is scheduled.
+    bool written = false;
     if (FrameBytes access(frame); void* bytes = access.data()) {
       const int cardStride = frame->GetRowBytes();
       const int ourStride = video.rowBytes();
@@ -388,9 +461,19 @@ class DeckLinkOutput final : public IOutput {
                       static_cast<size_t>(ourStride));
         }
       }
+      written = true;
+    }
+    if (!written) {
+      // A recycled frame still holds a picture from several frames ago, so
+      // one the card would not let us write is not sent at all.
+      ++accessFailures_;
+      ring_->release(frame);
+      return;
     }
 
-    scheduleFrame(frame);
+    if (!scheduleFrame(frame)) {
+      return;
+    }
 
     if (audioEnabled_ && audio.valid() && audio.interleaved != nullptr) {
       scheduleAudio(audio);
@@ -404,12 +487,36 @@ class DeckLinkOutput final : public IOutput {
     value.set("running", json::Value(running_));
     value.set("device", json::Value(deviceName_));
     value.set("device_index", json::Value(deviceIndex_));
-    value.set("frames", json::Value(scheduledFrames_));
+    value.set("frames", json::Value(framesScheduled_));
     value.set("audio_frames", json::Value(scheduledAudioFrames_));
-    value.set("frames_completed", json::Value(counters_.completed.load()));
-    value.set("frames_late", json::Value(counters_.late.load()));
-    value.set("frames_dropped", json::Value(counters_.dropped.load()));
+    value.set("frames_completed", json::Value(counters_->completed.load()));
+    // As the card reports them, in completions: a frame shown after its time,
+    // and one never shown because a less late one was available.
+    value.set("frames_late", json::Value(counters_->late.load()));
+    value.set("frames_dropped", json::Value(counters_->dropped.load()));
+    value.set("frames_flushed", json::Value(counters_->flushed.load()));
     value.set("create_failures", json::Value(createFailures_));
+    value.set("schedule_failures", json::Value(scheduleFailures_));
+    // The frame ring (#12). ring_misses counts ticks dropped here because the
+    // card still had every frame — never waited for, because waiting would
+    // stall every other output on this clock.
+    value.set("ring_size", json::Value(ring_ != nullptr
+                                           ? static_cast<int>(ring_->size())
+                                           : 0));
+    value.set("ring_free", json::Value(ring_ != nullptr
+                                           ? static_cast<int>(ring_->freeCount())
+                                           : 0));
+    value.set("ring_misses",
+              json::Value(ringMisses_ + (ring_ != nullptr ? ring_->misses() : 0)));
+    // Re-anchoring (#13): how often the schedule had fallen behind the card's
+    // playhead and was moved forward, and how many frame slots that skipped.
+    value.set("reanchors", json::Value(reanchors_));
+    value.set("reanchored_frames", json::Value(reanchoredFrames_));
+    if (refusedFrames_ != 0 || accessFailures_ != 0 || counters_->strays.load() != 0) {
+      value.set("frames_refused", json::Value(refusedFrames_));
+      value.set("access_failures", json::Value(accessFailures_));
+      value.set("stray_completions", json::Value(counters_->strays.load()));
+    }
     value.set("keying", json::Value(keyingToString(keying_)));
     if (keying_ != Keying::kOff) {
       value.set("key_level", json::Value(static_cast<int>(keyLevel_)));
@@ -440,8 +547,6 @@ class DeckLinkOutput final : public IOutput {
   }
 
  private:
-  static constexpr BMDTimeScale kTimeScale = 1'000'000;  // microseconds
-
   bool openDevice(std::string& error) {
     IDeckLinkIterator* iterator = CreateDeckLinkIteratorInstance();
     if (iterator == nullptr) {
@@ -522,6 +627,11 @@ class DeckLinkOutput final : public IOutput {
 
       if (sizeMatches && rateMatches && scanMatches) {
         displayMode_ = mode->GetDisplayMode();
+        // The card's own time base for this mode — 1000/25000 for 1080p25,
+        // 1001/60000 for 59.94 — so that every display time is an exact
+        // multiple of it (rule 2).
+        modeFrameDuration_ = duration;
+        modeTimeScale_ = scale;
         found = true;
         mode->Release();
         break;
@@ -672,14 +782,62 @@ class DeckLinkOutput final : public IOutput {
     return true;
   }
 
+  /// Creates every frame this run will use, while nothing else is running on
+  /// this output. Our reference to each is held by the ring until
+  /// releaseRing().
+  bool buildRing(std::string& error) {
+    auto ring = std::make_shared<FrameRing>();
+    std::lock_guard<std::mutex> allocation(gFrameAllocationMutex);
+    for (int i = 0; i < ringFrames_; ++i) {
+      IDeckLinkMutableVideoFrame* frame = nullptr;
+      if (output_->CreateVideoFrame(format_.width, format_.height,
+                                    format_.rowBytes(pixelFormat()),
+                                    cardPixelFormat(), bmdFrameFlagDefault,
+                                    &frame) != S_OK ||
+          frame == nullptr) {
+        ++createFailures_;
+        error = "CreateVideoFrame failed for frame " + std::to_string(i + 1) +
+                " of " + std::to_string(ringFrames_) + " on '" + deviceName_ + "'";
+        for (IDeckLinkMutableVideoFrame* made : ring->close()) {
+          made->Release();
+        }
+        return false;
+      }
+      ring->add(frame);
+    }
+    ring_ = std::move(ring);
+    return true;
+  }
+
+  /// Our references go last, after DisableVideoOutput has had every frame back
+  /// from the card — see stop().
+  void releaseRing() {
+    if (ring_ == nullptr) {
+      return;
+    }
+    ringMisses_ += ring_->misses();
+    size_t outstanding = 0;
+    const auto frames = ring_->close(&outstanding);
+    if (outstanding != 0) {
+      // The card did not hand everything back. Releasing ours is still right —
+      // COM keeps a frame alive while the SDK holds it — but it means the
+      // driver did not finish with them when it said it had.
+      diag::warn("decklink '%s': %zu of %zu frames were still with the card at "
+                 "stop", name_.c_str(), outstanding, frames.size());
+    }
+    {
+      std::lock_guard<std::mutex> allocation(gFrameAllocationMutex);
+      for (IDeckLinkMutableVideoFrame* frame : frames) {
+        frame->Release();
+      }
+    }
+    ring_.reset();
+  }
+
   bool scheduleBlackFrame(std::string& error) {
-    IDeckLinkMutableVideoFrame* frame = nullptr;
-    if (output_->CreateVideoFrame(format_.width, format_.height,
-                                  format_.rowBytes(pixelFormat()),
-                                  cardPixelFormat(), bmdFrameFlagDefault,
-                                  &frame) != S_OK ||
-        frame == nullptr) {
-      error = "CreateVideoFrame failed while pre-rolling";
+    IDeckLinkMutableVideoFrame* frame = ring_->acquire();
+    if (frame == nullptr) {
+      error = "the frame ring is smaller than the preroll";
       return false;
     }
     if (FrameBytes access(frame); void* bytes = access.data()) {
@@ -693,29 +851,69 @@ class DeckLinkOutput final : public IOutput {
                     static_cast<size_t>(frame->GetRowBytes()) * format_.height);
       }
     }
-    scheduleFrame(frame);
+    if (!scheduleFrame(frame)) {
+      error = "ScheduleVideoFrame failed while pre-rolling";
+      return false;
+    }
     return true;
   }
 
-  /// Schedules at the next free slot on the card's timeline.
+  /// Schedules at the next slot on the card's timeline.
   ///
   /// Display times come from a monotonically increasing frame index rather than
   /// from wall-clock arithmetic, so a late tick shortens the queue instead of
-  /// scheduling a frame in the past — which the card would reject outright.
-  void scheduleFrame(IDeckLinkMutableVideoFrame* frame) {
-    const BMDTimeValue duration =
-        (static_cast<BMDTimeValue>(kTimeScale) * format_.rate.denominator) /
-        format_.rate.numerator;
-    const BMDTimeValue displayTime = scheduledFrames_ * duration;
-
-    if (output_->ScheduleVideoFrame(frame, displayTime, duration, kTimeScale) != S_OK) {
+  /// scheduling a frame in the past. That holds only while the lateness is less
+  /// than the queue, so once playback is running the card is asked where its
+  /// playhead is first, and the index moved past it if it has been overtaken.
+  ///
+  /// On failure the frame goes back to the ring: the card took no reference.
+  bool scheduleFrame(IDeckLinkMutableVideoFrame* frame) {
+    if (playing_) {
+      reanchorIfBehind();
+    }
+    if (output_->ScheduleVideoFrame(frame, schedule_.nextDisplayTime(),
+                                    schedule_.frameDuration(),
+                                    schedule_.timeScale()) != S_OK) {
       ++scheduleFailures_;
-      frame->Release();
+      ring_->release(frame);
+      return false;
+    }
+    schedule_.advance();
+    ++framesScheduled_;
+    return true;
+  }
+
+  /// Issue #13. After a stall longer than the queue — the process stopped,
+  /// the machine swapping — the next slot is behind the card's playhead, and
+  /// one frame per tick never catches it up. Moving the index to the playhead
+  /// plus the preroll restores the depth playback started with; the card holds
+  /// its last frame across the slots skipped, as it was doing anyway.
+  void reanchorIfBehind() {
+    const bool late = counters_->lateSinceCheck.exchange(false);
+    BMDTimeValue playhead = 0;
+    double speed = 0.0;
+    if (output_->GetScheduledStreamTime(schedule_.timeScale(), &playhead, &speed) !=
+        S_OK) {
+      if (late) {
+        counters_->lateSinceCheck.store(true);  // keep it for the next frame
+      }
       return;
     }
-    ++scheduledFrames_;
-    // The card holds its own reference; ours is released in the completion
-    // callback so the buffer stays alive until the card is finished with it.
+    const int64_t from = schedule_.nextIndex();
+    const int64_t skipped = schedule_.reanchor(playhead, late);
+    if (skipped == 0) {
+      return;
+    }
+    ++reanchors_;
+    reanchoredFrames_ += skipped;
+    // Sound moves by the same span of time as the picture, so the two keep
+    // whatever relationship they had before the stall.
+    scheduledAudioFrames_ += schedule_.samplePosition(from + skipped, kAudioTimeScale) -
+                             schedule_.samplePosition(from, kAudioTimeScale);
+    diag::warn("decklink '%s': the card's playhead had overtaken the schedule "
+               "(%s); moved %lld frame(s) forward to stay %d ahead",
+               name_.c_str(), late ? "after a late or dropped frame" : "after a stall",
+               static_cast<long long>(skipped), schedule_.preroll());
   }
 
   void scheduleAudio(const AudioBlock& audio) {
@@ -755,13 +953,18 @@ class DeckLinkOutput final : public IOutput {
   IDeckLinkOutput* output_ = nullptr;
   IDeckLinkKeyer* keyer_ = nullptr;
   CompletionCallback* callback_ = nullptr;
-  CompletionCallback::Counters counters_;
+  std::shared_ptr<PlayoutCounters> counters_ = std::make_shared<PlayoutCounters>();
+  std::shared_ptr<FrameRing> ring_;
+  PlayoutSchedule schedule_;
 
   VideoFormat format_;
   BMDDisplayMode displayMode_ = bmdModeHD1080p50;
+  BMDTimeValue modeFrameDuration_ = 1;
+  BMDTimeScale modeTimeScale_ = 1;
   std::string deviceName_;
   int deviceIndex_;
   int prerollFrames_;
+  int ringFrames_;
   int audioChannels_;
   Keying keying_;
   uint8_t keyLevel_;
@@ -770,10 +973,15 @@ class DeckLinkOutput final : public IOutput {
   bool audioEnabled_ = false;
   bool playing_ = false;
 
-  int64_t scheduledFrames_ = 0;
+  int64_t framesScheduled_ = 0;
   int64_t scheduledAudioFrames_ = 0;
   int64_t createFailures_ = 0;
   int64_t scheduleFailures_ = 0;
+  int64_t ringMisses_ = 0;  ///< from rings already released
+  int64_t reanchors_ = 0;
+  int64_t reanchoredFrames_ = 0;
+  int64_t refusedFrames_ = 0;
+  int64_t accessFailures_ = 0;
   std::vector<int32_t> audioScratch_;
 };
 

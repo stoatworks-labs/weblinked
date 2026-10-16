@@ -237,6 +237,9 @@ set(WEBLINKED_CORE_SOURCES
   src/core/audio_fifo.h
   src/core/frame_clock.cpp
   src/core/frame_clock.h
+  src/core/playout_schedule.cpp
+  src/core/playout_schedule.h
+  src/core/recycle_ring.h
   src/core/pixel_convert.cpp
   src/core/pixel_convert.h
   src/core/rotated_blit.cpp

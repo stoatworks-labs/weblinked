@@ -18,6 +18,8 @@ add_executable(weblinked_tests
   test_screen_geometry.cpp
   test_rotated_blit.cpp
   test_stream_args.cpp
+  test_playout_schedule.cpp
+  test_recycle_ring.cpp
 )
 
 set_target_properties(weblinked_tests PROPERTIES
