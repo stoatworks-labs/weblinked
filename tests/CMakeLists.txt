@@ -20,6 +20,8 @@ add_executable(weblinked_tests
   test_stream_args.cpp
   test_playout_schedule.cpp
   test_recycle_ring.cpp
+  test_output_slot.cpp
+  test_http_server.cpp
 )
 
 set_target_properties(weblinked_tests PROPERTIES

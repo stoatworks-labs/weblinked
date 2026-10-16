@@ -11,6 +11,48 @@
 
 namespace weblinked {
 
+namespace {
+
+using Clock = std::chrono::steady_clock;
+
+/// How long state() waits for mutex_ before answering with the last report.
+/// mutex_ is never held across a driver call, so this is belt and braces.
+constexpr auto kStateLockWait = std::chrono::milliseconds(100);
+
+/// One state() call's budget for every output's status() together. A client
+/// polling every 200 ms with a 300 ms timeout — what Daniel's supervisor does —
+/// gets an answer inside it even with an output wedged.
+constexpr auto kStatusBudget = std::chrono::milliseconds(100);
+
+/// How long the clock thread waits, per tick and for all outputs together, for
+/// a gate held by someone else. Normally that is a status() taking a few
+/// microseconds; an output being restarted is disabled first, so the clock is
+/// not waiting on its start().
+constexpr auto kClockGateBudget = std::chrono::milliseconds(5);
+
+/// Control paths: how long to wait behind another control request on the same
+/// source, and for an output's gate. Long enough for a card to open; short
+/// enough that a request behind a wedged driver fails while someone is still
+/// looking at it.
+constexpr auto kControlWait = std::chrono::seconds(5);
+constexpr auto kGateWait = std::chrono::seconds(2);
+
+/// The preview is read a few times a second by the control page.
+constexpr auto kPreviewWait = std::chrono::milliseconds(250);
+
+int64_t steadyNanos() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             Clock::now().time_since_epoch())
+      .count();
+}
+
+const char* kControlBusy =
+    "another change to this source's outputs is still in progress — if this "
+    "persists, an output's driver may have stopped answering (see the "
+    "\"stale\" outputs in /api/state)";
+
+}  // namespace
+
 Engine::Engine() = default;
 
 Engine::~Engine() { stop(); }
@@ -26,7 +68,7 @@ bool Engine::start(const Config& config, std::string& error) {
   }
 
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::timed_mutex> lock(mutex_);
     format_ = config.format;
     matrix_ = config.matrix;
     audioEnabled_ = config.audioEnabled;
@@ -55,23 +97,24 @@ bool Engine::start(const Config& config, std::string& error) {
 
   // Open the outputs. A failure here is recorded against the output and
   // reported, but never fatal: one missing card must not take the IP feeds down.
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& spec : config.outputs) {
-      Entry entry;
-      entry.spec = spec;
-      std::string createError;
-      entry.output = createOutput(spec, createError);
-      if (entry.output == nullptr) {
-        diag::error("output '%s' (%s) could not be created: %s", spec.name.c_str(),
-                    spec.kind.c_str(), createError.c_str());
-        entry.lastError = createError;
-        entry.enabled = false;
-        outputs_.push_back(std::move(entry));
-        continue;
-      }
+  //
+  // Opened before they are published under mutex_, so that no driver call is
+  // ever made holding it — not even here, where no other thread can see this
+  // engine yet. A rule with no exceptions is one that can be checked by grep.
+  std::vector<Entry> opened;
+  for (const auto& spec : config.outputs) {
+    Entry entry;
+    entry.spec = spec;
+    std::string createError;
+    auto output = createOutput(spec, createError);
+    if (output == nullptr) {
+      diag::error("output '%s' (%s) could not be created: %s", spec.name.c_str(),
+                  spec.kind.c_str(), createError.c_str());
+      entry.lastError = createError;
+      entry.enabled = false;
+    } else {
       std::string startError;
-      if (!entry.output->start(config.format, startError)) {
+      if (!output->start(config.format, startError)) {
         diag::error("output '%s' (%s) failed to start: %s", spec.name.c_str(),
                     spec.kind.c_str(), startError.c_str());
         entry.lastError = startError;
@@ -80,8 +123,14 @@ bool Engine::start(const Config& config, std::string& error) {
         diag::info("output '%s' (%s) started", spec.name.c_str(),
                    spec.kind.c_str());
       }
-      outputs_.push_back(std::move(entry));
     }
+    entry.slot = std::make_shared<OutputSlot>(std::move(output));
+    entry.desc = entry.slot->description();
+    opened.push_back(std::move(entry));
+  }
+  {
+    std::lock_guard<std::timed_mutex> lock(mutex_);
+    outputs_ = std::move(opened);
   }
 
   clock_ = std::make_unique<FrameClock>(config.format.rate);
@@ -108,13 +157,35 @@ void Engine::halt() {
     }
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
-  for (auto& entry : outputs_) {
-    if (entry.output != nullptr) {
-      entry.output->stop();
+  // Behind any control request already in flight, but not for ever: this is
+  // the shutdown path, and it has a watchdog waiting on it.
+  std::unique_lock<std::timed_mutex> control(controlMutex_, std::defer_lock);
+  if (!control.try_lock_for(kGateWait)) {
+    diag::warn("engine '%s': halting with a control request still in progress",
+               id_.c_str());
+  }
+
+  std::vector<Entry> entries;
+  {
+    std::lock_guard<std::timed_mutex> lock(mutex_);
+    entries.swap(outputs_);
+  }
+  for (auto& entry : entries) {
+    if (!entry.slot->exclusive(Clock::now() + kGateWait,
+                               [](std::unique_ptr<IOutput>& output) {
+                                 if (output != nullptr) {
+                                   output->stop();
+                                   output.reset();
+                                 }
+                               })) {
+      // Never destroyed under a call in flight: the slot keeps it, and it goes
+      // when whoever is inside the driver lets go of their copy.
+      diag::error("output '%s' did not stop: a call into its driver has been "
+                  "running for %lld ms",
+                  entry.spec.name.c_str(),
+                  static_cast<long long>(entry.slot->busyMillis()));
     }
   }
-  outputs_.clear();
 }
 
 void Engine::stop() {
@@ -253,14 +324,14 @@ const VideoFrame* Engine::compositedUyvy(const VideoFramePtr& source,
   return variant.uyvy.get();
 }
 
-void Engine::pauseClock() {
+bool Engine::pauseClock() {
   std::unique_lock<std::mutex> lock(pauseMutex_);
   pauseRequested_ = true;
   // Bounded wait: if the clock thread is wedged for some other reason, a control
   // request should fail rather than hang the HTTP server forever. A frame period
   // is the expected wait; a second is generous even at 23.976.
-  pauseCv_.wait_for(lock, std::chrono::seconds(1),
-                    [this] { return paused_ || !running_.load(); });
+  return pauseCv_.wait_for(lock, std::chrono::seconds(1),
+                           [this] { return paused_ || !running_.load(); });
 }
 
 void Engine::resumeClock() {
@@ -297,6 +368,7 @@ void Engine::clockLoop() {
     if (!running_.load()) {
       break;
     }
+    lastTickNanos_.store(steadyNanos());
 
     const int64_t epoch = formatEpoch_.load();
     if (epoch != seenEpoch) {
@@ -362,16 +434,31 @@ void Engine::clockLoop() {
       audio.sampleRate = audio_.sampleRate();
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    // A paint from before a resize is still in flight for a frame or two after a
-    // format change. It must be dropped *before* anything touches it: the frame
-    // pools have already been rebuilt at the new raster, so converting an old
-    // 1920x1080 frame into a freshly acquired 1280x720 buffer writes four
-    // megabytes past the end of it. That corruption does not fault where it
-    // happens — it surfaces a few frames later as a wild jump through a
-    // clobbered vtable, which is a genuinely horrible thing to debug.
-    if (!(frame->format() == format_)) {
+    // Which outputs this tick goes to: copied out under mutex_, and called after
+    // it is released. Holding it across submit() is how a DeckLink driver that
+    // deadlocked inside the SDK took every control request down with it (#12).
+    targets_.clear();
+    bool staleRaster = false;
+    {
+      std::lock_guard<std::timed_mutex> lock(mutex_);
+      // A paint from before a resize is still in flight for a frame or two
+      // after a format change. It must be dropped *before* anything touches it:
+      // the frame pools have already been rebuilt at the new raster, so
+      // converting an old 1920x1080 frame into a freshly acquired 1280x720
+      // buffer writes four megabytes past the end of it. That corruption does
+      // not fault where it happens — it surfaces a few frames later as a wild
+      // jump through a clobbered vtable, which is a genuinely horrible thing to
+      // debug.
+      staleRaster = !(frame->format() == format_);
+      if (!staleRaster) {
+        for (const auto& entry : outputs_) {
+          if (entry.enabled && entry.desc.present) {
+            targets_.push_back(Target{entry.slot, entry.desc, entry.spec.background});
+          }
+        }
+      }
+    }
+    if (staleRaster) {
       continue;
     }
 
@@ -384,19 +471,16 @@ void Engine::clockLoop() {
     bool needUyvy = false;
     bool needStraight = false;
     backgroundKeys_.clear();
-    for (const auto& entry : outputs_) {
-      if (!entry.enabled || entry.output == nullptr || !entry.output->isRunning()) {
-        continue;
-      }
-      if (entry.spec.background.opaque) {
-        const uint32_t key = entry.spec.background.packed();
+    for (const auto& target : targets_) {
+      if (target.background.opaque) {
+        const uint32_t key = target.background.packed();
         if (std::find(backgroundKeys_.begin(), backgroundKeys_.end(), key) ==
             backgroundKeys_.end()) {
           backgroundKeys_.push_back(key);
         }
-      } else if (entry.output->pixelFormat() == PixelFormat::kUYVY) {
+      } else if (target.desc.pixelFormat == PixelFormat::kUYVY) {
         needUyvy = true;
-      } else if (entry.output->wantsStraightAlpha()) {
+      } else if (target.desc.straightAlpha) {
         needStraight = true;
       }
     }
@@ -412,37 +496,54 @@ void Engine::clockLoop() {
     const VideoFrame* uyvy =
         needUyvy ? frameInFormat(frame, PixelFormat::kUYVY) : nullptr;
     if (needUyvy && uyvy == nullptr) {
+      targets_.clear();
       continue;  // conversion refused; see frameInFormat
     }
 
     const VideoFrame* straight = needStraight ? unpremultiplied(frame) : nullptr;
     if (needStraight && straight == nullptr) {
+      targets_.clear();
       continue;
     }
 
-    for (auto& entry : outputs_) {
-      if (!entry.enabled || entry.output == nullptr || !entry.output->isRunning()) {
-        continue;
-      }
+    // One budget for the whole tick: an output whose gate is held — normally
+    // by a status() lasting microseconds — gets a few milliseconds, and one
+    // whose driver has been stuck for a second is tried once and skipped. The
+    // others still get their frame either way.
+    const auto gateDeadline = Clock::now() + kClockGateBudget;
+    for (const auto& target : targets_) {
       const VideoFrame* payload = frame.get();
-      if (entry.spec.background.opaque) {
+      if (target.background.opaque) {
         // The composite comes out opaque, so a keyed output gets a solid key
         // and a straight-alpha one needs no un-premultiplying: at alpha 255 the
         // two representations are the same bytes.
-        const uint32_t colour = entry.spec.background.packed();
-        payload = entry.output->pixelFormat() == PixelFormat::kUYVY
+        const uint32_t colour = target.background.packed();
+        payload = target.desc.pixelFormat == PixelFormat::kUYVY
                       ? compositedUyvy(frame, colour, tick)
                       : compositedBgra(frame, colour, tick);
-      } else if (entry.output->pixelFormat() == PixelFormat::kUYVY) {
+      } else if (target.desc.pixelFormat == PixelFormat::kUYVY) {
         payload = uyvy;
-      } else if (entry.output->wantsStraightAlpha()) {
+      } else if (target.desc.straightAlpha) {
         payload = straight;
       }
       if (payload == nullptr) {
         continue;
       }
-      entry.output->submit(*payload, entry.output->wantsAudio() ? audio : AudioBlock{});
+      // The generation check inside call() is what makes the plan above safe
+      // to act on outside the lock: if the output was replaced since — a UYVY
+      // one by a BGRA one, say — the payload is the wrong size for it, and the
+      // call does nothing.
+      const AudioBlock block = target.desc.wantsAudio ? audio : AudioBlock{};
+      if (!target.slot->call(gateDeadline, target.desc.generation,
+                              [&](IOutput& output) {
+                                if (output.isRunning()) {
+                                  output.submit(*payload, block);
+                                }
+                              })) {
+        outputSkips_.fetch_add(1, std::memory_order_relaxed);
+      }
     }
+    targets_.clear();
 
     ticks_.store(tick, std::memory_order_relaxed);
   }
@@ -490,7 +591,7 @@ void Engine::setMatrix(ColourMatrix matrix) { matrix_.store(matrix); }
 ColourMatrix Engine::matrix() const { return matrix_.load(); }
 
 std::vector<OutputSpec> Engine::outputSpecs() const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<std::timed_mutex> lock(mutex_);
   std::vector<OutputSpec> specs;
   specs.reserve(outputs_.size());
   for (const auto& entry : outputs_) {
@@ -514,7 +615,7 @@ SourceConfig Engine::configuration() const {
           ? "block"
           : "navigate";
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::timed_mutex> lock(mutex_);
     config.format = format_;
     config.audioEnabled = audioEnabled_;
     for (const auto& entry : outputs_) {
@@ -606,86 +707,176 @@ bool Engine::applyConfiguration(const SourceConfig& config, std::string& error) 
   return firstError.empty();
 }
 
+Engine::Entry* Engine::findEntry(const std::string& name) {
+  const auto it = std::find_if(outputs_.begin(), outputs_.end(),
+                               [&](const Entry& entry) {
+                                 return entry.spec.name == name;
+                               });
+  return it == outputs_.end() ? nullptr : &*it;
+}
+
+std::string Engine::busyMessage(const std::string& name, const OutputSlot& slot) {
+  const int64_t busy = slot.busyMillis();
+  std::string message = "output '" + name + "' is not answering";
+  if (busy > 0) {
+    message += ": a call into its driver has been running for " +
+               std::to_string(busy / 1000) + "." +
+               std::to_string((busy % 1000) / 100) + " s";
+  }
+  return message + "; nothing was changed";
+}
+
 bool Engine::setOutputEnabled(const std::string& name, bool enabled,
                               std::string& error) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  for (auto& entry : outputs_) {
-    if (entry.spec.name != name) {
-      continue;
-    }
-    if (entry.output == nullptr) {
-      error = "output '" + name + "' was never created: " + entry.lastError;
+  std::unique_lock<std::timed_mutex> control(controlMutex_, std::defer_lock);
+  if (!control.try_lock_for(kControlWait)) {
+    error = kControlBusy;
+    return false;
+  }
+
+  std::shared_ptr<OutputSlot> slot;
+  VideoFormat format;
+  bool wasEnabled = false;
+  {
+    std::lock_guard<std::timed_mutex> lock(mutex_);
+    Entry* entry = findEntry(name);
+    if (entry == nullptr) {
+      error = "no output named '" + name + "'";
       return false;
     }
-    if (enabled == entry.enabled && entry.output->isRunning() == enabled) {
-      return true;
+    if (!entry->desc.present) {
+      error = "output '" + name + "' was never created: " + entry->lastError;
+      return false;
     }
-    if (enabled) {
-      std::string startError;
-      if (!entry.output->start(format_, startError)) {
-        entry.lastError = startError;
-        entry.enabled = false;
-        error = startError;
-        return false;
-      }
-      entry.lastError.clear();
-      entry.enabled = true;
-      diag::info("output '%s' enabled", name.c_str());
-    } else {
-      entry.output->stop();
-      entry.enabled = false;
+    slot = entry->slot;
+    format = format_;
+    wasEnabled = entry->enabled;
+    // Stop feeding it before stopping it, so the clock is not left waiting on
+    // the gate behind a stop() that may take a while.
+    if (!enabled) {
+      entry->enabled = false;
+    }
+  }
+
+  bool acted = false;
+  bool started = true;
+  std::string startError;
+  const bool ran = slot->exclusive(
+      Clock::now() + kGateWait, [&](std::unique_ptr<IOutput>& output) {
+        if (output == nullptr) {
+          started = false;
+          startError = "output '" + name + "' has no device";
+          return;
+        }
+        if (enabled == wasEnabled && output->isRunning() == enabled) {
+          return;
+        }
+        acted = true;
+        if (enabled) {
+          started = output->start(format, startError);
+        } else {
+          output->stop();
+        }
+      });
+
+  std::lock_guard<std::timed_mutex> lock(mutex_);
+  Entry* entry = findEntry(name);
+  if (!ran) {
+    error = busyMessage(name, *slot);
+    if (entry != nullptr) {
+      entry->enabled = wasEnabled;
+    }
+    diag::warn("%s", error.c_str());
+    return false;
+  }
+  if (entry == nullptr) {
+    error = "output '" + name + "' was removed while it was being changed";
+    return false;
+  }
+  entry->desc = slot->description();
+  if (!enabled) {
+    entry->enabled = false;
+    if (acted) {
       diag::info("output '%s' disabled", name.c_str());
     }
     return true;
   }
-  error = "no output named '" + name + "'";
-  return false;
+  if (!started) {
+    entry->lastError = startError;
+    entry->enabled = false;
+    error = startError;
+    return false;
+  }
+  entry->lastError.clear();
+  entry->enabled = true;
+  if (acted) {
+    diag::info("output '%s' enabled", name.c_str());
+  }
+  return true;
 }
 
 bool Engine::addOutput(const OutputSpec& spec, std::string& error) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  for (const auto& entry : outputs_) {
-    if (entry.spec.name == spec.name) {
-      error = "an output named '" + spec.name + "' already exists";
-      return false;
-    }
+  std::unique_lock<std::timed_mutex> control(controlMutex_, std::defer_lock);
+  if (!control.try_lock_for(kControlWait)) {
+    error = kControlBusy;
+    return false;
   }
-  // One preview, no more. Not a duplicate of the name check above: a second
-  // preview under a different name costs a scale-and-copy per tick and the
-  // control page would only ever show one of them. Conditional on there being
-  // one already rather than refusing the kind outright, so a source that
-  // somehow lost its preview can still be given one back.
-  if (outputKindIsPermanent(spec.kind)) {
+
+  VideoFormat format;
+  {
+    std::lock_guard<std::timed_mutex> lock(mutex_);
     for (const auto& entry : outputs_) {
-      if (outputKindIsPermanent(entry.spec.kind)) {
-        error = "there is already a preview output";
+      if (entry.spec.name == spec.name) {
+        error = "an output named '" + spec.name + "' already exists";
         return false;
       }
     }
+    // One preview, no more. Not a duplicate of the name check above: a second
+    // preview under a different name costs a scale-and-copy per tick and the
+    // control page would only ever show one of them. Conditional on there being
+    // one already rather than refusing the kind outright, so a source that
+    // somehow lost its preview can still be given one back.
+    if (outputKindIsPermanent(spec.kind)) {
+      for (const auto& entry : outputs_) {
+        if (outputKindIsPermanent(entry.spec.kind)) {
+          error = "there is already a preview output";
+          return false;
+        }
+      }
+    }
+    format = format_;
   }
 
+  // Created and opened before anyone else can see it, so with no lock at all.
+  // The name stays reserved meanwhile because every other path that could add
+  // one is waiting on controlMutex_.
+  auto output = createOutput(spec, error);
+  if (output == nullptr) {
+    return false;
+  }
   Entry entry;
   entry.spec = spec;
-  entry.output = createOutput(spec, error);
-  if (entry.output == nullptr) {
-    return false;
-  }
-  if (!entry.output->start(format_, error)) {
+  const bool started = output->start(format, error);
+  entry.slot = std::make_shared<OutputSlot>(std::move(output));
+  entry.desc = entry.slot->description();
+  entry.enabled = started;
+  if (!started) {
     entry.lastError = error;
-    entry.enabled = false;
-    outputs_.push_back(std::move(entry));
-    return false;
   }
-  entry.enabled = true;
-  outputs_.push_back(std::move(entry));
-  diag::info("output '%s' (%s) added", spec.name.c_str(), spec.kind.c_str());
-  return true;
+  {
+    std::lock_guard<std::timed_mutex> lock(mutex_);
+    outputs_.push_back(std::move(entry));
+  }
+  if (started) {
+    diag::info("output '%s' (%s) added", spec.name.c_str(), spec.kind.c_str());
+  }
+  return started;
 }
 
 bool Engine::setOutputBackground(const std::string& name,
                                  const OutputBackground& background,
                                  std::string& error) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<std::timed_mutex> lock(mutex_);
   for (auto& entry : outputs_) {
     if (entry.spec.name != name) {
       continue;
@@ -701,32 +892,56 @@ bool Engine::setOutputBackground(const std::string& name,
 
 bool Engine::updateOutput(const std::string& name, const OutputSpec& spec,
                           std::string& error) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  const auto it = std::find_if(outputs_.begin(), outputs_.end(),
-                               [&](const Entry& entry) {
-                                 return entry.spec.name == name;
-                               });
-  if (it == outputs_.end()) {
-    error = "no output named '" + name + "'";
+  std::unique_lock<std::timed_mutex> control(controlMutex_, std::defer_lock);
+  if (!control.try_lock_for(kControlWait)) {
+    error = kControlBusy;
     return false;
   }
 
-  // A permanent output keeps its kind. This is the edit that silently kills the
-  // control page: converting the preview row into an NDI feed succeeds, the
-  // feed goes on air, and the only visible consequence is a preview pane that
-  // is black from then on. Everything else about the preview — its scale, its
-  // background — stays editable, so this refuses the one change that cannot be
-  // undone from the page it breaks.
-  if (outputKindIsPermanent(it->spec.kind) && spec.kind != it->spec.kind) {
-    error = "the preview cannot become a '" + spec.kind +
-            "' output — add a second output instead";
-    return false;
-  }
-  // And nothing else may turn into one, which would leave two previews with the
-  // control page reading whichever it found first.
-  if (!outputKindIsPermanent(it->spec.kind) && outputKindIsPermanent(spec.kind)) {
-    error = "there is already a preview output";
-    return false;
+  std::shared_ptr<OutputSlot> slot;
+  OutputSlot::Description desc;
+  OutputSpec previousSpec;
+  bool wasEnabled = false;
+  VideoFormat format;
+  {
+    std::lock_guard<std::timed_mutex> lock(mutex_);
+    Entry* entry = findEntry(name);
+    if (entry == nullptr) {
+      error = "no output named '" + name + "'";
+      return false;
+    }
+
+    // A permanent output keeps its kind. This is the edit that silently kills
+    // the control page: converting the preview row into an NDI feed succeeds,
+    // the feed goes on air, and the only visible consequence is a preview pane
+    // that is black from then on. Everything else about the preview — its
+    // scale, its background — stays editable, so this refuses the one change
+    // that cannot be undone from the page it breaks.
+    if (outputKindIsPermanent(entry->spec.kind) && spec.kind != entry->spec.kind) {
+      error = "the preview cannot become a '" + spec.kind +
+              "' output — add a second output instead";
+      return false;
+    }
+    // And nothing else may turn into one, which would leave two previews with
+    // the control page reading whichever it found first.
+    if (!outputKindIsPermanent(entry->spec.kind) &&
+        outputKindIsPermanent(spec.kind)) {
+      error = "there is already a preview output";
+      return false;
+    }
+    if (spec.name != name) {
+      for (const auto& other : outputs_) {
+        if (other.spec.name == spec.name) {
+          error = "an output named '" + spec.name + "' already exists";
+          return false;
+        }
+      }
+    }
+    slot = entry->slot;
+    desc = entry->desc;
+    previousSpec = entry->spec;
+    wasEnabled = entry->enabled;
+    format = format_;
   }
 
   // Nothing the device cares about has moved. Assigning the background and
@@ -736,125 +951,234 @@ bool Engine::updateOutput(const std::string& name, const OutputSpec& spec,
   //
   // Only for an output that is actually running, though — on a broken one,
   // Apply is how an operator retries a card that was not plugged in yet, and
-  // that has to keep reaching the code below.
-  if (it->output != nullptr && it->output->isRunning() && spec.name == name &&
-      spec.kind == it->spec.kind && spec.deviceIndex == it->spec.deviceIndex &&
-      spec.options.serialize() == it->spec.options.serialize()) {
-    if (it->spec.background != spec.background) {
+  // that has to keep reaching the code below. Running is asked through the
+  // gate; an output that cannot answer is treated as not running, and the
+  // reopen below then reports it busy.
+  bool running = false;
+  if (desc.present) {
+    slot->call(Clock::now() + kGateWait, desc.generation,
+               [&](IOutput& output) { running = output.isRunning(); });
+  }
+  if (running && spec.name == name && spec.kind == previousSpec.kind &&
+      spec.deviceIndex == previousSpec.deviceIndex &&
+      spec.options.serialize() == previousSpec.options.serialize()) {
+    std::lock_guard<std::timed_mutex> lock(mutex_);
+    Entry* entry = findEntry(name);
+    if (entry == nullptr) {
+      error = "no output named '" + name + "'";
+      return false;
+    }
+    if (entry->spec.background != spec.background) {
       diag::info("output '%s' background now %s", name.c_str(),
                  spec.background.opaque ? spec.background.toHex().c_str()
                                         : "transparent");
     }
-    it->spec.background = spec.background;
+    entry->spec.background = spec.background;
     return true;
   }
-  if (spec.name != name) {
-    for (const auto& entry : outputs_) {
-      if (entry.spec.name == spec.name) {
-        error = "an output named '" + spec.name + "' already exists";
-        return false;
-      }
+
+  // Stop feeding it while it is replaced.
+  {
+    std::lock_guard<std::timed_mutex> lock(mutex_);
+    if (Entry* entry = findEntry(name)) {
+      entry->enabled = false;
     }
   }
 
-  const OutputSpec previousSpec = it->spec;
-  const bool wasEnabled = it->enabled;
-
   // The old device has to be released before the new one is opened: on a rename
   // of the same DeckLink or the same NDI name, the two would otherwise be
-  // fighting over one resource and the new one would simply fail.
-  if (it->output != nullptr) {
-    it->output->stop();
-    it->output.reset();
-  }
+  // fighting over one resource and the new one would simply fail. All of it
+  // under the slot's gate, so the clock never sees a half-replaced output.
+  bool replaced = false;
+  bool restored = false;
+  std::string restoreError;
+  const bool ran = slot->exclusive(
+      Clock::now() + kGateWait, [&](std::unique_ptr<IOutput>& output) {
+        if (output != nullptr) {
+          output->stop();
+          output.reset();
+        }
+        auto replacement = createOutput(spec, error);
+        std::string startError;
+        if (replacement != nullptr && replacement->start(format, startError)) {
+          output = std::move(replacement);
+          replaced = true;
+          return;
+        }
+        if (replacement != nullptr) {
+          error = startError;
+        }
+        // Put back what was there. If even that fails the entry keeps its
+        // original spec and carries the error, so the settings page shows the
+        // output as broken rather than silently dropping it.
+        output = createOutput(previousSpec, restoreError);
+        if (output != nullptr && wasEnabled) {
+          restored = output->start(format, restoreError);
+        }
+      });
 
-  auto replacement = createOutput(spec, error);
-  std::string startError;
-  if (replacement != nullptr && replacement->start(format_, startError)) {
-    it->spec = spec;
-    it->output = std::move(replacement);
-    it->enabled = true;
-    it->lastError.clear();
+  std::lock_guard<std::timed_mutex> lock(mutex_);
+  Entry* entry = findEntry(name);
+  if (!ran) {
+    error = busyMessage(name, *slot);
+    if (entry != nullptr) {
+      entry->enabled = wasEnabled;
+    }
+    diag::warn("%s", error.c_str());
+    return false;
+  }
+  if (entry == nullptr) {
+    error = "output '" + name + "' was removed while it was being changed";
+    return false;
+  }
+  entry->desc = slot->description();
+  if (replaced) {
+    entry->spec = spec;
+    entry->enabled = true;
+    entry->lastError.clear();
     diag::info("output '%s' updated (now '%s', %s)", name.c_str(),
                spec.name.c_str(), spec.kind.c_str());
     return true;
   }
-  if (replacement != nullptr) {
-    error = startError;
-  }
-
-  // Put back what was there. If even that fails the entry keeps its original
-  // spec and carries the error, so the settings page shows the output as broken
-  // rather than silently dropping it.
-  std::string restoreError;
-  it->output = createOutput(previousSpec, restoreError);
-  it->enabled = false;
-  it->lastError = error;
-  if (it->output != nullptr && wasEnabled) {
-    if (it->output->start(format_, restoreError)) {
-      it->enabled = true;
-    } else {
-      diag::error("output '%s' could not be restored after a failed update: %s",
-                  name.c_str(), restoreError.c_str());
-    }
+  entry->enabled = restored;
+  entry->lastError = error;
+  if (wasEnabled && !restored) {
+    diag::error("output '%s' could not be restored after a failed update: %s",
+                name.c_str(), restoreError.c_str());
   }
   diag::warn("output '%s' update rejected: %s", name.c_str(), error.c_str());
   return false;
 }
 
 bool Engine::removeOutput(const std::string& name, std::string* error) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::unique_lock<std::timed_mutex> control(controlMutex_, std::defer_lock);
+  if (!control.try_lock_for(kControlWait)) {
+    if (error != nullptr) {
+      *error = kControlBusy;
+    }
+    return false;
+  }
+
+  std::shared_ptr<OutputSlot> slot;
+  bool wasEnabled = false;
+  {
+    std::lock_guard<std::timed_mutex> lock(mutex_);
+    Entry* entry = findEntry(name);
+    if (entry == nullptr) {
+      if (error != nullptr) {
+        *error = "no output named '" + name + "'";
+      }
+      return false;
+    }
+    // Permanent outputs stay. applyConfiguration reaches here too, which is the
+    // point: a settings file written before this rule existed has no preview in
+    // its list, and reconciling against it must not delete the running one.
+    if (outputKindIsPermanent(entry->spec.kind)) {
+      if (error != nullptr) {
+        *error = "the preview cannot be removed — it is what the control page shows";
+      }
+      return false;
+    }
+    slot = entry->slot;
+    wasEnabled = entry->enabled;
+    entry->enabled = false;  // stop feeding it first
+  }
+
+  // Stopped and destroyed under its gate, so never under a call in flight. If
+  // the gate cannot be had the output stays in the list, as it was: removing
+  // the entry would leave a device open with nothing left that could close it.
+  const bool ran = slot->exclusive(Clock::now() + kGateWait,
+                                   [](std::unique_ptr<IOutput>& output) {
+                                     if (output != nullptr) {
+                                       output->stop();
+                                       output.reset();
+                                     }
+                                   });
+
+  std::lock_guard<std::timed_mutex> lock(mutex_);
+  if (!ran) {
+    const std::string message = busyMessage(name, *slot);
+    if (Entry* entry = findEntry(name)) {
+      entry->enabled = wasEnabled;
+    }
+    if (error != nullptr) {
+      *error = message;
+    }
+    diag::warn("%s", message.c_str());
+    return false;
+  }
   const auto it = std::find_if(outputs_.begin(), outputs_.end(),
                                [&](const Entry& entry) {
                                  return entry.spec.name == name;
                                });
-  if (it == outputs_.end()) {
-    if (error != nullptr) {
-      *error = "no output named '" + name + "'";
-    }
-    return false;
+  if (it != outputs_.end()) {
+    outputs_.erase(it);
   }
-  // Permanent outputs stay. applyConfiguration reaches here too, which is the
-  // point: a settings file written before this rule existed has no preview in
-  // its list, and reconciling against it must not delete the running one.
-  if (outputKindIsPermanent(it->spec.kind)) {
-    if (error != nullptr) {
-      *error = "the preview cannot be removed — it is what the control page shows";
-    }
-    return false;
-  }
-  if (it->output != nullptr) {
-    it->output->stop();
-  }
-  outputs_.erase(it);
   diag::info("output '%s' removed", name.c_str());
   return true;
 }
 
 bool Engine::setFormat(const VideoFormat& format, std::string& error) {
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::timed_mutex> lock(mutex_);
     if (format_ == format) {
       return true;
     }
+  }
+
+  std::unique_lock<std::timed_mutex> control(controlMutex_, std::defer_lock);
+  if (!control.try_lock_for(kControlWait)) {
+    error = kControlBusy;
+    return false;
   }
 
   // Park the clock thread first. Everything below rebuilds state that thread
   // owns, and the pools in particular cannot be swapped while it is reading
   // them. Scoped, so an early return still releases it.
   ClockPause pause(this);
+  if (!pause.parked()) {
+    // The clock did not stop within a second, which means it is stuck inside
+    // something — an output's driver, most likely. Rebuilding its pools
+    // underneath it would be the heap overflow this pause exists to prevent.
+    error = "the format was not changed: the clock did not stop for it, which "
+            "usually means an output's driver is not answering";
+    diag::error("%s", error.c_str());
+    return false;
+  }
 
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  // Every output has to be reopened: no SDI device can change mode while
-  // running, and the IP senders advertise their raster at creation.
-  for (auto& entry : outputs_) {
-    if (entry.output != nullptr) {
-      entry.output->stop();
+  struct Item {
+    std::string name;
+    std::shared_ptr<OutputSlot> slot;
+    bool enabled = false;
+    bool stopped = false;
+    bool started = false;
+    std::string startError;
+  };
+  std::vector<Item> items;
+  {
+    std::lock_guard<std::timed_mutex> lock(mutex_);
+    for (const auto& entry : outputs_) {
+      items.push_back(Item{entry.spec.name, entry.slot, entry.enabled});
     }
   }
 
-  format_ = format;
+  // Every output has to be reopened: no SDI device can change mode while
+  // running, and the IP senders advertise their raster at creation. Each one
+  // under its own gate, and without mutex_, so state() keeps answering through
+  // what can be several seconds of cards reopening.
+  for (auto& item : items) {
+    item.stopped = item.slot->exclusive(Clock::now() + kGateWait,
+                                        [](std::unique_ptr<IOutput>& output) {
+                                          if (output != nullptr) {
+                                            output->stop();
+                                          }
+                                        });
+  }
+
+  {
+    std::lock_guard<std::timed_mutex> lock(mutex_);
+    format_ = format;
+  }
   formatEpoch_.fetch_add(1);
   uyvyPool_ = FramePool::create(format, PixelFormat::kUYVY, 4);
   blackPool_ = FramePool::create(format, PixelFormat::kBGRA, 2);
@@ -878,18 +1202,50 @@ bool Engine::setFormat(const VideoFormat& format, std::string& error) {
     clock_->setRate(format.rate);
   }
 
-  bool allStarted = true;
-  for (auto& entry : outputs_) {
-    if (entry.output == nullptr || !entry.enabled) {
+  for (auto& item : items) {
+    if (!item.enabled || !item.stopped) {
       continue;
     }
-    std::string startError;
-    if (!entry.output->start(format, startError)) {
-      entry.lastError = startError;
-      entry.enabled = false;
+    item.slot->exclusive(Clock::now() + kGateWait,
+                         [&](std::unique_ptr<IOutput>& output) {
+                           if (output == nullptr) {
+                             item.startError = "output has no device";
+                             return;
+                           }
+                           item.started = output->start(format, item.startError);
+                         });
+  }
+
+  bool allStarted = true;
+  std::lock_guard<std::timed_mutex> lock(mutex_);
+  for (auto& item : items) {
+    Entry* entry = findEntry(item.name);
+    if (entry == nullptr) {
+      continue;
+    }
+    entry->desc = item.slot->description();
+    if (!item.stopped) {
+      // Still open at the old raster, so it must not be fed the new one: the
+      // backend would copy a frame of one size into a buffer of another.
+      const std::string message =
+          "did not stop for the format change: " + busyMessage(item.name, *item.slot);
+      entry->enabled = false;
+      entry->lastError = message;
       allStarted = false;
       if (error.empty()) {
-        error = "'" + entry.spec.name + "': " + startError;
+        error = "'" + item.name + "' " + message;
+      }
+      continue;
+    }
+    if (!item.enabled) {
+      continue;
+    }
+    if (!item.started) {
+      entry->lastError = item.startError;
+      entry->enabled = false;
+      allStarted = false;
+      if (error.empty()) {
+        error = "'" + item.name + "': " + item.startError;
       }
     }
   }
@@ -904,7 +1260,7 @@ void Engine::sendInput(const InputEvent& event) {
   int x = 0;
   int y = 0;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::timed_mutex> lock(mutex_);
     // Clamp rather than reject: a drag that leaves the preview should land on
     // the edge of the page, which is what a real pointer would do.
     const double clampedX = std::clamp(event.nx, 0.0, 1.0);
@@ -918,57 +1274,115 @@ void Engine::sendInput(const InputEvent& event) {
 }
 
 VideoFormat Engine::format() const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<std::timed_mutex> lock(mutex_);
   return format_;
 }
 
-PreviewOutput* Engine::preview() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  for (const auto& entry : outputs_) {
-    if (auto* view = asPreview(entry.output.get())) {
-      return view;
+Engine::PreviewAccess Engine::withPreview(
+    const std::function<void(PreviewOutput&)>& fn) const {
+  std::shared_ptr<OutputSlot> slot;
+  uint64_t generation = 0;
+  {
+    std::lock_guard<std::timed_mutex> lock(mutex_);
+    for (const auto& entry : outputs_) {
+      if (outputKindIsPermanent(entry.spec.kind) && entry.desc.present) {
+        slot = entry.slot;
+        generation = entry.desc.generation;
+        break;
+      }
     }
   }
-  return nullptr;
+  if (slot == nullptr) {
+    return PreviewAccess::kNone;
+  }
+  // Held for the call, so an update that replaces the preview — a new scale —
+  // waits for the copy rather than freeing what it is copying from.
+  bool found = false;
+  const bool ran = slot->call(Clock::now() + kPreviewWait, generation,
+                              [&](IOutput& output) {
+                                if (auto* preview = asPreview(&output)) {
+                                  fn(*preview);
+                                  found = true;
+                                }
+                              });
+  if (!ran) {
+    return PreviewAccess::kBusy;
+  }
+  return found ? PreviewAccess::kDone : PreviewAccess::kNone;
 }
 
 json::Value Engine::state() const {
+  // Copy what is needed under mutex_, then ask each output through its slot
+  // with the lock released. mutex_ is never held across a driver call, so the
+  // wait here should never be noticeable; it is bounded anyway, because "should
+  // never" is what the old code believed about Engine::state() too.
+  struct Row {
+    OutputSpec spec;
+    std::shared_ptr<OutputSlot> slot;
+    bool present = false;
+    bool enabled = false;
+    std::string lastError;
+  };
+  std::vector<Row> rows;
+  VideoFormat format;
+  bool audioEnabled = false;
+  {
+    std::unique_lock<std::timed_mutex> lock(mutex_, std::defer_lock);
+    if (!lock.try_lock_for(kStateLockWait)) {
+      std::lock_guard<std::mutex> last(lastStateMutex_);
+      json::Value stale = lastState_.isObject() ? lastState_ : json::Value::object();
+      stale.set("id", json::Value(id_));
+      stale.set("stale", json::Value(true));
+      return stale;
+    }
+    format = format_;
+    audioEnabled = audioEnabled_;
+    rows.reserve(outputs_.size());
+    for (const auto& entry : outputs_) {
+      rows.push_back(Row{entry.spec, entry.slot, entry.desc.present, entry.enabled,
+                         entry.lastError});
+    }
+  }
+
   json::Value root = json::Value::object();
   root.set("id", json::Value(id_));
   root.set("version", json::Value(WEBLINKED_VERSION));
   root.set("running", json::Value(running_.load()));
+  root.set("stale", json::Value(false));
 
   {
-    std::lock_guard<std::mutex> lock(mutex_);
-    root.set("format", json::Value(format_.toString()));
+    root.set("format", json::Value(format.toString()));
 
     json::Value formatDetail = json::Value::object();
-    formatDetail.set("width", json::Value(format_.width));
-    formatDetail.set("height", json::Value(format_.height));
-    formatDetail.set("rate_numerator", json::Value(format_.rate.numerator));
-    formatDetail.set("rate_denominator", json::Value(format_.rate.denominator));
-    formatDetail.set("interlaced", json::Value(format_.interlaced));
+    formatDetail.set("width", json::Value(format.width));
+    formatDetail.set("height", json::Value(format.height));
+    formatDetail.set("rate_numerator", json::Value(format.rate.numerator));
+    formatDetail.set("rate_denominator", json::Value(format.rate.denominator));
+    formatDetail.set("interlaced", json::Value(format.interlaced));
     root.set("format_detail", formatDetail);
 
+    // One deadline for every output together: a wedged one costs this call at
+    // most the budget once, and one wedged for over a second costs nothing.
+    const auto deadline = Clock::now() + kStatusBudget;
     json::Value outputs = json::Value::array();
-    for (const auto& entry : outputs_) {
-      json::Value value = entry.output != nullptr ? entry.output->status()
-                                                  : json::Value::object();
-      value.set("name", json::Value(entry.spec.name));
-      value.set("kind", json::Value(entry.spec.kind));
-      value.set("enabled", json::Value(entry.enabled));
+    for (const auto& row : rows) {
+      json::Value value =
+          row.present ? row.slot->status(deadline) : json::Value::object();
+      value.set("name", json::Value(row.spec.name));
+      value.set("kind", json::Value(row.spec.kind));
+      value.set("enabled", json::Value(row.enabled));
       // The spec as configured, so the settings page can populate its editor
       // without keeping a second copy of what it asked for.
-      value.set("device_index", json::Value(entry.spec.deviceIndex));
-      value.set("options", entry.spec.options);
+      value.set("device_index", json::Value(row.spec.deviceIndex));
+      value.set("options", row.spec.options);
       value.set("background", json::Value(std::string(
-                                  entry.spec.background.opaque ? "colour"
+                                  row.spec.background.opaque ? "colour"
                                                                : "transparent")));
       // Reported even while transparent, so the editor's colour well shows what
       // turning the background on would give rather than resetting to green.
-      value.set("background_colour", json::Value(entry.spec.background.toHex()));
-      if (!entry.lastError.empty()) {
-        value.set("error", json::Value(entry.lastError));
+      value.set("background_colour", json::Value(row.spec.background.toHex()));
+      if (!row.lastError.empty()) {
+        value.set("error", json::Value(row.lastError));
       }
       outputs.push(value);
     }
@@ -1040,10 +1454,7 @@ json::Value Engine::state() const {
   settings.set("matrix", json::Value(colourMatrixToString(matrix_.load())));
   settings.set("interactive_by_default",
                json::Value(interactiveByDefault_.load()));
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    settings.set("audio_enabled", json::Value(audioEnabled_));
-  }
+  settings.set("audio_enabled", json::Value(audioEnabled));
   root.set("settings", settings);
 
   json::Value pacing = json::Value::object();
@@ -1056,6 +1467,16 @@ json::Value Engine::state() const {
     pacing.set("last_lateness_us",
                json::Value(clock_->lastLatenessNanos() / 1000));
   }
+  // How long since the clock thread last started a tick. A frame period or so
+  // while it runs; growing without bound while state() still answers means the
+  // clock is stuck inside an output's driver. This is what a supervisor should
+  // watch now that /api/state no longer goes silent when that happens.
+  const int64_t lastTick = lastTickNanos_.load();
+  if (running_.load() && lastTick != 0) {
+    pacing.set("last_tick_age_ms",
+               json::Value((steadyNanos() - lastTick) / 1'000'000));
+  }
+  pacing.set("output_skips", json::Value(outputSkips_.load()));
   root.set("pacing", pacing);
 
   const auto audioStats = audio_.stats();
@@ -1067,6 +1488,10 @@ json::Value Engine::state() const {
   audio.set("overruns", json::Value(audioStats.overruns));
   root.set("audio", audio);
 
+  {
+    std::lock_guard<std::mutex> last(lastStateMutex_);
+    lastState_ = root;
+  }
   return root;
 }
 

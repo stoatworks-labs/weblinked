@@ -299,32 +299,35 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
 
   if (path == "/api/preview") {
     // Captured under withSource, because the snapshot has to be taken while the
-    // engine is guaranteed alive — a bare PreviewOutput* would outlive a source
-    // removed between the lookup and the copy.
-    bool configured = true;
+    // engine is guaranteed alive — and through withPreview, which holds the
+    // preview's slot for the copy, because a settings change can replace the
+    // preview itself between a lookup and the copy.
+    auto access = Engine::PreviewAccess::kNone;
     bool empty = false;
-    withRequestSource(request, response, [&](Engine& engine) {
-      auto* preview = engine.preview();
-      if (preview == nullptr) {
-        configured = false;
-        return;
-      }
-      auto snapshot = preview->snapshot();
-      if (snapshot.pixels.empty()) {
-        empty = true;
-        return;
-      }
-      response.contentType = "application/octet-stream";
-      response.useBinary = true;
-      response.binaryBody = std::move(snapshot.pixels);
-      // Dimensions travel in headers so the body stays a bare pixel buffer.
-      response.extraHeaders["X-Frame-Width"] = std::to_string(snapshot.width);
-      response.extraHeaders["X-Frame-Height"] = std::to_string(snapshot.height);
-      response.extraHeaders["X-Frame-Sequence"] =
-          std::to_string(snapshot.sequence);
+    const bool reached = withRequestSource(request, response, [&](Engine& engine) {
+      access = engine.withPreview([&](PreviewOutput& preview) {
+        auto snapshot = preview.snapshot();
+        if (snapshot.pixels.empty()) {
+          empty = true;
+          return;
+        }
+        response.contentType = "application/octet-stream";
+        response.useBinary = true;
+        response.binaryBody = std::move(snapshot.pixels);
+        // Dimensions travel in headers so the body stays a bare pixel buffer.
+        response.extraHeaders["X-Frame-Width"] = std::to_string(snapshot.width);
+        response.extraHeaders["X-Frame-Height"] = std::to_string(snapshot.height);
+        response.extraHeaders["X-Frame-Sequence"] =
+            std::to_string(snapshot.sequence);
+      });
     });
-    if (!configured) {
+    if (!reached) {
+      return;  // withRequestSource has already said why
+    }
+    if (access == Engine::PreviewAccess::kNone) {
       response.error(404, "no preview output is configured");
+    } else if (access == Engine::PreviewAccess::kBusy) {
+      response.error(503, "the preview is busy; try again");
     } else if (empty) {
       response.error(503, "preview has produced no frames yet");
     }
@@ -536,9 +539,17 @@ void ControlApi::handleHttp(const HttpServer::Request& request,
     }
     std::string error;
     bool applied = true;
+    bool changed = true;
     if (!withRequestSource(request, response, [&](Engine& engine) {
           applied = engine.setFormat(*format, error);
+          changed = engine.format() == *format;
         })) {
+      return;
+    }
+    if (!applied && !changed) {
+      // Refused outright — another change in progress, or a clock that would
+      // not stop for it. Nothing moved, so say so rather than "applied".
+      response.error(503, error);
       return;
     }
     if (!applied) {

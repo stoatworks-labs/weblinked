@@ -1,6 +1,8 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -21,6 +23,13 @@ namespace weblinked {
 /// Thread per connection. At the traffic this sees — one operator, one browser
 /// tab — that is the right trade: no event loop to get wrong, and a slow client
 /// cannot stall the others.
+///
+/// But capped. Uncapped, a handler that cannot finish — an engine whose output
+/// driver had deadlocked, in issue #12 — let a client polling every 200 ms park
+/// a thread per poll, and 1,410 of them were waiting when the process was
+/// finally killed. Past the cap a new connection is answered 503 and closed, and
+/// every socket has receive and send timeouts, so no handler can wait on a
+/// client for ever either.
 ///
 /// Deliberately *not* a general-purpose server: no TLS, no chunked encoding, no
 /// file serving from disk. Bind it to loopback unless you have a reason not to,
@@ -59,8 +68,20 @@ class HttpServer {
 
   using Handler = std::function<void(const Request&, Response&)>;
 
+  /// Connections served at once. The control page holds one keep-alive
+  /// connection per tab and a browser opens at most six per host; Companion, a
+  /// supervisor and a few operators come to a dozen or two. 64 is several times
+  /// that, and its worst case — 64 threads at 512 KB of stack — is 32 MB,
+  /// against roughly 700 MB for the 1,410 threads #12 left behind.
+  static constexpr int kDefaultMaxConnections = 64;
+
   HttpServer();
   ~HttpServer();
+
+  /// Both before start(). The idle timeout bounds a wait for a request; the
+  /// send timeout bounds a wait for a client to read its response.
+  void setMaxConnections(int maxConnections);
+  void setTimeouts(std::chrono::milliseconds idle, std::chrono::milliseconds send);
 
   /// `token`, if set, must appear as ?token=... or an Authorization: Bearer
   /// header on every request. The only protection there is — see the class note.
@@ -69,7 +90,12 @@ class HttpServer {
   void stop();
 
   bool isRunning() const { return running_.load(); }
+  /// The port actually bound — the one the system chose, if start() was asked
+  /// for port 0.
   int port() const { return port_; }
+  int activeConnections() const { return activeConnections_.load(); }
+  /// Connections turned away with a 503 because the cap was reached.
+  int64_t refusedConnections() const { return refusedConnections_.load(); }
   const std::string& bindAddress() const { return bindAddress_; }
 
   /// Whether `bindAddress:port` can be listened on right now.
@@ -88,6 +114,8 @@ class HttpServer {
  private:
   void acceptLoop();
   void serveConnection(int socket);
+  /// Answers 503 and closes, on the accept thread, in bounded time.
+  void refuse(int socket);
   bool authorised(const Request& request) const;
 
   std::atomic<bool> running_{false};
@@ -98,6 +126,10 @@ class HttpServer {
   Handler handler_;
   std::thread acceptThread_;
   std::atomic<int> activeConnections_{0};
+  std::atomic<int64_t> refusedConnections_{0};
+  int maxConnections_ = kDefaultMaxConnections;
+  std::chrono::milliseconds idleTimeout_{15'000};
+  std::chrono::milliseconds sendTimeout_{15'000};
 
   /// Every connection still open, so stop() can end the keep-alive ones rather
   /// than leave them serving requests into a process that is shutting down.

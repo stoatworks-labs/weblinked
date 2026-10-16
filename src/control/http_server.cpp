@@ -1,6 +1,7 @@
 #include "control/http_server.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <limits>
@@ -16,6 +17,7 @@ using socket_t = SOCKET;
 #define WL_INVALID_SOCKET INVALID_SOCKET
 #define WL_CLOSE_SOCKET closesocket
 #define WL_SHUT_BOTH SD_BOTH
+#define WL_SHUT_SEND SD_SEND
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -27,6 +29,7 @@ using socket_t = int;
 #define WL_INVALID_SOCKET (-1)
 #define WL_CLOSE_SOCKET ::close
 #define WL_SHUT_BOTH SHUT_RDWR
+#define WL_SHUT_SEND SHUT_WR
 #endif
 
 #include "core/socket_inherit.h"
@@ -121,6 +124,47 @@ bool readExactly(socket_t socket, std::string& buffer, size_t wanted) {
   return true;
 }
 
+/// Bounds every blocking recv() and send() on `socket`. Without the send half a
+/// client that stopped reading a response parked its thread in send() for good.
+void setSocketTimeouts(socket_t socket, std::chrono::milliseconds receive,
+                       std::chrono::milliseconds send) {
+#if defined(_WIN32)
+  const DWORD receiveMs = static_cast<DWORD>(receive.count());
+  const DWORD sendMs = static_cast<DWORD>(send.count());
+  ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&receiveMs), sizeof(receiveMs));
+  ::setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO,
+               reinterpret_cast<const char*>(&sendMs), sizeof(sendMs));
+#else
+  const auto toTimeval = [](std::chrono::milliseconds ms) {
+    timeval value{};
+    value.tv_sec = static_cast<decltype(value.tv_sec)>(ms.count() / 1000);
+    value.tv_usec = static_cast<decltype(value.tv_usec)>((ms.count() % 1000) * 1000);
+    return value;
+  };
+  const timeval receiveTime = toTimeval(receive);
+  const timeval sendTime = toTimeval(send);
+  ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &receiveTime, sizeof(receiveTime));
+  ::setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &sendTime, sizeof(sendTime));
+#endif
+#if defined(__APPLE__)
+  // The app ignores SIGPIPE process-wide (main.cpp); a library should not
+  // depend on its host having done so. Linux has no socket option for this.
+  int noSigPipe = 1;
+  ::setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, sizeof(noSigPipe));
+#endif
+}
+
+/// Whether the recv() or send() that just failed did so because its timeout
+/// expired, rather than because the connection is gone.
+bool lastCallTimedOut() {
+#if defined(_WIN32)
+  return ::WSAGetLastError() == WSAETIMEDOUT;
+#else
+  return errno == EAGAIN || errno == EWOULDBLOCK;
+#endif
+}
+
 bool sendAll(socket_t socket, const char* data, size_t length) {
   size_t sent = 0;
   while (sent < length) {
@@ -203,6 +247,16 @@ HttpServer::HttpServer() = default;
 
 HttpServer::~HttpServer() { stop(); }
 
+void HttpServer::setMaxConnections(int maxConnections) {
+  maxConnections_ = std::max(1, maxConnections);
+}
+
+void HttpServer::setTimeouts(std::chrono::milliseconds idle,
+                             std::chrono::milliseconds send) {
+  idleTimeout_ = idle;
+  sendTimeout_ = send;
+}
+
 bool HttpServer::portAvailable(const std::string& bindAddress, int port) {
   ensureWinsock();
 
@@ -283,11 +337,22 @@ bool HttpServer::start(const std::string& bindAddress, int port,
     return false;
   }
 
+  // Port 0 asks the system to choose; report the one it chose.
+  sockaddr_in bound{};
+#if defined(_WIN32)
+  int boundLength = sizeof(bound);
+#else
+  socklen_t boundLength = sizeof(bound);
+#endif
+  if (::getsockname(listener, reinterpret_cast<sockaddr*>(&bound), &boundLength) == 0) {
+    port_ = ntohs(bound.sin_port);
+  }
+
   listenSocket_ = static_cast<int>(listener);
   running_.store(true);
   acceptThread_ = std::thread([this] { acceptLoop(); });
 
-  diag::info("control: HTTP listening on %s:%d%s", bindAddress.c_str(), port,
+  diag::info("control: HTTP listening on %s:%d%s", bindAddress.c_str(), port_,
              token.empty() ? "" : " (token required)");
   return true;
 }
@@ -354,6 +419,14 @@ void HttpServer::acceptLoop() {
     // browser at the other end waits for a response nobody will send.
     preventSocketInheritance(static_cast<std::intptr_t>(client));
 
+    // The cap. Checked here, before a thread exists, because a thread per
+    // connection with no limit is how one wedged engine became 1,410 parked
+    // threads (#12).
+    if (activeConnections_.load() >= maxConnections_) {
+      refuse(static_cast<int>(client));
+      continue;
+    }
+
     // Detached, with a counter so shutdown can at least report stragglers. A
     // join-all would mean waiting on a client that has wandered off.
     ++activeConnections_;
@@ -386,19 +459,68 @@ bool HttpServer::authorised(const Request& request) const {
   return false;
 }
 
+void HttpServer::refuse(int rawSocket) {
+  const auto socket = static_cast<socket_t>(rawSocket);
+  const int64_t refused = ++refusedConnections_;
+
+  // Read whatever of the request has arrived first, for at most 30 ms: closing
+  // a socket with its request unread makes the kernel answer with a reset, and
+  // the client then reports "connection reset" instead of the 503 that says
+  // why. A real client's request is there within a millisecond of connecting;
+  // the bound is for one that never sends, because this runs on the accept
+  // thread and every connection behind it waits.
+  setSocketTimeouts(socket, std::chrono::milliseconds(10),
+                    std::chrono::milliseconds(100));
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(30);
+  std::string request;
+  char chunk[4096];
+  while (request.find("\r\n\r\n") == std::string::npos &&
+         request.size() < 64 * 1024 && std::chrono::steady_clock::now() < deadline) {
+    const auto received = ::recv(socket, chunk, toSocketLength(sizeof(chunk)), 0);
+    if (received == 0 || (received < 0 && !lastCallTimedOut())) {
+      break;  // the client has gone, or the socket has failed
+    }
+    if (received > 0) {
+      request.append(chunk, static_cast<size_t>(received));
+    }
+  }
+
+  const std::string body = "{\"error\":\"too many control connections (" +
+                           std::to_string(maxConnections_) +
+                           " open); try again shortly\"}";
+  std::ostringstream head;
+  head << "HTTP/1.1 503 " << statusText(503) << "\r\n"
+       << "Content-Type: application/json\r\n"
+       << "Content-Length: " << body.size() << "\r\n"
+       << "Retry-After: 1\r\n"
+       << "Cache-Control: no-store\r\n"
+       << "Connection: close\r\n\r\n"
+       << body;
+  const std::string response = head.str();
+  sendAll(socket, response.data(), response.size());
+  ::shutdown(socket, WL_SHUT_SEND);
+  WL_CLOSE_SOCKET(socket);
+
+  // The first of a burst, then every hundredth, so a client hammering a full
+  // server cannot fill the log as well.
+  if (refused == 1 || refused % 100 == 0) {
+    diag::warn("control: %d HTTP connections open, the most allowed; refused "
+               "another with 503 (%lld so far). Either a client is opening "
+               "connections faster than requests finish, or requests are not "
+               "finishing — check /api/state for a stale output",
+               maxConnections_, static_cast<long long>(refused));
+  }
+}
+
 void HttpServer::serveConnection(int rawSocket) {
   const auto socket = static_cast<socket_t>(rawSocket);
 
-  // Idle timeout, so a connection that opens and says nothing does not hold a
-  // thread for the life of the process.
-#if defined(_WIN32)
-  DWORD timeout = 15000;
-  ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO,
-               reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-#else
-  timeval timeout{};
-  timeout.tv_sec = 15;
-  ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  // An idle timeout, so a connection that opens and says nothing does not hold
+  // a thread for the life of the process, and a send timeout, so a client that
+  // stops reading does not either.
+  setSocketTimeouts(socket, idleTimeout_, sendTimeout_);
+#if !defined(_WIN32)
   int nodelay = 1;
   ::setsockopt(socket, IPPROTO_TCP, TCP_NODELAY,
                reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));

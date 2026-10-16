@@ -240,6 +240,7 @@ set(WEBLINKED_CORE_SOURCES
   src/core/playout_schedule.cpp
   src/core/playout_schedule.h
   src/core/recycle_ring.h
+  src/core/call_gate.h
   src/core/pixel_convert.cpp
   src/core/pixel_convert.h
   src/core/rotated_blit.cpp
@@ -266,6 +267,11 @@ set(WEBLINKED_CORE_SOURCES
   # cheap to test was linkable by a test.
   src/control/osc_server.cpp
   src/control/osc_server.h
+  # The HTTP server too, on the same terms: sockets and nothing else, and its
+  # connection cap and timeouts are what stopped 1,410 parked handler threads
+  # (issue #12) — which a test has to be able to reach.
+  src/control/http_server.cpp
+  src/control/http_server.h
   # Here for the same reason the OSC receiver is: it needs no CEF, and the
   # parts most likely to be wrong — the TXT encoding and the instance-name
   # rules — are pure string work that a test must be able to reach without
@@ -293,13 +299,12 @@ set(WEBLINKED_ENGINE_SOURCES
   src/browser/cef_app.h
   src/outputs/output.cpp
   src/outputs/output.h
+  src/outputs/output_slot.h
   src/outputs/preview_output.cpp
   src/engine/engine.cpp
   src/engine/engine.h
   src/engine/source_manager.cpp
   src/engine/source_manager.h
-  src/control/http_server.cpp
-  src/control/http_server.h
   src/control/control_api.cpp
   src/control/control_api.h
   src/control/web_assets.h

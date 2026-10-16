@@ -643,13 +643,21 @@ function renderOutputs(outputs) {
     const row = document.createElement('tr');
 
     const nameCell = document.createElement('td');
-    const live = output.enabled && output.running;
-    nameCell.innerHTML = '<span class="dot ' + (live ? 'on' : (output.error ? 'bad' : '')) +
+    const live = output.enabled && output.running && !output.stale;
+    // Stale: a call into this output's driver has not come back, so the
+    // figures are the last it gave. The engine says so rather than waiting.
+    const stale = output.stale
+      ? '<div class="err">not answering for ' +
+        Math.round((output.driver_busy_ms || 0) / 1000) +
+        ' s &mdash; figures are the last it gave</div>'
+      : '';
+    nameCell.innerHTML = '<span class="dot ' +
+      (live ? 'on' : (output.error || output.stale ? 'bad' : '')) +
       '" style="display:inline-block;margin-right:6px"></span>' +
       output.name + '<div class="kind">' + output.kind +
       (output.device ? ' &middot; ' + output.device : '') +
       (output.pixel_format ? ' &middot; ' + output.pixel_format : '') +
-      backgroundSwatch(output) + '</div>' +
+      backgroundSwatch(output) + '</div>' + stale +
       (output.error ? '<div class="err">' + errorHtml(output.error) + '</div>' : '');
     row.appendChild(nameCell);
 
@@ -800,8 +808,16 @@ function outputEditor(output, isNew) {
     '<p class="hint" data-when="keying">' +
       'Fill only sends the picture with no key. Key + fill puts fill and key on ' +
       'separate SDI connectors. Overlay composites over the input the card is ' +
-      'already receiving, using its internal keyer. Never run against hardware ' +
-      '&mdash; see docs/04-verification.md.</p>' +
+      'already receiving, using its internal keyer. Premultiplied fill is for a ' +
+      'keyer set to premultiplied key; leave it off for one that expects a ' +
+      'straight fill. What has been measured is in docs/04-verification.md.</p>' +
+    // Carried here so that Apply keeps it: options are rebuilt from these
+    // fields, and an output started with --key-premultiplied would otherwise
+    // reopen with a straight fill the first time anyone edited it.
+    '<label class="check" data-when="keying">' +
+      '<input type="checkbox" data-f="premultiplied_fill"' +
+      (options.premultiplied_fill ? ' checked' : '') + '>' +
+      'Premultiplied fill (--key-premultiplied)</label>' +
     '<p class="hint" data-bg>' +
       'The page is composited over this colour on its way to this output only, ' +
       'and leaves fully opaque &mdash; for a downstream chroma keyer. Leave it ' +
@@ -860,6 +876,7 @@ function outputEditor(output, isNew) {
     if (shown.includes('keying') && field('keying').value) {
       body.options.keying = field('keying').value;
       body.options.key_level = Number(field('key_level').value);
+      if (field('premultiplied_fill').checked) body.options.premultiplied_fill = true;
     }
     if (shown.includes('factor')) body.options.factor = Number(field('factor').value);
     if (shown.includes('display')) body.options.display = Number(field('display').value);

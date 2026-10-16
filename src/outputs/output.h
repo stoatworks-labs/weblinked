@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -39,8 +40,16 @@ struct OutputSpec {
 ///
 /// submit() is called from the engine's clock thread. Implementations must not
 /// block on it: a backend that stalls holds up every other output. Where a
-/// vendor API can block (DeckLink's scheduled playback cannot, but a network
-/// send can) the backend either buffers or drops, and says so in status().
+/// vendor API can block the backend either buffers or drops, and says so in
+/// status(). "Cannot block" is a promise about the API, not the driver: DeckLink's
+/// scheduled playback cannot block by design and still deadlocked inside the SDK
+/// (issue #12), which is why the engine reaches every output through an
+/// OutputSlot and never holds its own mutex across a call into one.
+///
+/// The engine serialises every call into one output — start, stop, submit and
+/// status — through that output's slot, so a backend needs no locking between
+/// them. It needs its own only for threads it starts itself, or a vendor's
+/// callback thread.
 class IOutput {
  public:
   virtual ~IOutput() = default;
@@ -73,17 +82,19 @@ class IOutput {
   /// when the page is silent, which is not an error.
   virtual void submit(const VideoFrame& video, const AudioBlock& audio) = 0;
 
-  /// Live counters for the control API. Called from the HTTP thread, so
-  /// implementations must guard anything the clock thread also touches.
+  /// Live counters for the control API. Called from an HTTP thread, but never
+  /// at the same time as submit(): the engine holds the output's slot for both.
   virtual json::Value status() const = 0;
 
-  bool isRunning() const { return running_; }
+  bool isRunning() const { return running_.load(); }
 
  protected:
   explicit IOutput(std::string name) : name_(std::move(name)) {}
 
   std::string name_;
-  bool running_ = false;
+  /// Atomic because a backend's own thread may clear it — the stream output's
+  /// writers do when ffmpeg dies — while the clock thread is asking.
+  std::atomic<bool> running_{false};
 };
 
 /// OutputSpec and OutputConfig carry the same thing for different reasons: one

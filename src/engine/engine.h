@@ -1,7 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -18,6 +20,7 @@
 #include "core/video_format.h"
 #include "engine/input_event.h"
 #include "outputs/output.h"
+#include "outputs/output_slot.h"
 
 namespace weblinked {
 
@@ -27,7 +30,14 @@ class PreviewOutput;
 ///
 /// The clock thread is the only thing that touches an output's submit(). Control
 /// requests arrive on the HTTP or OSC thread and either mutate guarded state or
-/// post to CEF's UI thread; none of them reach into an output directly.
+/// post to CEF's UI thread.
+///
+/// Every call into an output goes through its OutputSlot, and `mutex_` is never
+/// held while one is made: a driver that deadlocks inside a call (issue #12)
+/// then holds that output's gate and nothing else. Every wait on a gate has a
+/// deadline, so a wedged output costs its own frames and an error on the
+/// requests that need it — never the clock, the other outputs or the control
+/// API.
 class Engine {
  public:
   struct Config {
@@ -166,28 +176,44 @@ class Engine {
   VideoFormat format() const;
 
   /// The whole state tree, as served by GET /api/state.
+  ///
+  /// Never waits for long. An output whose gate is held — its driver busy in a
+  /// call — reports the last status that completed, with "stale": true and how
+  /// long the call has been running. If even the engine's own mutex cannot be
+  /// had promptly, the whole of the last report comes back, marked stale.
   json::Value state() const;
 
-  PreviewOutput* preview() const;
+  /// Runs `fn` against the preview output, holding its slot so that it cannot
+  /// be replaced or destroyed during the call. kBusy if the slot could not be
+  /// had in time, which is not the same as there being no preview.
+  enum class PreviewAccess { kDone, kNone, kBusy };
+  PreviewAccess withPreview(const std::function<void(PreviewOutput&)>& fn) const;
 
  private:
   void clockLoop();
 
-  /// Parks the clock thread and returns once it has acknowledged. Callers must
-  /// pair this with resumeClock(); the RAII guard below does that.
-  void pauseClock();
+  /// Parks the clock thread and returns once it has acknowledged, or after a
+  /// second if it has not — false then, and the caller must not touch
+  /// clock-thread state: the thread is somewhere else, most likely inside an
+  /// output's driver. Callers must pair this with resumeClock(); the RAII guard
+  /// below does that.
+  bool pauseClock();
   void resumeClock();
 
   /// Scoped pause, so an early return cannot leave the clock parked forever.
   class ClockPause {
    public:
-    explicit ClockPause(Engine* engine) : engine_(engine) { engine_->pauseClock(); }
+    explicit ClockPause(Engine* engine)
+        : engine_(engine), parked_(engine_->pauseClock()) {}
     ~ClockPause() { engine_->resumeClock(); }
     ClockPause(const ClockPause&) = delete;
     ClockPause& operator=(const ClockPause&) = delete;
 
+    bool parked() const { return parked_; }
+
    private:
     Engine* engine_;
+    bool parked_;
   };
   /// Sample-frames of audio belonging to `tick`.
   ///
@@ -230,18 +256,47 @@ class Engine {
 
   struct Entry {
     OutputSpec spec;
-    std::unique_ptr<IOutput> output;
+    /// Never null. Empty (desc.present false) for an output that could not be
+    /// created. Shared so that the clock thread and a state report can hold it
+    /// across a call made without mutex_.
+    std::shared_ptr<OutputSlot> slot;
+    /// The slot's description as of the last control path to have it. The
+    /// clock plans each tick from this, under mutex_, without calling into the
+    /// output; the generation inside it is how the call finds out the plan is
+    /// stale.
+    OutputSlot::Description desc;
     bool enabled = true;
     std::string lastError;
   };
+
+  /// Under mutex_. Null if there is no output called `name`.
+  Entry* findEntry(const std::string& name);
+
+  /// The message a control request gets when an output's gate cannot be had.
+  static std::string busyMessage(const std::string& name, const OutputSlot& slot);
 
   /// Written once by start() before any other thread can see this engine, so it
   /// needs no guarding.
   std::string id_ = "main";
 
-  mutable std::mutex mutex_;   ///< guards outputs_ and format_
+  /// Guards outputs_, format_ and audioEnabled_. Never held across a call into
+  /// an output, a browser or anything else that can block — only while copying
+  /// in or out — so a wait for it is short. Timed only so that state() can
+  /// prove it.
+  mutable std::timed_mutex mutex_;
   std::vector<Entry> outputs_;
   VideoFormat format_;
+
+  /// Serialises the control paths that change the output list or open and
+  /// close devices: add, remove, update, enable and format changes. Held across
+  /// their driver calls — which is exactly why neither the clock thread nor
+  /// state() ever takes it — and waited for with a deadline, so a control
+  /// request behind a wedged one fails rather than queueing for ever.
+  std::timed_mutex controlMutex_;
+
+  /// The last complete state(), for when mutex_ cannot be had in time.
+  mutable std::mutex lastStateMutex_;
+  mutable json::Value lastState_;
   /// Atomic rather than mutex-guarded because the clock thread reads it inside
   /// frameInFormat(), outside mutex_, on every converted frame — and the
   /// settings page can now change it while that is happening.
@@ -280,6 +335,16 @@ class Engine {
 
   // Clock-thread-only state. Only ever touched by clockLoop, or by another
   // thread while the clock thread is parked — see pauseMutex_ above.
+
+  /// One tick's outputs, copied out of outputs_ under mutex_ and called after
+  /// it is released. Cleared at the end of every tick so a removed output's
+  /// slot is not kept alive by the clock.
+  struct Target {
+    std::shared_ptr<OutputSlot> slot;
+    OutputSlot::Description desc;
+    OutputBackground background;
+  };
+  std::vector<Target> targets_;
   FramePoolPtr uyvyPool_;
   FramePoolPtr blackPool_;
   FramePoolPtr straightPool_;
@@ -299,6 +364,13 @@ class Engine {
 
   std::atomic<int64_t> ticks_{0};
   std::atomic<int64_t> repeatedFrames_{0};
+  /// steady_clock nanoseconds at which the clock thread last started a tick. A
+  /// state report that keeps answering while this stops moving is the sign of
+  /// a clock thread stuck inside a driver — which /api/state going silent used
+  /// to be, before it could no longer go silent.
+  std::atomic<int64_t> lastTickNanos_{0};
+  /// Submits skipped because an output's gate could not be had in time.
+  std::atomic<int64_t> outputSkips_{0};
 };
 
 /// Turns the pure-data description of a pipeline into the engine's own config.
