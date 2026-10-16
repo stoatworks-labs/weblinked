@@ -56,8 +56,19 @@ release** — a Linux deployment must build `libomtnet` from source.
 The SDK is a free but licence-gated download from Blackmagic and is not vendored.
 
 ```bash
-cmake -S . -B build -DDECKLINK_SDK_DIR="/path/to/Blackmagic DeckLink SDK 12.9"
+cmake -S . -B build -DDECKLINK_SDK_DIR="/path/to/Blackmagic DeckLink SDK 16.0"
 ```
+
+Any SDK from 12 on builds. 14.3 moved a frame's pixels off `IDeckLinkVideoFrame`
+onto `IDeckLinkVideoBuffer`, written between `StartAccess` and `EndAccess`;
+`FrameBytes` in `decklink_output.cpp` picks the path from
+`BLACKMAGIC_DECKLINK_API_VERSION`. Both paths are built for each change to that
+file: against the official 16.0 SDK and against the 12.0 headers OBS vendors
+(section 40 of [04-verification.md](04-verification.md)).
+
+`tools/dl_fake_card.cpp` runs the real backend against a simulated card, for
+checking the frame ring and the scheduling without hardware. It needs 14.3 or
+later; the build line is at the top of the file.
 
 Accepted layouts: `<dir>/Mac/include/`, `<dir>/Linux/include/`,
 `<dir>/Win/include/`, a bare directory containing `DeckLinkAPI.h`, or a flattened

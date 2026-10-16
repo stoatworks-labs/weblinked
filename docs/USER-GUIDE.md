@@ -21,6 +21,10 @@ it doesn't try to hide the broadcast decisions from you.
 > **frame-rate performance is verified on macOS and Linux only**, because that Windows machine
 > can't sustain a rate. [04-verification.md](04-verification.md) gives the numbers and the
 > method rather than a promise.
+>
+> One more, newer than the rest. The DeckLink fixes since v1.2.0 (frames made once and reused,
+> and catching up after a stall) were written with no card plugged in. They've run against a
+> simulated card, and **they're waiting on a real one**: the rig that found the bugs.
 
 ---
 
@@ -60,7 +64,8 @@ actually contains*, which is the quickest way to find out whether your download 
 
 > **Downloads bundle the NDI runtime**, so NDI works on a machine that never installed the SDK.
 > **The hosted builders have no DeckLink or AJA SDK**, so **SDI output needs a local build**
-> (see [02-building.md](02-building.md)).
+> (see [02-building.md](02-building.md)). Any DeckLink SDK from 12 on will do, current ones
+> included: 14.3 moved where a frame's pixels live, and the build copes with either.
 
 ### On a server, in Docker
 
@@ -126,6 +131,27 @@ Changing it doesn't restart the output.
 > **Apply replaces an output in place** rather than removing and re-adding it. If the new
 > settings can't open (a card already claimed, an NDI name in use), **the previous output is
 > restarted** and the reason is shown. Renaming an output can't leave you with no output.
+
+### Keying a DeckLink
+
+`--key` (or **Mode: Key + fill** in the editor) puts fill and key on separate SDI connectors;
+`--key=internal` (**Overlay**) has the card key over its own input instead. `--key-level`
+sets the keyer's overall opacity.
+
+The fill goes out with **straight** alpha unless you say otherwise, because most keyers want
+it that way. A keyer set to premultiplied key (an ATEM DSK with **Pre Multiplied Key** on,
+for one) wants the fill as Chromium painted it, and given a straight one it lays the whole
+fill colour over every soft edge, so fades and drop shadows come out too bright. For that
+keyer add `--key-premultiplied` beside `--key`, before the `--decklink` it's for, or tick
+**Premultiplied fill** in the editor:
+
+```bash
+WebLinked --url https://example.com/lower-third --key --key-premultiplied --decklink=0
+```
+
+Match the keyer and the fill and leave it there. Getting it wrong either way is visible only on
+partial alpha, which is where nobody looks during a line-up. Daniel Nyström, who wrote
+this option, measured both on his rig: details in the changelog.
 
 ![A clock page rendered to output.](images/output-clock.png)
 
@@ -205,7 +231,11 @@ The log lives at `~/Library/Logs/WebLinked/WebLinked.log` (or `$WEBLINKED_LOG_DI
 | **No SDI options anywhere** | Your build has no DeckLink/AJA SDK. `--help` lists the backends this binary contains; SDI needs a local build. |
 | **High repeated-frame count** | Usually fine — the page simply isn't repainting. Watch dropped ticks instead. |
 | **Dropped ticks climbing** | The pipeline is missing frame slots. Check page complexity, raster and CPU. |
-| **Alpha looks wrong on SDI key/fill** | Straight alpha is measured on SDI; the key channel itself is not yet measured. Verify on your own hardware. |
+| **Alpha looks wrong on SDI key/fill** | Straight alpha is measured on SDI; the key channel itself is not yet measured. Verify on your own hardware. Soft edges too *bright* usually means a keyer set to premultiplied key: add `--key-premultiplied` (see [Keying a DeckLink](#keying-a-decklink)). |
+| **An output says "not answering"** | A call into that output's driver hasn't come back. The figures shown are the last it gave (`"stale": true` in `/api/state`), and changes to it are refused rather than left hanging, so the rest of WebLinked carries on. If it doesn't clear, restart WebLinked. |
+| **`/api/state` answers, but `ticks` has stopped** | The clock is stuck, usually inside an output's driver. `pacing.last_tick_age_ms` climbing past a second is the sign. A supervisor that used to wait for `/api/state` to go silent should watch that instead: it doesn't go silent any more. |
+| **The control API answers 503, "too many control connections"** | Something has 64 connections open at once. Usually a client that opens a new one per poll and never closes them, or one polling an engine that isn't answering. It clears as they close. |
+| **DeckLink `reanchors` went up** | The card's playhead overtook WebLinked's schedule (the process stalled for longer than the queue) and the output caught up by skipping forward. One per stall is expected; a steady climb with no stalls means the engine's clock is running slower than the card's. |
 | **Output opened, then reverted to the old one** | Apply failed — a card already claimed or an NDI name in use — and the previous output was restarted. The reason is shown. |
 | **A new tab opened a window instead of loading** | Shouldn't happen: no browser here owns a window, and popups are always cancelled into the same view. |
 | **Colour looks off** | Check the colour matrix against the raster. Verify with `ndi_probe --bars` rather than by eye. |

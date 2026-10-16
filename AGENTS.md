@@ -152,6 +152,56 @@ is how the above presented: the process stayed alive, the log looked fine, and
 every subsequent HTTP request blocked forever. If the control API goes silent,
 suspect the clock thread.
 
+**So does one that waits on a driver while holding it, and drivers do wedge.**
+Issue #12: Desktop Video 16.4 deadlocked inside its own allocator, the clock
+thread was waiting on that inside `CreateVideoFrame` while holding `mutex_`, and
+every `GET /api/state` then waited on `mutex_` for good — 1,410 parked HTTP
+threads by the time someone killed it. "DeckLink's scheduled playback cannot
+block" was true of the API and false of the driver. Since the fix, no call into an
+output is made holding `mutex_` at all, and every wait on an output has a
+deadline (§8). The symptom moved accordingly: a wedged output now shows up as
+`"stale": true` on that output and `pacing.last_tick_age_ms` climbing, while
+`/api/state` keeps answering. If the control API answers but the ticks have
+stopped, suspect the clock thread inside a driver.
+
+**A DeckLink frame destroyed on the completion thread can deadlock the SDK.**
+Same issue. The old output made a frame per tick and released its reference in
+`ScheduledFrameCompleted`; the SDK's own release after the callback then
+destroyed the frame on the completion thread, and when that emptied one of the
+SDK's buffer allocators while the clock thread was inside `CreateVideoFrame`,
+16.4 deadlocked on itself. The output now creates a ring of frames at start and
+recycles them, so nothing is allocated or freed during playback (§8). The SDK's
+documentation says the same thing in passing: frames you manage yourself
+"should be disposed or reused inside the ScheduledFrameCompleted callback".
+
+**Remove the completion callback after `DisableVideoOutput`, never before.**
+`DisableVideoOutput` blocks until every scheduled frame is completed or flushed,
+and the flushed ones are reported through the callback. The old `stop()` cleared
+the callback first, so every frame still queued at a stop was never handed back
+and leaked. Found by `tools/dl_fake_card.cpp` run against the old code; the
+SDK's samples use the order `stop()` now uses.
+
+**A schedule that only counts up falls behind for good after one long stall.**
+Issue #13. Frame N went to the card at N × duration. A late tick only shortened
+the queue, which was the design, but a stall longer than the queue left N
+behind the card's playhead, and one frame per tick never catches up: every frame
+for the next hour was late. `PlayoutSchedule` re-anchors to the playhead plus
+the preroll. Display times are also in the display mode's own `GetFrameRate`
+units now; the microsecond base before them was an accumulated period at 59.94,
+which rule 2 forbids.
+
+**The engine is built `-fno-threadsafe-statics`.** CEF's flags say so. A
+function-local `static` in engine code is initialised without a guard, so two
+threads reaching it first at once can both construct it. Use namespace scope, as
+`gFrameAllocationMutex` in `decklink_output.cpp` does. `core` is not built with
+CEF's flags and is not affected.
+
+**The settings page drops any output option it has no field for.** Its editor
+rebuilds `options` from its fields on **Apply**, so an option set only on the
+command line vanishes the first time anyone edits that output. `--key-premultiplied`
+did exactly that until it got a tick box. A new backend option needs a field, or
+Apply has to carry the unknown ones across.
+
 **macOS: ad-hoc signature + hardened runtime = will not launch.** Library
 validation requires a matching Team ID, which ad-hoc signatures do not have. Error
 text blames the framework, not the signature. `cmake/SignMacBundle.cmake` handles
@@ -312,6 +362,13 @@ off the wire where premultiplied would be ~95, the exact value NDI produced
 before `unpremultiplyBgra`. Not measured on DeckLink: the key channel itself,
 the internal-keying composite, audio over SDI, genlock over hours.
 
+**Not on a card yet:** the DeckLink frame ring and stall re-anchoring that fixed
+#12 and #13. They were written with no card attached, pass against a simulated
+card (`tools/dl_fake_card.cpp`) that the old code fails, and wait on a run on
+the rig that found the bugs (section 40). The engine's lock changes are
+verified against NDI only; a driver wedged mid-call has only ever been a fake
+one, in `tests/test_output_slot.cpp`.
+
 **Also verified, against Resolume Arena:** the shared (Syphon) output. Arena
 7.27.1 lists it, loads it on a layer, reports it at 1920x1080 and labels it
 Premultiplied of its own accord. Colour, premultiplied alpha and orientation are
@@ -419,6 +476,81 @@ The decisions in it that look arbitrary and are not:
 - **The Unraid template is `unraid/weblinked.xml`, here**, and stoatworks-unraid
   copies it into the CA feed (`hasOwnTemplate`). Change a port, mount or variable
   and it has to change in that file too.
+
+## 8. Calling into outputs, and the DeckLink ring
+
+Issues #12 and #13 (§4) are why this section exists. The design in one line:
+**a vendor driver may never return from a call, so nothing waits on one for
+ever and nothing that the control API needs is held while waiting.**
+
+How it is built:
+
+- Each output lives in an `OutputSlot` (`src/outputs/output_slot.h`), held by
+  `shared_ptr` from `Engine::Entry`, with a `CallGate` (`src/core/call_gate.h`):
+  a timed lock every call into the output goes through. `call()` is for the
+  clock and for reads; `exclusive()` is for anything that starts, stops,
+  replaces or destroys the output, and it is the only place the pointer is
+  handed out. Both are header-only and CEF-free, so the tests drive them with a
+  fake output that hangs.
+- The clock plans each tick under `mutex_` from `Entry::desc` (pixel format,
+  alpha, audio, and a generation), lets go, converts, then calls each output
+  through its gate. `call()` checks the generation, so an output replaced
+  between the plan and the call is skipped rather than handed a payload sized
+  for something else.
+- `state()` copies the entries under `mutex_` (waiting at most 100 ms, else the
+  last report marked stale), then asks each slot for `status()` with one 100 ms
+  deadline for all of them. A slot whose gate is held answers from its last
+  status with `"stale": true` and `driver_busy_ms`.
+- Control paths (add, remove, update, enable, format) are serialised by their
+  own timed `controlMutex_`, which neither the clock nor `state()` ever takes.
+- The DeckLink output makes `2 × preroll + 4` frames at start into a
+  `RecycleRing` (`src/core/recycle_ring.h`), hands one out per tick, and gets it
+  back in the completion callback. `PlayoutSchedule` (`src/core/playout_schedule.h`)
+  turns the frame index into display times in the mode's own units and
+  re-anchors it to the card's playhead.
+
+The rules that keep it true:
+
+1. **No call into an output while holding `Engine::mutex_`.** Not submit, not
+   start or stop, not `status()`, not a destructor. Copy the slot out under the
+   lock and call after letting go. `mutex_` guards the list and `format_`, and
+   is held only for copying.
+2. **Every call into an output goes through its slot**, and the output object
+   is replaced or destroyed only inside `exclusive()`. That is what makes "no
+   object destroyed with a call in flight" true without anyone having to think
+   about it.
+3. **Every wait on an output has a deadline**: 5 ms per tick for the clock,
+   100 ms for `state()`, 2 s for a control path's gate, 5 s for
+   `controlMutex_`. A gate held for over a second is tried once and given up
+   on. A new wait without a deadline is a bug.
+4. **After every `exclusive()`, copy `slot->description()` back into the entry
+   under `mutex_`.** Forget, and the clock skips that output for ever — the
+   safe way to be wrong, but wrong.
+5. **Stop feeding before stopping.** A path that stops or replaces an output
+   clears `entry.enabled` under `mutex_` first, so the clock is not queued on
+   the gate behind a `stop()`. On a refused gate, put `enabled` back: the
+   contract is "nothing changed".
+6. **Lock order is `controlMutex_` → gate → `mutex_`, and `mutex_` only
+   briefly.** Never wait on a gate holding `mutex_`. The clock thread never
+   takes `controlMutex_`.
+7. **Clock-thread state is still rebuilt only while parked** (CLAUDE.md rule
+   6), and `setFormat` now refuses outright if `pauseClock()` reports the clock
+   did not park: a clock that would not stop is inside a driver, and its pools
+   must not be swapped underneath it.
+8. **A DeckLink ring frame is written only between its completion and its next
+   `ScheduleVideoFrame`**, inside `FrameBytes`, which on SDK 14.3 and later is
+   what brackets the write with `StartAccess`/`EndAccess`. The ring never hands
+   out a frame the card has.
+9. **Never `Release()` a ring frame except in `releaseRing()`**, and call that
+   only after `DisableVideoOutput` has run with the callback still installed.
+   The completion callback hands frames back to the ring and never releases
+   them; ring frames are made and released only under `gFrameAllocationMutex`.
+10. **`submit()` never waits for a free frame.** No frame free means drop the
+    tick and count it (`ring_misses`). Waiting would stall every other output
+    on the same clock.
+11. **The schedule index only increases**, and display times stay in the
+    mode's own `GetFrameRate` units (CLAUDE.md rule 2). Re-anchoring may skip
+    slots; it never reuses one.
 
 ## Notes
 

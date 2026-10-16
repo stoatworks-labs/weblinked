@@ -85,17 +85,26 @@ Everything, as one JSON object. The shape:
 {
   "version": "0.1.0",
   "running": true,
+  "stale": false,
   "format": "1920x1080p50",
   "format_detail": { "width": 1920, "height": 1080,
                      "rate_numerator": 50, "rate_denominator": 1,
                      "interlaced": false },
   "outputs": [
     { "kind": "ndi", "name": "Graphic", "running": true, "enabled": true,
+      "stale": false,
       "device_index": 0, "options": { "alpha": true },
       "background": "transparent", "background_colour": "#00b140",
       "pixel_format": "UYVY", "frames": 10464, "audio_frames": 10460,
       "receivers": 1, "library": "/Library/NDI SDK for Apple/lib/macOS/libndi.dylib",
       "sdk_version": "NDI SDK APPLE ... 6.3.2.0" },
+    { "kind": "decklink", "name": "decklink0", "running": true, "enabled": true,
+      "stale": false, "device": "UltraStudio Mini Replay 12G", "device_index": 0,
+      "frames": 10467, "frames_completed": 10458, "frames_late": 0,
+      "frames_dropped": 0, "frames_flushed": 0, "buffered_frames": 6,
+      "ring_size": 10, "ring_free": 3, "ring_misses": 0,
+      "reanchors": 0, "reanchored_frames": 0, "keying": "external",
+      "premultiplied_fill": true, "genlocked": false },
     { "kind": "screen", "name": "Wall", "running": true, "enabled": true,
       "device_index": 0, "options": { "display": 1, "scaling": "fit" },
       "display": 1, "scaling": "fit", "frames": 10464,
@@ -113,7 +122,8 @@ Everything, as one JSON object. The shape:
   "settings": { "matrix": "auto", "interactive_by_default": true,
                 "audio_enabled": true },
   "pacing": { "ticks": 10463, "repeated_frames": 23, "dropped_ticks": 0,
-              "frames_published": 10440, "last_lateness_us": 3566 },
+              "frames_published": 10440, "last_lateness_us": 3566,
+              "last_tick_age_ms": 7, "output_skips": 0 },
   "audio": { "channels": 2, "sample_rate": 48000, "buffered_frames": 480,
              "underruns": 0, "overruns": 0 }
 }
@@ -134,8 +144,14 @@ Object key order is stable, so two responses can be diffed by eye mid-show.
 | `pacing.dropped_ticks` | The clock fell more than a frame behind. Should stay 0. |
 | `pacing.repeated_frames` | Ticks that reused the previous paint. High is normal for a static graphic; rising on an animated one means the page is too slow. |
 | `pacing.last_lateness_us` | How late the last tick fired. A few ms is scheduler noise. |
+| `pacing.last_tick_age_ms` | How long since the clock thread started a tick. About a frame period while it runs. **Climbing past a second while `/api/state` still answers means the clock is stuck**, almost always inside an output's driver. This is what a supervisor should watch; see below. |
+| `pacing.output_skips` | Submits skipped because an output's gate was busy. A handful around output changes is normal; a steady climb is an output that is not answering. |
 | `audio.underruns` | The page did not supply enough audio. A few at startup are normal. |
+| `outputs[].stale` | `true` when the output's driver did not answer in time: the rest of the object is the last status it gave, and `driver_busy_ms` says how long the call in the way has been running. See below. |
 | `outputs[].buffered_frames` | DeckLink only. **Steady = our clock and the card's agree.** Drifting either way ends in a glitch. |
+| `outputs[].frames_late`, `frames_dropped` | DeckLink only, as the card reports them in its completions: a frame shown after its time, and one never shown because a less late one was ready. Both should stay 0. |
+| `outputs[].reanchors`, `reanchored_frames` | DeckLink only. How many times the card's playhead overtook the schedule (a stall longer than the queue) and the output skipped forward to stay `preroll` frames ahead, and how many frame slots that skipped. |
+| `outputs[].ring_misses` | DeckLink only. Ticks dropped because the card still had every frame in the ring. Should stay 0; if it doesn't, raise the `ring` option (default twice the preroll plus four). |
 | `outputs[].buffer_level` | The AJA equivalent. |
 | `outputs[].receivers` | How many receivers are connected (NDI/OMT). |
 | `outputs[].presented` | Screen only. Frames put on the glass. Paced by the **display**, not by `--format`, so this is expected to differ from `frames`: a 50 Hz page on a 60 Hz head repeats, and on a 30 Hz head drops. |
@@ -150,6 +166,28 @@ object. The settings page populates its editors from them.
 the editor's colour well shows what turning it on would give rather than
 resetting to the default.
 
+#### When an output stops answering
+
+A vendor driver can wedge inside a call and never come back: a DeckLink did, on
+Desktop Video 16.4 (issue #12). Every call into an output goes through a gate
+with a time limit, and the engine's own lock is never held across one, so:
+
+- `/api/state` still answers, within about 200 ms. That output shows its last
+  figures with `"stale": true` and `driver_busy_ms`. If the engine's lock itself
+  could not be had in time, the whole report is the previous one with a
+  top-level `"stale": true`.
+- A request that needs that output (enable, disable, update, remove, a format
+  change) fails within two seconds with an error naming it, and nothing is
+  changed. It does not wait.
+- The clock skips that output and keeps feeding the others. If it was the clock
+  that got stuck inside the driver, every output of that source stops, and
+  `pacing.last_tick_age_ms` climbs.
+
+So **`/api/state` going silent is no longer how a wedged output shows itself.** A
+supervisor that restarts WebLinked on that should watch
+`pacing.last_tick_age_ms` (more than a couple of seconds) and `outputs[].stale`
+instead.
+
 ### GET `/api/preview`
 
 The latest frame, downscaled, as raw **BGRA** bytes. Dimensions travel in
@@ -163,7 +201,8 @@ X-Frame-Sequence: 10440
 
 No JPEG encoder and no WebSocket — the page polls this a few times a second and
 blits it into a canvas. 404 if no preview output is configured (`--no-preview`),
-503 before the first frame.
+503 before the first frame, and 503 if the preview is being replaced at that
+moment.
 
 ### GET `/api/diagnostics`
 
@@ -312,6 +351,7 @@ All take a JSON body and return `{"ok":true}` or `{"error":"..."}`.
 | `/api/output/add` | `{"kind":"ndi","name":"Second","options":{"alpha":true}}` | |
 | `/api/output/remove` | `{"name": "Second"}` | |
 | `/api/output/add` (screen) | `{"kind":"screen","name":"Wall","options":{"display":1,"scaling":"fit"}}` | `display` indexes `state.displays`; `scaling` is `fit` (default), `fill` or `stretch`. On macOS the window is created on the main thread however the request arrived |
+| `/api/output/add` (decklink) | `{"kind":"decklink","name":"SDI","device_index":0,"options":{"keying":"external","key_level":255,"premultiplied_fill":true}}` | The command line's `--decklink=N --key[=external\|internal] --key-level L --key-premultiplied`. `keying` is `external` (key + fill), `internal` (over the card's input) or absent for fill only; `premultiplied_fill` sends Chromium's premultiplied buffer for a keyer set to premultiplied key, and is ignored without `keying`. Also `preroll` (frames, default 3, at least 2), `ring` (frames made at start, default twice the preroll plus four) and `audio_channels` (default 2) |
 | `/api/output/add` (stream) | `{"kind":"stream","name":"Restreamer","options":{"url":"rtmp://host:1935/live/key","bitrate":"6000k"}}` | Encodes to H.264/AAC via an `ffmpeg` on PATH and pushes to RTMP or SRT. See below |
 | `/api/output/update` | `{"name":"Second","output":{"kind":"ndi","name":"Renamed"}}` | Replaces an output in place, keeping its position. On failure the previous one is restarted — see below |
 | `/api/output/background` | `{"name":"Second","background":"colour","colour":"#00b140"}` | What this output composites the page over. `transparent` keeps the page's own alpha. Applies on the next tick without restarting the output — see below |
@@ -444,7 +484,18 @@ Status codes: 400 for a body that cannot be parsed or a format that cannot be
 understood, 401 for a bad token, 404 for an unknown output or endpoint, 409 when
 the request was valid but the device refused — for example a format the card does
 not support. A 409 from `/api/format` means the format *did* change but an output
-could not reopen at it; check `outputs[].error` in `/api/state`.
+could not reopen at it; check `outputs[].error` in `/api/state`. A 409 whose error
+says an output **is not answering** means its driver is stuck in a call (see
+"When an output stops answering" above) and nothing was changed.
+
+503 means nothing was done and trying again shortly is the right response:
+from `/api/format` when another change is still in progress or the clock would
+not stop for it, and from any endpoint when the server already has its limit of
+**64 connections** open. That one comes with `Retry-After: 1` and
+`Connection: close`, before the request is read past its headers. The limit is
+there because a thread per connection with none let a client polling a stuck
+engine park 1,410 threads (issue #12). Every connection also has a 15-second
+idle timeout and a 15-second send timeout.
 
 Formats accept broadcast shorthand (`1080p50`, `720p59.94`, `1080i25`,
 `2160p30`) or an explicit raster (`1920x1080p50`, `3840x600p60`). Odd widths are

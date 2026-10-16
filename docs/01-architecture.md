@@ -84,6 +84,14 @@ underflows or overflows. `buffered_frames` (DeckLink) and `buffer_level` (AJA) i
 `/api/state` are the numbers that show it happening. A steady value means the
 clocks agree.
 
+On a DeckLink both ends are now bounded. If our clock runs fast, the queue grows
+until every frame in the output's ring is with the card, and from then on a tick
+that finds none free is dropped (`ring_misses`). If it runs slow, or the process
+stalls, the queue drains until the card's playhead overtakes the schedule, and
+the schedule skips forward to the playhead plus the preroll (`reanchors`).
+Before that existed, one stall longer than the queue left every later frame
+late for good (issue #13).
+
 The alternative — making the card's frame-completion callback the master clock —
 is the right answer for a single-card installation and the wrong one for a
 machine feeding SDI and NDI at once, because then the IP outputs inherit the
@@ -97,11 +105,20 @@ is why the boundary is where it is.
 | Main | CEF message loop | `CefRunMessageLoop`; must be the main thread on macOS |
 | CEF UI | `OnPaint`, browser lifetime | Publishes into the frame slot |
 | CEF audio | `OnAudioStreamPacket` | Writes into the audio FIFO |
-| Clock | Pacing, conversion, `submit()` | The only thread that touches an output |
-| HTTP × N | Control requests | Thread per connection |
+| Clock | Pacing, conversion, `submit()` | The only thread that submits to an output |
+| HTTP × N | Control requests | Thread per connection, at most 64 at once |
 | OSC | Control messages | One receive loop |
+| Vendor callbacks | e.g. DeckLink frame completions | Hand frames back to the output's ring and count; never call into the engine |
 
-Two synchronisation points and no more: the frame slot and the audio FIFO.
+Two synchronisation points in the frame path and no more: the frame slot and the
+audio FIFO.
+
+**Nothing waits on an output for ever.** Every call into an output, from the
+clock or a control request, goes through that output's gate, and the engine's
+own mutex is never held across one. A driver that wedges inside a call (a
+DeckLink did, in issue #12) holds its own output's gate: the clock skips that
+output, control requests that need it fail within two seconds, and `/api/state`
+reports it stale from its last status. AGENTS.md §8 has the rules.
 
 **The clock thread can be parked.** A raster change has to rebuild the frame
 pools, the black frame and the scratch frame — all of which the clock thread

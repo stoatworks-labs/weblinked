@@ -127,7 +127,21 @@ installed standalone but exist on this Mac inside the NDI SDK examples
 (`/Library/NDI SDK for Apple/examples/C++/NDIlib_Send_BMD/BMDSDK/Mac/include`,
 v10.11) and in **Unreal 5.7's BlackmagicMedia ThirdParty (v12.2)** — the latter is
 what the build uses via `-DDECKLINK_SDK_DIR`. libajantv2 is MIT on GitHub, shallow
-clone is 49 MB.
+clone is 49 MB. Since 2026-10-16 there are two more: the official **SDK 16.0** at
+`~/sdk/decklink-16.0` (with its PDF manual and samples, which are worth reading)
+and **OBS's vendored 12.0 headers** at `~/sdk/decklink/Mac/include`. Build the
+backend against both whenever `decklink_output.cpp` changes: 14.3 moved frame
+bytes onto `IDeckLinkVideoBuffer`, and the two paths are behind
+`BLACKMAGIC_DECKLINK_API_VERSION`.
+
+**DeckLink #12 and #13, 2026-10-16** — a driver deadlock that took the control API
+down, and frames late for ever after a stall, both reported by Daniel Nyström
+(@speakman) from an UltraStudio Mini Replay 12G. Fixed with a frame ring, a
+re-anchoring schedule, per-output gates so nothing waits on a driver holding
+`Engine::mutex_`, and a 64-connection cap (AGENTS.md §8). **No card was attached**
+when it was written: it passes against `tools/dl_fake_card.cpp`, which the old code
+fails, and waits on Daniel's rig. Section 40 of the verification doc has the recipe
+he was given.
 
 **Design decisions worth not re-litigating:** our clock drives Chromium via
 `SendExternalBeginFrame` (1 tick = 1 paint) rather than `windowless_frame_rate`;

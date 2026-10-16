@@ -1,5 +1,81 @@
 # Changelog
 
+## Unreleased
+
+All four of these come from Daniel Nyström (@speakman), who found them on a real
+rig (an UltraStudio Mini Replay 12G keying into an ATEM) and wrote the first two
+himself.
+
+### Added
+
+- **`--key-premultiplied`: a premultiplied fill, for a keyer that wants one.**
+  Applies to the next `--decklink`, with `--key`. A keyer set to premultiplied key
+  (an ATEM DSK with Pre Multiplied Key on) takes Chromium's premultiplied buffer
+  as it is. Given the straight fill WebLinked otherwise sends, it adds the whole
+  fill colour wherever alpha is partial, so soft edges, fades and translucent
+  plates come out too bright. Daniel measured it through the UltraStudio into an
+  ATEM SDI Extreme ISO: white at 43% alpha over green read 182,255,176 with the
+  straight fill and 117,255,111 premultiplied, against 119,254,113 expected. The
+  settings page has it as a tick box under the DeckLink's keying, so **Apply**
+  keeps it rather than quietly going back to a straight fill. By Daniel Nyström
+  (@speakman), #11.
+
+### Fixed
+
+- **The DeckLink backend didn't build against SDK 14.3 or later.** 14.3 moved a
+  frame's pixels onto `IDeckLinkVideoBuffer`, to be written between
+  `StartAccess` and `EndAccess`. WebLinked now does that on 14.3 and later and
+  carries on as before on older SDKs; it builds against both 12.0 and 16.0. By
+  Daniel Nyström (@speakman), #10.
+
+- **After a stall longer than the DeckLink's queue, every frame stayed late for
+  ever.** Frame N was scheduled at N frame-durations and nothing ever moved N,
+  so once the process had stood still for longer than the queue (a three-second
+  SIGSTOP did it, and so can a heavily loaded machine) every later frame went to
+  the card behind its playhead: Daniel saw 253,368 of 269,280 frames late over
+  the following hour. Before each frame the output now asks the card where its
+  playhead is, and if the schedule has fallen behind it, moves forward to the
+  playhead plus the preroll. The card holds its last frame across the skipped
+  slots, as it was doing anyway, and the sound moves with the picture. Display
+  times are also now in the card's own time base, so they're exact at 59.94,
+  where the old microsecond one drifted a third of a microsecond a frame.
+  `reanchors` in `/api/state` counts how often it happened. Reported by Daniel
+  Nyström (@speakman), #13.
+
+- **A deadlock inside the DeckLink driver took the output and the control API
+  down with it, for good.** Daniel caught it twice in a day: after repeated
+  output disable/enable cycles, and after repeated SIGSTOP/SIGCONT. The SDK's
+  completion thread deadlocked on its own allocator lock while releasing a frame;
+  WebLinked's clock thread, holding the engine's lock, then joined it inside
+  `CreateVideoFrame`; every `GET /api/state` then waited for the engine's lock;
+  and the HTTP server, with a thread per connection and no limit, had 1,410
+  requests parked by the time the process was killed. Reported by Daniel Nyström
+  (@speakman), #12. Three changes:
+  - **The DeckLink output no longer makes a frame per tick.** It makes a ring of
+    them when it starts (twice the preroll plus four) and reuses each one as the
+    card hands it back, so nothing is allocated or freed while it plays, and no
+    frame is ever destroyed on the SDK's completion thread. If the card still has
+    every frame when a tick comes round, that tick is dropped and counted
+    (`ring_misses`) rather than waited for.
+  - **No call into an output is made holding the engine's lock any more.** Each
+    output has its own gate with a time limit on it. An output whose driver stops
+    answering is reported `"stale": true` in `/api/state`, with its last figures
+    and how long the call has been stuck (`driver_busy_ms`), and the control page
+    says so. A request to change that output fails within two seconds with
+    nothing changed, instead of hanging. `/api/state` itself answers within about
+    200 ms whatever the outputs are doing, which means a supervisor that restarts
+    WebLinked when `/api/state` goes quiet will no longer be prompted: watch
+    `pacing.last_tick_age_ms` and `outputs[].stale` instead.
+  - **The control API serves at most 64 connections at once.** Past that a new
+    one gets a 503 with `Retry-After: 1` and is closed, and every connection now
+    has a send timeout as well as the idle one.
+
+  A simulated card (`tools/dl_fake_card.cpp`) also showed the old stop sequence
+  leaking the frames still queued at each stop, because it removed the
+  completion callback before the card flushed them. The new order flushes first.
+  None of the DeckLink changes have run on a card yet: see section 40 of
+  `docs/04-verification.md`.
+
 ## v1.2.0 — 2026-10-06
 
 ### Added
