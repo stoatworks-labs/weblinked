@@ -50,22 +50,32 @@ himself.
   `CreateVideoFrame`; every `GET /api/state` then waited for the engine's lock;
   and the HTTP server, with a thread per connection and no limit, had 1,410
   requests parked by the time the process was killed. Reported by Daniel Nyström
-  (@speakman), #12. Three changes:
+  (@speakman), #12. Four changes:
   - **The DeckLink output no longer makes a frame per tick.** It makes a ring of
     them when it starts (twice the preroll plus four) and reuses each one as the
-    card hands it back, so nothing is allocated or freed while it plays, and no
-    frame is ever destroyed on the SDK's completion thread. If the card still has
-    every frame when a tick comes round, that tick is dropped and counted
-    (`ring_misses`) rather than waited for.
-  - **No call into an output is made holding the engine's lock any more.** Each
-    output has its own gate with a time limit on it. An output whose driver stops
-    answering is reported `"stale": true` in `/api/state`, with its last figures
-    and how long the call has been stuck (`driver_busy_ms`), and the control page
-    says so. A request to change that output fails within two seconds with
-    nothing changed, instead of hanging. `/api/state` itself answers within about
-    200 ms whatever the outputs are doing, which means a supervisor that restarts
-    WebLinked when `/api/state` goes quiet will no longer be prompted: watch
-    `pacing.last_tick_age_ms` and `outputs[].stale` instead.
+    card hands it back, so no frame is ever destroyed on the SDK's completion
+    thread. Built against SDK 14.3 or later, the frames' memory is WebLinked's
+    own, handed over with `CreateVideoFrameWithBuffer`, so the SDK's allocator
+    pool, where it deadlocked, is not used at all; and that memory is kept when
+    the output is disabled and enabled again, so doing that allocates nothing.
+    If the card still has every frame when a tick comes round, that tick is
+    dropped and counted (`ring_misses`) rather than waited for.
+  - **No call into an output is made holding the engine's lock any more,** and
+    no lock above the engine is held across a call into an engine either: one
+    stuck source no longer holds up adding, removing or reading the others. Each
+    output has its own gate with a time limit on it. An output whose driver has
+    been stuck for over a second is reported `"stale": true` in `/api/state`,
+    with its last figures and how long the call has been stuck
+    (`driver_busy_ms`), and the control page says so. A request to change that
+    output gives up on it within two seconds with nothing changed, instead of
+    hanging, and changes queued behind each other wait up to 30 s, which a
+    format change across several cards can need. `/api/state` itself answers
+    within about 200 ms whatever the outputs are doing, which means a supervisor
+    that restarts WebLinked when `/api/state` goes quiet will no longer be
+    prompted: watch `pacing.last_tick_age_ms` and `outputs[].stale` instead.
+  - **A format change no longer freezes the source's other outputs** while each
+    card closes and reopens: the clock stops only for the moment the raster
+    changes.
   - **The control API serves at most 64 connections at once.** Past that a new
     one gets a 503 with `Retry-After: 1` and is closed, and every connection now
     has a send timeout as well as the idle one.

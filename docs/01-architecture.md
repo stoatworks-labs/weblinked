@@ -115,10 +115,11 @@ audio FIFO.
 
 **Nothing waits on an output for ever.** Every call into an output, from the
 clock or a control request, goes through that output's gate, and the engine's
-own mutex is never held across one. A driver that wedges inside a call (a
-DeckLink did, in issue #12) holds its own output's gate: the clock skips that
-output, control requests that need it fail within two seconds, and `/api/state`
-reports it stale from its last status. AGENTS.md §8 has the rules.
+own mutex is never held across one, and neither is the source map's lock
+above it. A driver that wedges inside a call (a DeckLink did, in issue #12)
+holds its own output's gate: the clock skips that output, control requests that
+need it give up on it within two seconds, other sources carry on untouched, and
+`/api/state` reports it stale from its last status. AGENTS.md §8 has the rules.
 
 **The clock thread can be parked.** A raster change has to rebuild the frame
 pools, the black frame and the scratch frame — all of which the clock thread

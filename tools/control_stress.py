@@ -10,6 +10,8 @@ traffic) while one of these runs:
           output's queue (needs --pid)
   cap     hold more idle connections open than the server allows, then ask
           for /api/state on one more
+  sources add a second source (its own browser, clock and NDI output) and
+          remove it again, repeatedly, while the polling goes on
 
 It reports how every poll went, how slow /api/state got, the process's thread
 and connection counts (from ps and lsof, once a second), and the output's own
@@ -19,6 +21,7 @@ frames_dropped, reanchors and ring_misses. Python 3, standard library only.
   tools/control_stress.py --port 7654 --output decklink0 toggle --cycles 20 --interval 3
   tools/control_stress.py --port 7654 --output decklink0 --pid 1234 stop --cycles 11 --pause 3 --interval 60
   tools/control_stress.py --port 7654 --output decklink0 cap --connections 80
+  tools/control_stress.py --port 7654 --output decklink0 sources --cycles 10 --url file:///.../tools/clock.html
 
 See docs/04-verification.md section 40.
 """
@@ -56,6 +59,10 @@ def main():
     stop.add_argument("--interval", type=float, default=10.0, help="seconds running between stops")
     cap = sub.add_parser("cap")
     cap.add_argument("--connections", type=int, default=80)
+    sources = sub.add_parser("sources")
+    sources.add_argument("--cycles", type=int, default=10)
+    sources.add_argument("--url", default="about:blank")
+    sources.add_argument("--format", default="720p25")
     args = parser.parse_args()
     if args.phase == "stop" and not args.pid:
         parser.error("stop needs --pid")
@@ -184,6 +191,28 @@ def main():
             answered = (time.monotonic() - resumed) * 1000
             time.sleep(args.interval)
             describe(f"stop {cycle + 1} (answered {answered:.0f} ms after SIGCONT)", state())
+    elif args.phase == "sources":
+        slowest_add = slowest_remove = 0.0
+        failures = 0
+        for cycle in range(args.cycles):
+            source = {"id": "stress", "url": args.url, "format": args.format,
+                      "outputs": [{"kind": "ndi", "name": "control-stress"}]}
+            start = time.monotonic()
+            status, body = request("POST", "/api/sources/add", {"source": source}, timeout=60)
+            slowest_add = max(slowest_add, time.monotonic() - start)
+            if status != 200:
+                failures += 1
+                print(f"cycle {cycle + 1} add: {status} {body[:200]!r}", flush=True)
+            time.sleep(1.0)
+            start = time.monotonic()
+            status, body = request("POST", "/api/sources/remove", {"id": "stress"}, timeout=60)
+            slowest_remove = max(slowest_remove, time.monotonic() - start)
+            if status != 200:
+                failures += 1
+                print(f"cycle {cycle + 1} remove: {status} {body[:200]!r}", flush=True)
+            time.sleep(0.5)
+        print(f"sources: {args.cycles} add/remove cycles, {failures} failed, slowest add "
+              f"{slowest_add * 1000:.0f} ms, slowest remove {slowest_remove * 1000:.0f} ms")
     else:
         held = [socket.create_connection((args.host, args.port), timeout=2)
                 for _ in range(args.connections)]

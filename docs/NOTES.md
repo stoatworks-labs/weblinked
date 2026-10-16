@@ -138,10 +138,14 @@ bytes onto `IDeckLinkVideoBuffer`, and the two paths are behind
 down, and frames late for ever after a stall, both reported by Daniel Nyström
 (@speakman) from an UltraStudio Mini Replay 12G. Fixed with a frame ring, a
 re-anchoring schedule, per-output gates so nothing waits on a driver holding
-`Engine::mutex_`, and a 64-connection cap (AGENTS.md §8). **No card was attached**
-when it was written: it passes against `tools/dl_fake_card.cpp`, which the old code
-fails, and waits on Daniel's rig. Section 40 of the verification doc has the recipe
-he was given.
+`Engine::mutex_`, and a 64-connection cap (AGENTS.md §8). An independent review
+then found the same hazard one level up (SourceManager's shared_mutex held across
+engine calls), the clock parked across a format change's driver calls, and the
+SDK's allocator pool still emptied at every stop; fixed with SourceTable, a
+narrower park, and application-owned frame memory on SDK 14.3+. **No card was
+attached** when any of it was written: it passes against `tools/dl_fake_card.cpp`,
+which the old code fails, and waits on Daniel's rig. Section 40 of the
+verification doc has the recipe he was given.
 
 **Design decisions worth not re-litigating:** our clock drives Chromium via
 `SendExternalBeginFrame` (1 tick = 1 paint) rather than `windowless_frame_rate`;

@@ -52,7 +52,7 @@ The process-wide endpoints — `/api/log`, `/api/diagnostics*`,
 |---|---|
 | `GET /api/sources` | `{"primary": "<id>", "sources": [ ...state... ]}` — every pipeline, each entry the same shape `/api/state` returns |
 | `POST /api/sources/add` | `{"source": { ...source config... }}`. `409` on a duplicate id, `400` on an invalid one. A preview output is added if the config has none |
-| `POST /api/sources/remove` | `{"id": "..."}`. `409` if it is the only source: a process with no sources has no primary, so removing the last one would make every later request answer 503. Stopping WebLinked is what closing the window is for |
+| `POST /api/sources/remove` | `{"id": "..."}`. `409` if it is the only source: a process with no sources has no primary, so removing the last one would make every later request answer 503. Stopping WebLinked is what closing the window is for. Waits for the requests already inside that source to finish, for up to 40 s; meanwhile requests to it get a 503 ("being removed"). If one has not finished by then — stuck in an output's driver — the removal answers `409` and the source carries on as it was |
 | `POST /api/sources/apply` | `{"sources": [ ... ]}` — reconciles the whole set at once. Sources that have gone are stopped, new ones started, and the rest updated in place so an unchanged output keeps running |
 
 ```bash
@@ -147,7 +147,7 @@ Object key order is stable, so two responses can be diffed by eye mid-show.
 | `pacing.last_tick_age_ms` | How long since the clock thread started a tick. About a frame period while it runs. **Climbing past a second while `/api/state` still answers means the clock is stuck**, almost always inside an output's driver. This is what a supervisor should watch; see below. |
 | `pacing.output_skips` | Submits skipped because an output's gate was busy. A handful around output changes is normal; a steady climb is an output that is not answering. |
 | `audio.underruns` | The page did not supply enough audio. A few at startup are normal. |
-| `outputs[].stale` | `true` when the output's driver did not answer in time: the rest of the object is the last status it gave, and `driver_busy_ms` says how long the call in the way has been running. See below. |
+| `outputs[].stale` | `true` when a call into the output's driver has been running for over a second: the rest of the object is the last status it gave, and `driver_busy_ms` says how long the call has been running. An output busy for less than that (a card opening) reports its last figures with `stale` false. See below. |
 | `outputs[].buffered_frames` | DeckLink only. **Steady = our clock and the card's agree.** Drifting either way ends in a glitch. |
 | `outputs[].frames_late`, `frames_dropped` | DeckLink only, as the card reports them in its completions: a frame shown after its time, and one never shown because a less late one was ready. Both should stay 0. |
 | `outputs[].reanchors`, `reanchored_frames` | DeckLink only. How many times the card's playhead overtook the schedule (a stall longer than the queue) and the output skipped forward to stay `preroll` frames ahead, and how many frame slots that skipped. |
@@ -172,16 +172,25 @@ A vendor driver can wedge inside a call and never come back: a DeckLink did, on
 Desktop Video 16.4 (issue #12). Every call into an output goes through a gate
 with a time limit, and the engine's own lock is never held across one, so:
 
-- `/api/state` still answers, within about 200 ms. That output shows its last
-  figures with `"stale": true` and `driver_busy_ms`. If the engine's lock itself
-  could not be had in time, the whole report is the previous one with a
+- `/api/state` still answers, within about 200 ms, and so does every other
+  source: no lock above the engine is held across a call into one either. The
+  stuck output shows its last figures, and once the call has been running for
+  over a second, `"stale": true` and `driver_busy_ms`. If the engine's lock
+  itself could not be had in time, the whole report is the previous one with a
   top-level `"stale": true`.
 - A request that needs that output (enable, disable, update, remove, a format
-  change) fails within two seconds with an error naming it, and nothing is
-  changed. It does not wait.
-- The clock skips that output and keeps feeding the others. If it was the clock
-  that got stuck inside the driver, every output of that source stops, and
-  `pacing.last_tick_age_ms` climbs.
+  change) gives up on it within two seconds with an error naming it, and
+  nothing is changed. A change only to its background needs no driver call and
+  still goes through.
+- Changes to one source queue behind each other, for up to **30 s**, because a
+  format change or a settings apply across several cards legitimately takes a
+  few seconds and failing the next change would lose an edit. Past that the
+  request answers `409` saying another change is still in progress. A stuck
+  driver only ever holds the queue for its own two-second gate waits.
+- The clock skips that output and keeps feeding the others, including during a
+  format change, which no longer parks the clock while outputs reopen. If it was
+  the clock that got stuck inside the driver, every output of that source stops,
+  and `pacing.last_tick_age_ms` climbs.
 
 So **`/api/state` going silent is no longer how a wedged output shows itself.** A
 supervisor that restarts WebLinked on that should watch
@@ -489,9 +498,11 @@ says an output **is not answering** means its driver is stuck in a call (see
 "When an output stops answering" above) and nothing was changed.
 
 503 means nothing was done and trying again shortly is the right response:
-from `/api/format` when another change is still in progress or the clock would
-not stop for it, and from any endpoint when the server already has its limit of
-**64 connections** open. That one comes with `Retry-After: 1` and
+from `/api/format` when another change on the source kept it waiting for 30 s,
+or the clock would not stop for it (then the outputs are reopened at the old
+raster); from `/api/preview` while the preview is being
+replaced; from any endpoint addressing a source that is being removed; and from
+any endpoint when the server already has its limit of **64 connections** open. That one comes with `Retry-After: 1` and
 `Connection: close`, before the request is read past its headers. The limit is
 there because a thread per connection with none let a client polling a stuck
 engine park 1,410 threads (issue #12). Every connection also has a 15-second

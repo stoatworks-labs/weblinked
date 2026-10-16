@@ -318,13 +318,25 @@ state poll runs every second; the editors are built only on arriving at the view
 and after a successful mutation.
 
 **Never hold a bare `Engine*` across anything.** Every call reaches an engine
-through `SourceManager::withSource`, which holds a shared lock for the duration;
-`add`, `remove` and `stop` take the exclusive one. `Engine` reads `browser_`
-without a lock and `Engine::stop()` destroys it, so a pointer that outlives the
-lookup is a use-after-free waiting for an operator to remove a source mid-show.
-The expensive halves of add and remove happen *outside* the lock on purpose —
-holding it across a browser start would freeze every other source's control
-surface.
+through `SourceManager::withSource`, which holds that source open for the
+duration, and a removal waits for the calls inside to come out before it stops
+anything. `Engine` reads `browser_` without a lock and `Engine::stop()` destroys
+it, so a pointer that outlives the lookup is a use-after-free waiting for an
+operator to remove a source mid-show. The expensive halves of add and remove
+happen *outside* any lock on purpose — holding one across a browser start would
+freeze every other source's control surface.
+
+**And never hold the source map's lock across a call into an engine.** Until
+the review of #12's fix, "holds a shared lock for the duration" was literally a
+`std::shared_mutex` held across every call. A request wedged in a DeckLink
+`stop()` then held it for good; the next add, remove or settings load queued for
+the exclusive side; and libc++'s `shared_mutex` queues new readers behind a
+waiting writer, so every source's `/api/state`, every OSC message and the tray
+(on the UI thread, which stalls every browser) waited behind it. The map is now
+a `SourceTable` (`src/core/source_table.h`) whose lock only ever covers copying
+a pointer; each source counts the calls inside it. CLAUDE.md rule 12's wording
+("holds a shared lock for the call") predates this and means "holds the source
+open".
 
 **The control page has no build step, so a stray byte is invisible until
 run time.** A single NUL inside a `.join(' ')` compiled fine, served 200, rendered
@@ -362,12 +374,14 @@ off the wire where premultiplied would be ~95, the exact value NDI produced
 before `unpremultiplyBgra`. Not measured on DeckLink: the key channel itself,
 the internal-keying composite, audio over SDI, genlock over hours.
 
-**Not on a card yet:** the DeckLink frame ring and stall re-anchoring that fixed
-#12 and #13. They were written with no card attached, pass against a simulated
-card (`tools/dl_fake_card.cpp`) that the old code fails, and wait on a run on
-the rig that found the bugs (section 40). The engine's lock changes are
-verified against NDI only; a driver wedged mid-call has only ever been a fake
-one, in `tests/test_output_slot.cpp`.
+**Not on a card yet:** the DeckLink frame ring, its application-owned memory
+on SDK 14.3 and later, and the stall re-anchoring that fixed #12 and #13. They
+were written with no card attached, pass against a simulated card
+(`tools/dl_fake_card.cpp`) that the old code fails, and wait on a run on the
+rig that found the bugs (section 40). What the real SDK does with application
+memory is unknown. The engine's and the source map's lock changes are verified
+against NDI only; a driver wedged mid-call has only ever been a fake one, in
+`tests/test_output_slot.cpp` and `tests/test_source_table.cpp`.
 
 **Also verified, against Resolume Arena:** the shared (Syphon) output. Arena
 7.27.1 lists it, loads it on a layer, reports it at 1920x1080 and labels it
@@ -488,10 +502,11 @@ How it is built:
 - Each output lives in an `OutputSlot` (`src/outputs/output_slot.h`), held by
   `shared_ptr` from `Engine::Entry`, with a `CallGate` (`src/core/call_gate.h`):
   a timed lock every call into the output goes through. `call()` is for the
-  clock and for reads; `exclusive()` is for anything that starts, stops,
-  replaces or destroys the output, and it is the only place the pointer is
-  handed out. Both are header-only and CEF-free, so the tests drive them with a
-  fake output that hangs.
+  clock and for reads; `exclusive()` starts or stops the object already there
+  and leaves the generation alone; `replace()` swaps or destroys it, always
+  moves the generation on, and is the only place the pointer is handed out.
+  All header-only and CEF-free, so the tests drive them with a fake output
+  that hangs.
 - The clock plans each tick under `mutex_` from `Entry::desc` (pixel format,
   alpha, audio, and a generation), lets go, converts, then calls each output
   through its gate. `call()` checks the generation, so an output replaced
@@ -499,15 +514,28 @@ How it is built:
   for something else.
 - `state()` copies the entries under `mutex_` (waiting at most 100 ms, else the
   last report marked stale), then asks each slot for `status()` with one 100 ms
-  deadline for all of them. A slot whose gate is held answers from its last
-  status with `"stale": true` and `driver_busy_ms`.
+  budget for all of them and a 10 ms floor each (`OutputSlot::atLeast`). A slot
+  whose gate is held answers from its last status, marked `"stale": true` with
+  `driver_busy_ms` only once the call has run past the wedge threshold (1 s);
+  before that it is merely busy.
 - Control paths (add, remove, update, enable, format) are serialised by their
   own timed `controlMutex_`, which neither the clock nor `state()` ever takes.
+- Above the engine, `SourceManager` keeps its sources in a `SourceTable`: the
+  table's lock covers copying a pointer and nothing else, each source counts the
+  calls inside it, and a removal closes the source to new calls and waits for
+  the ones inside, giving up (and reopening it) after 40 s.
+- `setFormat` stops the outputs with the clock running, parks the clock only
+  for the swap of the raster, epoch and pools, and reopens them with the clock
+  running. `halt()` waits 2 s for the clock thread, closes the outputs whether
+  or not it came out, and only then joins it.
 - The DeckLink output makes `2 × preroll + 4` frames at start into a
   `RecycleRing` (`src/core/recycle_ring.h`), hands one out per tick, and gets it
-  back in the completion callback. `PlayoutSchedule` (`src/core/playout_schedule.h`)
-  turns the frame index into display times in the mode's own units and
-  re-anchors it to the card's playhead.
+  back in the completion callback. On SDK 14.3 and later each frame wraps an
+  `AppVideoBuffer` — WebLinked's own page-aligned memory, given to the SDK with
+  `CreateVideoFrameWithBuffer` — so the SDK's allocator pool is never used, and
+  the buffers outlive a stop/start at the same raster. `PlayoutSchedule`
+  (`src/core/playout_schedule.h`) turns the frame index into display times in
+  the mode's own units and re-anchors it to the card's playhead.
 
 The rules that keep it true:
 
@@ -516,14 +544,20 @@ The rules that keep it true:
    lock and call after letting go. `mutex_` guards the list and `format_`, and
    is held only for copying.
 2. **Every call into an output goes through its slot**, and the output object
-   is replaced or destroyed only inside `exclusive()`. That is what makes "no
+   is replaced or destroyed only inside `replace()`. That is what makes "no
    object destroyed with a call in flight" true without anyone having to think
-   about it.
-3. **Every wait on an output has a deadline**: 5 ms per tick for the clock,
-   100 ms for `state()`, 2 s for a control path's gate, 5 s for
-   `controlMutex_`. A gate held for over a second is tried once and given up
-   on. A new wait without a deadline is a bug.
-4. **After every `exclusive()`, copy `slot->description()` back into the entry
+   about it. Starting and stopping use `exclusive()`, which does not move the
+   generation, so re-enabling a running output costs no tick.
+3. **Every wait on an output has a deadline**, and every shared budget has a
+   floor per output: the clock 5 ms a tick with 2 ms each, `state()` 100 ms
+   with 10 ms each, a control path 2 s for a gate and 30 s queued for
+   `controlMutex_`, a source removal 40 s for the calls inside, `halt()` 2 s
+   for the clock before closing outputs anyway, the DeckLink frame allocator
+   5 s. A gate held for over a second is tried once and given up on. A new
+   wait without a deadline is a bug; the one exception is `halt()`'s final
+   join of the clock thread, which uses the engine and its browser and so
+   cannot be abandoned.
+4. **After every `replace()`, copy `slot->description()` back into the entry
    under `mutex_`.** Forget, and the clock skips that output for ever — the
    safe way to be wrong, but wrong.
 5. **Stop feeding before stopping.** A path that stops or replaces an output
@@ -532,11 +566,14 @@ The rules that keep it true:
    contract is "nothing changed".
 6. **Lock order is `controlMutex_` → gate → `mutex_`, and `mutex_` only
    briefly.** Never wait on a gate holding `mutex_`. The clock thread never
-   takes `controlMutex_`.
+   takes `controlMutex_`. Above all of these, the `SourceTable` lock is held
+   only to copy a pointer: never call into an engine holding it.
 7. **Clock-thread state is still rebuilt only while parked** (CLAUDE.md rule
-   6), and `setFormat` now refuses outright if `pauseClock()` reports the clock
-   did not park: a clock that would not stop is inside a driver, and its pools
-   must not be swapped underneath it.
+   6), and only that: never park the clock across a driver call, or one wedged
+   output freezes the source's others. `setFormat` refuses, reopening the
+   outputs at the old raster, if `pauseClock()` reports the clock did not park:
+   a clock that would not stop is inside a driver, and its pools must not be
+   swapped underneath it.
 8. **A DeckLink ring frame is written only between its completion and its next
    `ScheduleVideoFrame`**, inside `FrameBytes`, which on SDK 14.3 and later is
    what brackets the write with `StartAccess`/`EndAccess`. The ring never hands
@@ -544,7 +581,17 @@ The rules that keep it true:
 9. **Never `Release()` a ring frame except in `releaseRing()`**, and call that
    only after `DisableVideoOutput` has run with the callback still installed.
    The completion callback hands frames back to the ring and never releases
-   them; ring frames are made and released only under `gFrameAllocationMutex`.
+   them; ring frames are made and released under `gFrameAllocationMutex`,
+   waited for 5 s at most. Before SDK 14.3 a release that cannot get it leaks
+   the frames: they are the SDK's memory, and another card's driver is wedged
+   in the allocator they would go back to.
+12. **On SDK 14.3 and later, ring memory is ours.** Make frames with
+    `CreateVideoFrameWithBuffer` over `AppVideoBuffer`s, write through our own
+    buffer (still inside `FrameBytes`), and keep the buffers until the raster,
+    pixel format or ring size changes. Do not go back to `CreateVideoFrame` on
+    that path: it is the SDK's pool, which is where #12 deadlocked.
+    `buffer_overlaps` counts a write starting while a read is open on the same
+    buffer; it should stay 0, on a real card too.
 10. **`submit()` never waits for a free frame.** No frame free means drop the
     tick and count it (`ring_misses`). Waiting would stall every other output
     on the same clock.

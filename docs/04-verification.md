@@ -1631,8 +1631,8 @@ by running the thing, not by reading it.
 
 **Stopping a DeckLink output leaked every frame still queued.** Found by the
 simulated card in section 40, run against the code from before the frame ring as
-a control, and not by anyone looking for it: 142 frames made and never destroyed
-over 42 stops. `stop()` removed the completion callback first and only then
+a control, and not by anyone looking for it: 142 to 152 frames, depending on the
+run, made and never destroyed over 42 stops. `stop()` removed the completion callback first and only then
 disabled the output, so the frames the card flushed never came back to have
 WebLinked's own reference released — on the card used here, several 4 to 8 MB
 frames per disable. The ring's `stop()` flushes with the callback still in place.
@@ -2926,16 +2926,58 @@ Replay 12G over Thunderbolt, Desktop Video 16.4, macOS 27.0.1 on an M1, 1080p25,
   `Engine::state()`.
 
 What changed: the DeckLink output makes its frames once, into a ring, and reuses
-them from the completion callback; the schedule re-anchors to the card's
-playhead after a stall (`PlayoutSchedule`); no call into an output is made
-holding `Engine::mutex_`, every call goes through a gate with a time limit
-(`OutputSlot`, `CallGate`), and `state()` answers from the last status when an
-output's gate is held; the HTTP server takes at most 64 connections. AGENTS.md
-§8 has the reasoning.
+them from the completion callback, and on SDK 14.3 and later their memory is
+WebLinked's own (`CreateVideoFrameWithBuffer`), so the SDK's allocator pool is
+not used at all; the schedule re-anchors to the card's playhead after a stall
+(`PlayoutSchedule`); no call into an output is made holding `Engine::mutex_`,
+every call goes through a gate with a time limit (`OutputSlot`, `CallGate`),
+and `state()` answers from the last status when an output's gate is held; the
+source map's lock is never held across a call into an engine either
+(`SourceTable`); the HTTP server takes at most 64 connections. AGENTS.md §8 has
+the reasoning.
 
 **No DeckLink card was attached to the machine this was run on** (macOS 26.4.1,
 M4 Max; `DeckLinkAPI.framework` installed, and the only Blackmagic device on the
-bus a Speed Editor). Everything below is what can be run without one.
+bus a Speed Editor). Everything below is what can be run without one. All of it
+was run at commit 3e3844a, after an independent review of the first version
+(below).
+
+### An independent review, and what it changed
+
+The first version of this fix (8fe2b21, f278a70) was reviewed before release.
+Everything below except this list was then run again.
+
+1. **The source map still held a lock across driver calls.** `SourceManager`
+   held one `std::shared_mutex` for the whole of every call into an engine. A
+   request wedged in a DeckLink `stop()` would hold it for good, the next add,
+   remove or settings load would queue for the exclusive side, and libc++'s
+   `shared_mutex` queues new readers behind a waiting writer: every source's
+   `/api/state`, every OSC message and the tray's count on the UI thread.
+   Confirmed by reading the code; #12 by another route. Now a `SourceTable`
+   whose lock only covers copying a pointer, with a per-source count of calls
+   inside and a removal that waits for them for 40 s, then gives up and changes
+   nothing.
+2. **A format change parked the clock across every output's stop and start**,
+   so one wedged driver froze the source's other outputs. It now parks only to
+   swap the raster and the pools. The lock serialising DeckLink frame
+   allocation across outputs had no deadline; it now has 5 s.
+3. **One shared deadline per tick, and per state report**, let slow outputs
+   early in the list cost later ones a frame or a fresh status; each output now
+   gets a floor of its own. An output was reported stale the moment its gate was
+   busy; now only past a second. Re-enabling a running output moved the
+   generation and could cost a tick; now only a replacement does.
+4. **Each stop still emptied the SDK's allocator pool**, from the control thread
+   — the same pool #12 deadlocked in. On SDK 14.3 and later the ring's memory is
+   now WebLinked's own, wrapped with `CreateVideoFrameWithBuffer`, and kept
+   across a stop and start.
+5. Smaller: a refused restart gave no reason; Apply on an unchanged CLI-keyed
+   output reopened the card (the page left `premultiplied_fill` out when
+   unticked, the command line always writes it); a background-only change to a
+   busy output reopened it; `halt()` waited on the clock thread without limit
+   before closing any output.
+6. **Control requests gave up after 5 s behind another change**, which a format
+   change across several cards can exceed. Now 30 s queued, and still 2 s for
+   any one driver call.
 
 ### Both SDKs build
 
@@ -2945,49 +2987,63 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
 # -- Found DeckLinkSDK: .../decklink-16.0/Mac/include (found version "16.0")
 # -- WebLinked output backends: preview ndi;omt;decklink;screen;shared;stream
 cmake --build build
-# [253/295] Building CXX object .../src/outputs/decklink_output.cpp.o
-# [295/295] Linking CXX executable Release/WebLinked.app/...; Signing WebLinked.app
+# [268/296] Building CXX object .../src/outputs/decklink_output.cpp.o
+# [296/296] Linking CXX executable Release/WebLinked.app/...; Signing WebLinked.app
 # ld: warning: ignoring duplicate libraries: '-lpthread'
 
 cmake -S . -B build-sdk12 -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DDECKLINK_SDK_DIR=$HOME/sdk/decklink               # OBS's vendored 12.0 headers
 # -- Found DeckLinkSDK: .../decklink/Mac/include (found version "12.0")
 cmake --build build-sdk12
-# [254/295] Building CXX object .../src/outputs/decklink_output.cpp.o
-# [295/295] Linking CXX executable Release/WebLinked.app/...; Signing WebLinked.app
+# [258/296] Building CXX object .../src/outputs/decklink_output.cpp.o
+# [296/296] Linking CXX executable Release/WebLinked.app/...; Signing WebLinked.app
 # ld: warning: ignoring duplicate libraries: '-lpthread'
 ```
 
-Both from empty build directories at the final code commit, the engine at CEF's
-`-Werror`; the linker warning is the one the base commit gives too. The unit
-suite passes in both. The 12.0 build reaches frame bytes through `GetBytes`, the
-16.0 one through `IDeckLinkVideoBuffer`.
+Both from empty build directories at 3e3844a, the engine at CEF's `-Werror`; the
+linker warning is the one the base commit gives too. The unit suite passes in
+both. The 16.0 build takes the application-memory path
+(`CreateVideoFrameWithBuffer`, `IDeckLinkVideoBuffer`); the 12.0 build keeps the
+SDK-memory ring and `GetBytes`. Linux and Windows were not compiled; the new
+core files are standard library only.
 
 ### Unit tests
 
 ```bash
 ./build/tests/weblinked_tests
-# 150 tests, 194607 checks, 0 failures
+# 155 tests, 194653 checks, 0 failures
 ```
 
-130 before. The twenty new ones: `playout_*` drive `PlayoutSchedule` against a
-model card whose playhead moves a frame per step (no stall, a stall shorter
-than the queue, one longer, Daniel's eleven, short stalls that drain the queue,
-a clock 1 part in 1001 slow, a late report, never moving backwards, exact time
-and audio at 59.94); `ring_*` hand frames between a clock thread and a
-completion thread 200,000 times with no frame ever held twice; `slot_*` wedge a
-fake output's `submit()` and check that `status()` answers inside its deadline
-from the last value, marked stale, that a control call is refused rather than
-parked, that the output is never destroyed under the call, and that a stale
-plan is caught by the generation; `http_*` fill a three-connection server with
-handlers that never return and get a 503 in under two seconds for the fourth
-and every one of twenty more, then idle a connection out. All of them also pass
-run forty at a time. (The existing settings-store tests don't: they share fixed
-temporary file names, so parallel copies trip over each other. One at a time, as
-CLAUDE.md runs them, they pass.)
+130 before any of this. The new ones:
 
-`Engine` itself can't be built in the tests — it owns a CEF browser — so the
-engine's use of the slots is covered by the runs below, not by a unit test.
+- `playout_*` drive `PlayoutSchedule` against a model card whose playhead moves
+  a frame per step: no stall, a stall shorter than the queue, one longer,
+  Daniel's eleven, short stalls that drain the queue, a clock 1 part in 1001
+  slow, a late report, never moving backwards, exact time and audio at 59.94.
+- `ring_*` hand frames between a clock thread and a completion thread 200,000
+  times with no frame ever held twice.
+- `slot_*` wedge a fake output's `submit()`: `status()` answers inside its
+  deadline from the last value, not stale while merely busy and stale once
+  stuck; a control call is refused rather than parked; the output is never
+  destroyed under the call; a stale plan is caught by the generation, and a
+  start or stop does not move it. One shows the old single deadline losing a
+  call behind a 20 ms `status()`, and the per-output floor winning it.
+- `source_table_*` wedge a call inside a fake engine: a state read of that
+  source and of others answers at once, other sources are added and removed,
+  the stuck source's own removal gives up at its deadline and leaves it
+  running, calls during a removal are refused, two removals of one source stop
+  it once, and shutdown leaves a stuck one alone.
+- `http_*` fill a three-connection server with handlers that never return and
+  get a 503 in under two seconds for the fourth and every one of twenty more,
+  then idle a connection out.
+
+All of them also pass run forty at a time. (The existing settings-store tests
+don't: they share fixed temporary file names, so parallel copies trip over each
+other. One at a time, as CLAUDE.md runs them, they pass.)
+
+`Engine` and `SourceManager` can't be built in the tests — they own CEF
+browsers — so the mechanisms are tested on their own, and the engine's and the
+manager's use of them is covered by the runs below.
 
 ### The real backend against a simulated card
 
@@ -2995,9 +3051,12 @@ engine's use of the slots is covered by the runs below, not by a unit test.
 against a stand-in for the SDK that plays scheduled frames by the documented
 rules on its own thread, delivers completions on another and releases its own
 reference after each, blocks `DisableVideoOutput` until everything is completed
-or flushed, and counts frames made, destroyed, destroyed on the completion
-thread, and written while scheduled. It drives the output the way the engine
-does, at 1080p50.
+or flushed, and keeps count of frames made from SDK memory (`CreateVideoFrame`)
+and frames wrapping application memory (`CreateVideoFrameWithBuffer`), of SDK
+frames made or destroyed during playback or destroyed on the completion thread,
+and of distinct application buffers. While a frame wrapping an application
+buffer is with the card it holds a read access open on that buffer, as a
+transfer would. It drives the output the way the engine does, at 1080p50.
 
 ```bash
 SDK=~/sdk/decklink-16.0/Mac/include
@@ -3012,18 +3071,24 @@ clang++ -std=c++20 -O1 -I"$SDK" -Isrc -DWEBLINKED_WITH_DECKLINK=1 \
 ```
 unkeyed (UYVY)
   ring of 2 x preroll + 4 frames, made at start                    ok
+  frames wrap the output's own memory                              ok
     3 s steady: frames=153 completed=149 late=0 dropped=0 buffered=2 ring_free=6 misses=0
   two-frame stall: no re-anchor                                    ok
     after a 1.5 s stall and 5 s: reanchors=1 reanchored_frames=77 late=0 dropped=0 misses=0
   stop: every frame released, once                                 ok
   20 stop/start cycles: nothing left behind                        ok
+    pixel buffers handed to the card over 21 starts: 10; buffer_allocations=1 buffer_overlaps=0
+  the same 10 buffers across every stop/start                      ok
+  no write while the card was reading a buffer                     ok
 keyed, premultiplied fill (BGRA)
   (the same, line for line)
 across everything:
-    frames created 420, destroyed 420; on time 1317, late 0, dropped 0, flushed 109
-  no frame created while playing                                   ok
-  no frame destroyed while playing                                 ok
-  no frame destroyed on the completion thread (#12)                ok
+    frames created 420, destroyed 420; on time 1318, late 0, dropped 0, flushed 108
+    frames of SDK pool memory 0, wrapping application memory 420
+  nothing taken from the SDK's allocator pool (#12)                ok
+  no pool frame created while playing                              ok
+  no pool frame destroyed while playing                            ok
+  no pool frame destroyed on the completion thread (#12)           ok
   no frame written while the card had it                           ok
   no slot scheduled twice                                          ok
 PASS
@@ -3032,28 +3097,37 @@ PASS
 The 1.5-second stall stops the completion thread as well as the producer, as a
 SIGSTOP does, while the "hardware" carries on.
 
-**With a control.** The same harness, built against `decklink_output.cpp` as it
-was before the fix (`git show 6286d46:src/outputs/decklink_output.cpp`), fails:
+**With two controls.** Built against `decklink_output.cpp` as it was before the
+fix (`git show 6286d46:src/outputs/decklink_output.cpp`), it fails:
 
 ```
-    after a 1.5 s stall and 5 s: reanchors=-1 reanchored_frames=-1 late=249 dropped=0 misses=-1
-    frames created 1426, destroyed 1284; on time 826, late 500, dropped 0, flushed 100
-  no frame created while playing                                   FAIL
-  no frame destroyed while playing                                 FAIL
-  no frame destroyed on the completion thread (#12)                FAIL
+    after a 1.5 s stall and 5 s: reanchors=-1 reanchored_frames=-1 late=186 dropped=62 misses=-1
+    frames created 1426, destroyed 1274; on time 817, late 377, dropped 122, flushed 110
+    frames of SDK pool memory 1426, wrapping application memory 0
+  nothing taken from the SDK's allocator pool (#12)                FAIL
+  no pool frame destroyed on the completion thread (#12)           FAIL
 FAIL
 ```
 
-249 of the 250 frames after the stall late (an earlier run split them 186 late
-and 63 dropped), which is #13; frames made and destroyed throughout playback,
-and destroyed on the completion thread, which is the shape of #12. It also shows
-something nobody had reported: **142 frames never destroyed over 42 stops.** The
-old `stop()` removed the completion callback before `DisableVideoOutput` flushed
-the queue, so the frames still queued never came back to have WebLinked's own
-reference released. The new order flushes with the callback installed. That
-leak is shown on the simulated card only.
+248 of the 250 frames after the stall late or dropped (runs vary: 249 late and
+none dropped in another), which is #13; frames made from the SDK's pool and
+destroyed throughout playback, and on the completion thread, which is the shape
+of #12. It also shows something nobody had reported: **152 frames never
+destroyed over 42 stops.** The old `stop()` removed the completion callback
+before `DisableVideoOutput` flushed the queue, so the frames still queued never
+came back to have WebLinked's own reference released. The new order flushes with
+the callback installed. That leak is shown on the simulated card only.
 
-### The engine and the control API, against NDI
+And built against the current file with one deliberate fault — each frame handed
+back to the ring as soon as it is scheduled, so it can be rewritten while the
+card still has it — it fails on the check that exists for exactly that:
+
+```
+    pixel buffers handed to the card over 21 starts: 10; buffer_allocations=1 buffer_overlaps=692
+  no write while the card was reading a buffer                     FAIL
+```
+
+### The engine, the sources and the control API, against NDI
 
 The lock changes are the same for every backend, so they were run with an NDI
 output, polled by four clients every 50 ms with a 300 ms timeout and checked at
@@ -3065,30 +3139,38 @@ the end by an independent receiver. `tools/control_stress.py` is the driver.
   --port 7793 --osc-port 7794 --no-settings --no-open &
 
 tools/control_stress.py --port 7793 --output WLStress --pid $! toggle --cycles 100 --interval 0.3
-# toggle: 100 off/on cycles, 0 failed, slowest POST 59 ms
-# polls: ok=4741 timed out=0 503=0 other errors=0 with a stale output=0
-# /api/state latency ms: median=0.7 p99=49.7 max=55.7
-# process threads: min=46 max=60; established control connections: max=4
+# toggle: 100 off/on cycles, 0 failed, slowest POST 55 ms
+# after: ... output_skips=0 | WLStress: enabled=True running=True stale=False
+# polls: ok=4765 timed out=0 503=0 other errors=0 with a stale output=0
+# /api/state latency ms: median=0.7 p99=49.3 max=54.1
+# process threads: min=46 max=63; established control connections: max=3
 
 tools/control_stress.py --port 7793 --output WLStress --pid $! stop --cycles 6 --pause 3 --interval 2
-# stop 1 (answered 1 ms after SIGCONT): ticks=2078 dropped_ticks=73 last_tick_age_ms=21 ... frames=228
-# stop 2 (answered 2 ms after SIGCONT): ticks=2203 dropped_ticks=146 last_tick_age_ms=32 ... frames=280
-# stop 3 (answered 4 ms after SIGCONT): ticks=2329 dropped_ticks=220 last_tick_age_ms=3 ... frames=332
-# stop 4 (answered 2 ms after SIGCONT): ticks=2454 dropped_ticks=293 last_tick_age_ms=12 ... frames=384
-# stop 5 (answered 4 ms after SIGCONT): ticks=2579 dropped_ticks=366 last_tick_age_ms=29 ... frames=436
-# stop 6 (answered 4 ms after SIGCONT): ticks=2704 dropped_ticks=439 last_tick_age_ms=35 ... frames=488
-# polls: ok=955 timed out=192 503=0 other errors=0 with a stale output=0
-# /api/state latency ms: median=0.7 p99=153.8 max=188.3
+# stop 1 (answered 4 ms after SIGCONT): ticks=1902 dropped_ticks=74 last_tick_age_ms=0 ... frames=85
+# stop 2 (answered 3 ms after SIGCONT): ticks=2028 dropped_ticks=148 last_tick_age_ms=11 ... frames=137
+# stop 3 (answered 2 ms after SIGCONT): ticks=2153 dropped_ticks=221 last_tick_age_ms=23 ... frames=189
+# stop 4 (answered 1 ms after SIGCONT): ticks=2278 dropped_ticks=294 last_tick_age_ms=32 ... frames=241
+# stop 5 (answered 1 ms after SIGCONT): ticks=2403 dropped_ticks=367 last_tick_age_ms=33 ... frames=293
+# stop 6 (answered 1 ms after SIGCONT): ticks=2529 dropped_ticks=441 last_tick_age_ms=6 ... frames=345
+# polls: ok=953 timed out=192 503=0 other errors=0 with a stale output=0
+# /api/state latency ms: median=0.7 p99=139.7 max=156.9
 
 tools/control_stress.py --port 7793 --output WLStress --pid $! cap --connections 80
-# with 80 idle connections held: GET /api/state -> 503 in 23 ms:
+# with 80 idle connections held: GET /api/state -> 503 in 20 ms:
 #   b'{"error":"too many control connections (64 open); try again shortly"}'
 # after closing them: GET /api/state -> 200
-# process threads: min=56 max=120; established control connections: max=65
+# polls: ok=152 timed out=4 503=148 other errors=0 with a stale output=0
+# process threads: min=52 max=116; established control connections: max=65
+
+tools/control_stress.py --port 7793 --output WLStress --pid $! sources --cycles 10 \
+  --url file://$PWD/tools/clock.html
+# sources: 10 add/remove cycles, 0 failed, slowest add 24 ms, slowest remove 38 ms
+# polls: ok=1193 timed out=0 503=0 other errors=0 with a stale output=0
+# /api/state latency ms: median=0.6 p99=3.8 max=4.5
 
 ./ndi_probe --source WLStress --frames 100 --bars
 # all eight bars ok
-# received 100 video frames ... in 3.93 s — 25.42 fps measured
+# received 100 video frames ... in 3.94 s — 25.40 fps measured
 # PASS
 ```
 
@@ -3096,12 +3178,11 @@ Then SIGTERM, and `WebLinked exiting cleanly` in the log.
 
 Reading it:
 
-- **Toggling.** 200 changes, none failed, no poll timed out. The slowest polls
-  (about 50 ms) are the ones that asked for the NDI output's status while its
-  gate was held by a `start()` or `stop()`; `state()` gives every output's
-  status 100 ms between them. `output_skips` reached 6: ticks that found the
-  output being changed and went without it.
-- **SIGSTOP.** Each three-second stop cost 73 or 74 ticks at 25p, abandoned by
+- **Toggling.** 200 changes, none failed, no poll timed out, and
+  `output_skips` stayed at 0 (6 before the review: re-enabling no longer moves
+  the generation). The slowest polls, about 50 ms, asked for the NDI output's
+  status while its gate was held by a `start()`.
+- **SIGSTOP.** Each three-second stop cost 74 or 73 ticks at 25p, abandoned by
   the clock as it always has, and output carried on at 25 frames a second
   between stops. `/api/state` answered within 4 ms of every SIGCONT. The 192
   timeouts are the polls that fell inside the stops (four clients, three
@@ -3109,16 +3190,17 @@ Reading it:
 - **The cap.** With 80 idle connections offered, 64 were taken and held, and
   the other 16, and the pollers' requests meanwhile (148 of them), got a 503 in
   about 20 ms; four polls timed out queued behind the refusals. The process went
-  from 56 threads to 120 and no further. Before the cap, this had no limit.
+  from 52 threads to 116 and no further.
+- **Sources.** A second source, with its own browser, clock and NDI output,
+  added and removed ten times through the new `SourceManager` while the first
+  was polled: none failed, no poll was slowed.
 - **Every other control path** that now runs outside `Engine::mutex_` (format
-  changes 1080p25 → 720p50 → 1080p25, rename and rename back, background only,
-  remove, add, disable, enable, the refused removal of the preview,
-  `/api/preview`) was driven once each under the same polling, by a throwaway
-  script: all answered as before (the preview refusal a 409), polls p99 2.5 ms,
-  none failed, and `ndi_probe` passed the bars again afterwards.
-
-Earlier runs of the same three phases, before the final commit, gave the same
-picture (toggling's worst poll 7 to 60 ms, the cap's 503 in 21 ms).
+  changes 1080p25 → 720p50 → 1080p25 with the clock now parked only for the
+  swap, rename and rename back, background only, remove, add, disable, enable,
+  the refused removal of the preview, `/api/preview`) was driven once each under
+  the same polling, by a throwaway script: all answered as before (the preview
+  refusal a 409), polls p99 27 ms, none failed, and `ndi_probe` passed the bars
+  afterwards.
 
 ### No card: the DeckLink output with nothing to open
 
@@ -3135,18 +3217,24 @@ curl -s -X POST -d '{"name":"decklink0","enabled":true}' http://127.0.0.1:7785/a
 
 The installed driver was loaded and asked; the refusal is reported and the
 process carries on. On the settings page, the DeckLink editor showed
-**Premultiplied fill** ticked, and **Apply** posted
-`"premultiplied_fill": true` with the rest of the options. Before this change
-Apply sent the options without it and the output reopened with a straight fill.
+**Premultiplied fill** ticked for that output, and **Apply** posted
+`"premultiplied_fill": true`. Started with `--key` alone, the box shows unticked
+and Apply posts `{"keying":"external","key_level":255,"premultiplied_fill":false}`
+— the same options, in the same order, as the command line gave it, so an
+unchanged Apply on a running card is recognised as unchanged.
 
 ### What this does not establish
 
 - **Anything about Desktop Video itself.** The simulated card follows the SDK's
-  documentation, not Blackmagic's allocator, threads or timing. That the ring
-  keeps 16.4's allocator out of the deadlock is a reading of Daniel's stacks —
-  the deadlock happened as a frame was destroyed on the completion thread, and
-  no frame is now destroyed there or anywhere else during playback — not a
-  measurement.
+  documentation, not Blackmagic's allocator, threads or timing. That
+  application memory keeps 16.4's allocator out of the deadlock is a reading of
+  Daniel's stacks and the SDK manual — the deadlock was in the pool that gives
+  `CreateVideoFrame` its memory, and that pool is no longer asked for any — not
+  a measurement. Whether the real SDK copies application buffers into pool
+  memory of its own before a transfer is unknown.
+- **How the real SDK brackets its reads of application buffers.** If it holds
+  a read access while a frame is queued, `buffer_overlaps` checks the ring
+  against it on a real card; if it does not, that number says nothing.
 - **The real card's playhead.** The model's moves a whole frame at a time. If
   `GetScheduledStreamTime` reports something else, re-anchoring still works, but
   how deep the queue sits afterwards is only known on a card. The Duo 2 sat at 6
@@ -3155,9 +3243,12 @@ Apply sent the options without it and the output reopened with a straight fill.
   smaller `buffered_frames` after a stall than at start.
 - **Whether a ring of 10 is enough on the UltraStudio.** `ring_misses` will say;
   the `ring` option raises it.
-- **A driver actually wedged inside a call, in the running engine.** Only the
-  fake output in `test_output_slot.cpp` has done that, because nothing here can
-  wedge a real driver on demand and the engine can't be built in the tests.
+- **A driver actually wedged inside a call, in the running process.** Only the
+  fake output in `test_output_slot.cpp` and the fake engine in
+  `test_source_table.cpp` have done that, because nothing here can wedge a real
+  driver on demand and neither the engine nor the manager can be built in the
+  tests. That includes `halt()` closing outputs past a stuck clock, and a format
+  change going round a wedged output: both are read, not run.
 - **Audio across a re-anchor.** It is moved by the same span as the picture;
   audio over SDI has never been measured at all (section 19).
 
@@ -3166,12 +3257,14 @@ Apply sent the options without it and the output reopened with a straight fill.
 On the rig that found both bugs, built from this branch against SDK 16.0 and run
 exactly as before (`--decklink=0 --key --key-premultiplied`, 1080p25):
 
-1. **Two minutes untouched.** `frames_late`, `frames_dropped`, `ring_misses`
-   and `reanchors` stay 0; `buffered_frames` steady; `stale` false.
+1. **Two minutes untouched.** `frame_memory` is `"app"`; `frames_late`,
+   `frames_dropped`, `ring_misses`, `reanchors` and `buffer_overlaps` stay 0;
+   `buffered_frames` steady; `stale` false.
 2. **Disable/enable, as before:**
    `tools/control_stress.py --port 7654 --output decklink0 toggle --cycles 20 --interval 3`.
    No failed POSTs, no timed-out polls, no stale output, the counters still 0
-   after each cycle. The old build hung at the fourth.
+   after each cycle, and `buffer_allocations` still 1 at the end: the output's
+   memory is made once, not per enable. The old build hung at the fourth.
 3. **SIGSTOP/SIGCONT, as before:**
    `tools/control_stress.py --port 7654 --output decklink0 --pid <pid> stop --cycles 11 --pause 3 --interval 60`.
    After each stop `reanchors` goes up by one and `frames_late` and
@@ -3219,10 +3312,11 @@ input, which no cabling and profile combination has offered at the same time
 yet. Section 19a also records a live defect in the 1080p50 keyed error message,
 which names rates that a keyer-less profile cannot use.
 
-**The DeckLink frame ring and stall re-anchoring (#12, #13).** Written with no
-card attached. They pass against a simulated card, which the pre-fix code fails,
-and the engine's lock changes pass against NDI (section 40), but nothing of
-either has met Desktop Video. The premultiplied fill (`--key-premultiplied`,
+**The DeckLink frame ring, its application-owned memory and stall
+re-anchoring (#12, #13).** Written with no card attached. They pass against a
+simulated card, which the pre-fix code fails, and the engine's and source map's
+lock changes pass against NDI (section 40), but nothing of either has met
+Desktop Video, and how the real SDK treats application memory is unknown. The premultiplied fill (`--key-premultiplied`,
 #11) is measured only on its author's rig, not here.
 
 **AJA.** Compiles against libajantv2 18.1. AutoCirculate playout follows the
