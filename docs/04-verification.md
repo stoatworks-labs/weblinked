@@ -2938,9 +2938,12 @@ the reasoning.
 
 **No DeckLink card was attached to the machine this was run on** (macOS 26.4.1,
 M4 Max; `DeckLinkAPI.framework` installed, and the only Blackmagic device on the
-bus a Speed Editor). Everything below is what can be run without one. All of it
-was run at commit 3e3844a, after an independent review of the first version
-(below).
+bus a Speed Editor). Everything below is what can be run without one. After two
+rounds of independent review (below), all of it was run at commit 3e3844a, and
+what the second round changed was run again at cf9f1dc: both SDK builds
+(incrementally, on top of the clean ones at 3e3844a; no warnings beyond the
+usual linker one), the unit tests in both, the simulated card and the NDI
+stress.
 
 ### An independent review, and what it changed
 
@@ -2979,6 +2982,29 @@ Everything below except this list was then run again.
    change across several cards can exceed. Now 30 s queued, and still 2 s for
    any one driver call.
 
+A second review of 3e3844a found no serious bugs and these smaller ones, fixed
+in cf9f1dc:
+
+1. If the card still held frames at a stop, the next start reused their
+   buffers at the same raster, so new frames could wrap memory an old,
+   SDK-held frame still wrapped. Now those buffers are let go and the next
+   start allocates afresh (proved on the simulated card below, with a control).
+2. A format change refused because the clock would not park had already
+   stopped and reopened every output. Now it refuses up front, changing
+   nothing, when the clock has not ticked for over a second.
+3. With a driver wedged inside the change at the front of a source's queue,
+   every later request waited its full 30 s on an HTTP thread, and enough
+   presses could fill the 64-connection cap. Now at most four wait per source,
+   and a waiter gives up at once when the change in front is inside an output
+   gate that counts as stuck.
+4. Messages: a concurrent removal now says the source is already being
+   removed; OSC to a source being removed says so. A failed allocation in
+   `AppVideoBuffer::create` no longer leaks its pixel memory.
+5. Shutdown: an engine still busy at `SourceManager::stop()` is kept for the
+   life of the process instead of being destroyed late on a straggling thread
+   after `CefShutdown`; a removal overtaken by shutdown neither reopens nor
+   stops the source.
+
 ### Both SDKs build
 
 ```bash
@@ -3011,7 +3037,7 @@ core files are standard library only.
 
 ```bash
 ./build/tests/weblinked_tests
-# 155 tests, 194653 checks, 0 failures
+# 160 tests, 194673 checks, 0 failures      (cf9f1dc; 155 at 3e3844a)
 ```
 
 130 before any of this. The new ones:
@@ -3036,6 +3062,10 @@ core files are standard library only.
 - `http_*` fill a three-connection server with handlers that never return and
   get a 503 in under two seconds for the fourth and every one of twenty more,
   then idle a connection out.
+- `control_queue_*`: a change waits for a slow one in front, gives up within a
+  poll once the one in front is stuck, and a fifth waiter is turned away at
+  once while four wait. And `source_table_a_removal_overtaken_by_shutdown_*`:
+  the source ends with one owner.
 
 All of them also pass run forty at a time. (The existing settings-store tests
 don't: they share fixed temporary file names, so parallel copies trip over each
@@ -3043,7 +3073,8 @@ other. One at a time, as CLAUDE.md runs them, they pass.)
 
 `Engine` and `SourceManager` can't be built in the tests — they own CEF
 browsers — so the mechanisms are tested on their own, and the engine's and the
-manager's use of them is covered by the runs below.
+manager's use of them is covered by the runs below. The new tests pass forty at
+a time as well.
 
 ### The real backend against a simulated card
 
@@ -3082,9 +3113,14 @@ unkeyed (UYVY)
   no write while the card was reading a buffer                     ok
 keyed, premultiplied fill (BGRA)
   (the same, line for line)
+a frame the card keeps past a stop
+    after the restart: buffer_allocations=2 buffer_overlaps=0
+  fresh memory after the card kept a frame                         ok
+  nothing written into the kept frame's buffer                     ok
+  the kept frame released once the card let go                     ok
 across everything:
-    frames created 420, destroyed 420; on time 1318, late 0, dropped 0, flushed 108
-    frames of SDK pool memory 0, wrapping application memory 420
+    frames created 440, destroyed 440; on time 1395, late 0, dropped 0, flushed 111
+    frames of SDK pool memory 0, wrapping application memory 440
   nothing taken from the SDK's allocator pool (#12)                ok
   no pool frame created while playing                              ok
   no pool frame destroyed while playing                            ok
@@ -3095,7 +3131,10 @@ PASS
 ```
 
 The 1.5-second stall stops the completion thread as well as the producer, as a
-SIGSTOP does, while the "hardware" carries on.
+SIGSTOP does, while the "hardware" carries on. "A frame the card keeps" has the
+simulated driver claim a full flush at `DisableVideoOutput` while keeping one
+frame, and its read access open, until later — a driver that did not finish
+when it said it had.
 
 **With two controls.** Built against `decklink_output.cpp` as it was before the
 fix (`git show 6286d46:src/outputs/decklink_output.cpp`), it fails:
@@ -3125,6 +3164,16 @@ card still has it — it fails on the check that exists for exactly that:
 ```
     pixel buffers handed to the card over 21 starts: 10; buffer_allocations=1 buffer_overlaps=692
   no write while the card was reading a buffer                     FAIL
+```
+
+A third control drops the second review's first fix (letting go of the buffers
+when frames are still held at a stop), and the kept frame's buffer is written
+into after the restart:
+
+```
+    after the restart: buffer_allocations=1 buffer_overlaps=10
+  fresh memory after the card kept a frame                         FAIL
+  nothing written into the kept frame's buffer                     FAIL
 ```
 
 ### The engine, the sources and the control API, against NDI
@@ -3176,7 +3225,15 @@ tools/control_stress.py --port 7793 --output WLStress --pid $! sources --cycles 
 
 Then SIGTERM, and `WebLinked exiting cleanly` in the log.
 
-Reading it:
+At cf9f1dc the same instance-level runs went again: 100 disable/enable cycles, 0
+failed, 0 poll timeouts out of 4,628, `output_skips` 0, poll p99 66 ms; six
+SIGSTOPs, 73 or 74 ticks each, `/api/state` answering within 32 ms of every
+SIGCONT; ten add/remove cycles of a second source, 0 failed, poll p99 6.6 ms;
+80 connections, a 503 in 19 ms and threads capped at 115; the format changes
+and other control paths, polls p99 39 ms; and `ndi_probe --bars` PASS at
+25.35 fps. Clean exit.
+
+Reading the 3e3844a run:
 
 - **Toggling.** 200 changes, none failed, no poll timed out, and
   `output_skips` stayed at 0 (6 before the review: re-enabling no longer moves
@@ -3244,11 +3301,15 @@ unchanged Apply on a running card is recognised as unchanged.
 - **Whether a ring of 10 is enough on the UltraStudio.** `ring_misses` will say;
   the `ring` option raises it.
 - **A driver actually wedged inside a call, in the running process.** Only the
-  fake output in `test_output_slot.cpp` and the fake engine in
-  `test_source_table.cpp` have done that, because nothing here can wedge a real
-  driver on demand and neither the engine nor the manager can be built in the
-  tests. That includes `halt()` closing outputs past a stuck clock, and a format
-  change going round a wedged output: both are read, not run.
+  fake output in `test_output_slot.cpp`, the fake engine in
+  `test_source_table.cpp` and the queue in `test_control_queue.cpp` have done
+  that, because nothing here can wedge a real driver on demand and neither the
+  engine nor the manager can be built in the tests. That includes `halt()`
+  closing outputs past a stuck clock, a format change refusing or going round a
+  wedged output, and a queued change noticing the one in front is stuck: all
+  read, not run. An `addOutput` whose new device wedges in `start()` is not
+  through a gate yet, so the queue cannot see it is stuck; the four-waiter cap
+  is what bounds that one.
 - **Audio across a re-anchor.** It is moved by the same span as the picture;
   audio over SDI has never been measured at all (section 19).
 
@@ -3260,6 +3321,16 @@ exactly as before (`--decklink=0 --key --key-premultiplied`, 1080p25):
 1. **Two minutes untouched.** `frame_memory` is `"app"`; `frames_late`,
    `frames_dropped`, `ring_misses`, `reanchors` and `buffer_overlaps` stay 0;
    `buffered_frames` steady; `stale` false.
+
+   One caveat on `buffer_overlaps`. It counts a write starting while a read of
+   the same buffer is open, which the ring should never cause. But that relies
+   on how the SDK brackets its reads, which is not documented. If it holds a
+   read access for a frame's whole life with the output, rather than for each
+   transfer, the count will climb steadily — by about one per frame scheduled,
+   from the start — while the picture is perfect and every other counter is 0.
+   That would say nothing about the ring, only about the SDK; report the rate
+   and carry on. What would matter is a climbing count together with torn or
+   wrong pictures, or one that appears only after a stall or a disable/enable.
 2. **Disable/enable, as before:**
    `tools/control_stress.py --port 7654 --output decklink0 toggle --cycles 20 --interval 3`.
    No failed POSTs, no timed-out polls, no stale output, the counters still 0

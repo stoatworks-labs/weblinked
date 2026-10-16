@@ -69,7 +69,8 @@ himself.
     (`driver_busy_ms`), and the control page says so. A request to change that
     output gives up on it within two seconds with nothing changed, instead of
     hanging, and changes queued behind each other wait up to 30 s, which a
-    format change across several cards can need. `/api/state` itself answers
+    format change across several cards can need, but give up at once behind
+    one that is stuck. `/api/state` itself answers
     within about 200 ms whatever the outputs are doing, which means a supervisor
     that restarts WebLinked when `/api/state` goes quiet will no longer be
     prompted: watch `pacing.last_tick_age_ms` and `outputs[].stale` instead.

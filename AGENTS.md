@@ -518,8 +518,13 @@ How it is built:
   whose gate is held answers from its last status, marked `"stale": true` with
   `driver_busy_ms` only once the call has run past the wedge threshold (1 s);
   before that it is merely busy.
-- Control paths (add, remove, update, enable, format) are serialised by their
-  own timed `controlMutex_`, which neither the clock nor `state()` ever takes.
+- Control paths (add, remove, update, enable, format) are serialised by the
+  engine's `ControlQueue` (`src/core/control_queue.h`), whose mutex neither the
+  clock nor `state()` ever takes. A change waits up to 30 s for the one in
+  front, but gives up at once if four are already waiting, or if the one in
+  front is inside an output gate that counts as stuck — each control path marks
+  the output it is calling with `ControlCall` so a waiter can tell. Every waiter
+  is an HTTP thread, and there are 64.
 - Above the engine, `SourceManager` keeps its sources in a `SourceTable`: the
   table's lock covers copying a pointer and nothing else, each source counts the
   calls inside it, and a removal closes the source to new calls and waits for
@@ -550,8 +555,9 @@ The rules that keep it true:
    generation, so re-enabling a running output costs no tick.
 3. **Every wait on an output has a deadline**, and every shared budget has a
    floor per output: the clock 5 ms a tick with 2 ms each, `state()` 100 ms
-   with 10 ms each, a control path 2 s for a gate and 30 s queued for
-   `controlMutex_`, a source removal 40 s for the calls inside, `halt()` 2 s
+   with 10 ms each, a control path 2 s for a gate and 30 s queued in the
+   control queue (four waiters at most, and none behind a stuck change), a
+   source removal 40 s for the calls inside, `halt()` 2 s
    for the clock before closing outputs anyway, the DeckLink frame allocator
    5 s. A gate held for over a second is tried once and given up on. A new
    wait without a deadline is a bug; the one exception is `halt()`'s final
@@ -564,16 +570,20 @@ The rules that keep it true:
    clears `entry.enabled` under `mutex_` first, so the clock is not queued on
    the gate behind a `stop()`. On a refused gate, put `enabled` back: the
    contract is "nothing changed".
-6. **Lock order is `controlMutex_` → gate → `mutex_`, and `mutex_` only
+6. **Lock order is the control queue → gate → `mutex_`, and `mutex_` only
    briefly.** Never wait on a gate holding `mutex_`. The clock thread never
-   takes `controlMutex_`. Above all of these, the `SourceTable` lock is held
-   only to copy a pointer: never call into an engine holding it.
+   takes the control queue. Above all of these, the `SourceTable` lock is held
+   only to copy a pointer: never call into an engine holding it. A control
+   path's call into an output goes inside a `ControlCall`, or a change stuck
+   in it looks merely slow to the requests queued behind it.
 7. **Clock-thread state is still rebuilt only while parked** (CLAUDE.md rule
    6), and only that: never park the clock across a driver call, or one wedged
-   output freezes the source's others. `setFormat` refuses, reopening the
-   outputs at the old raster, if `pauseClock()` reports the clock did not park:
-   a clock that would not stop is inside a driver, and its pools must not be
-   swapped underneath it.
+   output freezes the source's others. `setFormat` refuses up front, changing
+   nothing, when the clock has not ticked for a second; and if the park still
+   fails (a race), it reopens the outputs at the old raster. A clock that would
+   not stop is inside a driver, and its pools must not be swapped underneath
+   it; and a refusal should cost nothing — not NDI senders re-advertised, not
+   cards prerolled again.
 8. **A DeckLink ring frame is written only between its completion and its next
    `ScheduleVideoFrame`**, inside `FrameBytes`, which on SDK 14.3 and later is
    what brackets the write with `StartAccess`/`EndAccess`. The ring never hands
@@ -585,19 +595,26 @@ The rules that keep it true:
    waited for 5 s at most. Before SDK 14.3 a release that cannot get it leaks
    the frames: they are the SDK's memory, and another card's driver is wedged
    in the allocator they would go back to.
-12. **On SDK 14.3 and later, ring memory is ours.** Make frames with
-    `CreateVideoFrameWithBuffer` over `AppVideoBuffer`s, write through our own
-    buffer (still inside `FrameBytes`), and keep the buffers until the raster,
-    pixel format or ring size changes. Do not go back to `CreateVideoFrame` on
-    that path: it is the SDK's pool, which is where #12 deadlocked.
-    `buffer_overlaps` counts a write starting while a read is open on the same
-    buffer; it should stay 0, on a real card too.
 10. **`submit()` never waits for a free frame.** No frame free means drop the
     tick and count it (`ring_misses`). Waiting would stall every other output
     on the same clock.
 11. **The schedule index only increases**, and display times stay in the
     mode's own `GetFrameRate` units (CLAUDE.md rule 2). Re-anchoring may skip
     slots; it never reuses one.
+12. **On SDK 14.3 and later, ring memory is ours.** Make frames with
+    `CreateVideoFrameWithBuffer` over `AppVideoBuffer`s, write through our own
+    buffer (still inside `FrameBytes`), and keep the buffers until the raster,
+    pixel format or ring size changes — or until a stop finds the card still
+    holding frames, whose buffers must then not be reused, because those frames
+    still wrap them. Do not go back to `CreateVideoFrame` on that path: it is
+    the SDK's pool, which is where #12 deadlocked. `buffer_overlaps` counts a
+    write starting while a read is open on the same buffer; it should stay 0,
+    unless the SDK turns out to hold reads for a frame's whole life (see the
+    caveat in section 40's recipe).
+13. **At shutdown, an engine with a request still inside is kept, not
+    dropped.** Dropping it would leave the straggling thread to run `~Engine`,
+    which closes a browser, possibly after `CefShutdown`. `SourceManager::stop`
+    keeps such engines for the life of the process.
 
 ## Notes
 

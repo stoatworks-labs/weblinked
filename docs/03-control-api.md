@@ -52,7 +52,7 @@ The process-wide endpoints — `/api/log`, `/api/diagnostics*`,
 |---|---|
 | `GET /api/sources` | `{"primary": "<id>", "sources": [ ...state... ]}` — every pipeline, each entry the same shape `/api/state` returns |
 | `POST /api/sources/add` | `{"source": { ...source config... }}`. `409` on a duplicate id, `400` on an invalid one. A preview output is added if the config has none |
-| `POST /api/sources/remove` | `{"id": "..."}`. `409` if it is the only source: a process with no sources has no primary, so removing the last one would make every later request answer 503. Stopping WebLinked is what closing the window is for. Waits for the requests already inside that source to finish, for up to 40 s; meanwhile requests to it get a 503 ("being removed"). If one has not finished by then — stuck in an output's driver — the removal answers `409` and the source carries on as it was |
+| `POST /api/sources/remove` | `{"id": "..."}`. `409` if it is the only source: a process with no sources has no primary, so removing the last one would make every later request answer 503. Stopping WebLinked is what closing the window is for. Waits for the requests already inside that source to finish, for up to 40 s; meanwhile requests to it get a 503 ("being removed"). If one has not finished by then — stuck in an output's driver — the removal answers `409` and the source carries on as it was. A second removal of a source already being removed answers `409` saying so |
 | `POST /api/sources/apply` | `{"sources": [ ... ]}` — reconciles the whole set at once. Sources that have gone are stopped, new ones started, and the rest updated in place so an unchanged output keeps running |
 
 ```bash
@@ -185,8 +185,11 @@ with a time limit, and the engine's own lock is never held across one, so:
 - Changes to one source queue behind each other, for up to **30 s**, because a
   format change or a settings apply across several cards legitimately takes a
   few seconds and failing the next change would lose an edit. Past that the
-  request answers `409` saying another change is still in progress. A stuck
-  driver only ever holds the queue for its own two-second gate waits.
+  request answers `409` saying another change is still in progress. But a
+  queued change answers `409` **at once** if the change in front is stuck in an
+  output's driver (the error names the output), or if four changes are already
+  waiting: each waiter holds one of the server's 64 connections, and a button
+  pressed repeatedly against a stuck driver must not fill them.
 - The clock skips that output and keeps feeding the others, including during a
   format change, which no longer parks the clock while outputs reopen. If it was
   the clock that got stuck inside the driver, every output of that source stops,
@@ -498,9 +501,9 @@ says an output **is not answering** means its driver is stuck in a call (see
 "When an output stops answering" above) and nothing was changed.
 
 503 means nothing was done and trying again shortly is the right response:
-from `/api/format` when another change on the source kept it waiting for 30 s,
-or the clock would not stop for it (then the outputs are reopened at the old
-raster); from `/api/preview` while the preview is being
+from `/api/format` when another change on the source kept it waiting, when the
+clock has not ticked for a second (nothing is touched), or when the clock would
+not stop for it (then the outputs are reopened at the old raster); from `/api/preview` while the preview is being
 replaced; from any endpoint addressing a source that is being removed; and from
 any endpoint when the server already has its limit of **64 connections** open. That one comes with `Retry-After: 1` and
 `Connection: close`, before the request is read past its headers. The limit is
