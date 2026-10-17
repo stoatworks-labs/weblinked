@@ -6,7 +6,9 @@ that a claim in the README can be checked rather than believed.
 The distinction that matters throughout: **compiles against a real SDK** is not
 the same as **works against real hardware**. NDI and DeckLink have now been
 measured against real hardware (sections 2, 19 and 19a); OMT and AJA remain in
-the first category.
+the first category. Section 40 adds a third: DeckLink figures **run by a user on
+their own hardware, and reported**. Nothing in that section was run on a card
+here.
 
 Unless a section says otherwise, everything below was run on macOS 26.4.1, Apple
 Silicon (M4 Max), against CEF 150.0.17 / Chromium 150.0.7871.187. Sections 31 and
@@ -1636,7 +1638,8 @@ run, made and never destroyed over 42 stops. `stop()` removed the completion cal
 disabled the output, so the frames the card flushed never came back to have
 WebLinked's own reference released — on the card used here, several 4 to 8 MB
 frames per disable. The ring's `stop()` flushes with the callback still in place.
-On a real card it is unconfirmed, like everything else in section 40.
+On a real card it is unconfirmed: the run on Daniel Nyström's card in section 40
+was of the fixed build, and did not look for it.
 
 **A browse returns one entry per interface, and picking the first gave an
 unreachable address.** Not a bug in this repo but in the consumer, found the
@@ -2903,7 +2906,7 @@ tailnet bind. The re-tag to `weblinked-docker:edge` **failed** in this run
 (`denied: permission_denied: write_package`) — the step is allowed to fail, and
 needs that package to grant this repository write access.
 
-## 40. A DeckLink stall and a wedged driver (#12, #13) — fixed against a simulated card, waiting on a real one
+## 40. A DeckLink stall and a wedged driver (#12, #13) — fixed against a simulated card here, run on a real one by the reporter
 
 Both reported by Daniel Nyström (@speakman) from a real rig: an UltraStudio Mini
 Replay 12G over Thunderbolt, Desktop Video 16.4, macOS 27.0.1 on an M1, 1080p25,
@@ -2944,6 +2947,12 @@ what the second round changed was run again at cf9f1dc: both SDK builds
 (incrementally, on top of the clean ones at 3e3844a; no warnings beyond the
 usual linker one), the unit tests in both, the simulated card and the NDI
 stress.
+
+After release, Daniel ran the recipe at the end of this section on the rig that
+found both bugs, then an eight-hour soak of his own. That run is his, on his
+card, and is recorded at the end, under **On a real card: Daniel Nyström's
+run**, with the figures as reported. Nothing in this section has been run on a
+card here.
 
 ### An independent review, and what it changed
 
@@ -3282,6 +3291,9 @@ unchanged Apply on a running card is recognised as unchanged.
 
 ### What this does not establish
 
+Written before the run on a real card below, and still true of everything run
+here. That run answers some of it; the end of the section says which.
+
 - **Anything about Desktop Video itself.** The simulated card follows the SDK's
   documentation, not Blackmagic's allocator, threads or timing. That
   application memory keeps 16.4's allocator out of the deadlock is a reading of
@@ -3313,10 +3325,11 @@ unchanged Apply on a running card is recognised as unchanged.
 - **Audio across a re-anchor.** It is moved by the same span as the picture;
   audio over SDI has never been measured at all (section 19).
 
-### Waiting on a card: what to run
+### The recipe for a card
 
-On the rig that found both bugs, built from this branch against SDK 16.0 and run
-exactly as before (`--decklink=0 --key --key-premultiplied`, 1080p25):
+As given in #12, for the rig that found both bugs, built from this branch against
+SDK 16.0 and run exactly as before (`--decklink=0 --key --key-premultiplied`,
+1080p25):
 
 1. **Two minutes untouched.** `frame_memory` is `"app"`; `frames_late`,
    `frames_dropped`, `ring_misses`, `reanchors` and `buffer_overlaps` stay 0;
@@ -3347,6 +3360,82 @@ exactly as before (`--decklink=0 --key --key-premultiplied`, 1080p25):
    `pacing.last_tick_age_ms` climbing; a `sample <pid> 5` then shows where. A
    supervisor that restarted on a silent `/api/state` should now restart on
    `last_tick_age_ms` above a few seconds, or an output stale for more than ten.
+
+### On a real card: Daniel Nyström's run
+
+**Run by Daniel Nyström (@speakman) on Daniel's own rig, on 16 October 2026,
+and reported in #12 and #13. Not run here.** The figures are Daniel's, as
+reported; no raw output is reproduced, and nothing below has been checked on
+this machine.
+
+v1.3.0 (1af4ad4), built against Desktop Video SDK 16.0, `weblinked_tests` 160
+tests and 0 failures. The rig that found both bugs: an M1 on macOS 27.0.1,
+Desktop Video 16.4, an UltraStudio Mini Replay 12G, `--format 1080p25 --key
+--key-premultiplied --decklink=0`, fill and key into an ATEM SDI Extreme ISO,
+with Daniel's own control engine polling `/api/state` every 200 ms throughout.
+
+The recipe above, step by step:
+
+1. **Two minutes untouched.** `frames_late`, `frames_dropped`, `ring_misses` and
+   `reanchors` 0; `buffered_frames` 5 throughout; `stale` false; `frame_memory`
+   `"app"`, `buffer_allocations` 1, `buffer_overlaps` 0; `ring_size` 10.
+2. **Disable/enable** (`toggle --cycles 20 --interval 3`). 20 cycles, none
+   failed, slowest POST 45 ms. Polls 8,532 ok, none timed out, no 503s, no
+   errors, none with a stale output; `/api/state` median 1.5 ms, p99 8.5 ms,
+   max 43.8 ms. 50 to 59 threads, at most 4 control connections. The counters
+   0 after every cycle, and one `output_skips`, at cycle 10. The old build hung
+   at the fourth.
+3. **SIGSTOP/SIGCONT** (`stop --cycles 11 --pause 3 --interval 60`).
+   `reanchors` up by one per stop, 11 in all, with 811 reanchored frames and
+   `dropped_ticks` 811; `frames_late`, `frames_dropped` and `ring_misses` 0
+   throughout; `/api/state` answering 11 to 20 ms after each SIGCONT. Polls
+   45,776 ok, 154 timed out and 1,373 other errors, all inside the stopped
+   seconds as far as Daniel could tell (four pollers at 20 a second, 33 s
+   stopped in all), none with a stale output; latency median 1.7 ms, p99 8.1 ms,
+   max 13.9 ms. On the old build, one stop left every frame late for the rest of
+   the run.
+4. **An hour later** (1 h 17 min from the start, 113,372 frames).
+   `frames_late`, `frames_dropped` and `ring_misses` 0, `reanchors` still 11,
+   `buffered_frames` 4 to 5, `stale` false, `buffer_allocations` 1,
+   `last_tick_age_ms` 13 to 21.
+5. **If it wedges anyway.** Not needed: nothing wedged.
+
+**Then an eight-hour soak** before a broadcast (16 October, 13:17 to 21:17 UTC):
+a randomised operator loop through Daniel's engine, every take checked against
+the ATEM's programme return, with a fault about every 11 minutes. Seven SIGSTOPs
+of WebLinked, seven of its GPU helper, seven output disable/enables over the
+API, eight SIGTERMs and restarts of WebLinked, and fourteen SIGTERMs or SIGKILLs
+of the engine driving it. All of them recovered (42 faults in the report; the
+kinds listed add up to 43). 7,847 still checks and 95,304 burst frames matched,
+and WebLinked's RSS fell by 9.6 MB an hour. **No hang in eight hours**: the
+supervisor's only restarts were the eight SIGTERMs. On the same rig and loop the
+old build had hung of its own accord four times in the 15 hours before. At the
+end: `frames_late`, `frames_dropped` and `ring_misses` 0, `buffer_allocations`
+1, `buffer_overlaps` 0, `stale` false.
+
+What that settles, against **What this does not establish** above:
+
+- **The hang (#12).** None in eight hours on the fixed build, against four in
+  fifteen on the old one, on the same rig and loop; and the control API answered
+  through the disable/enable and SIGSTOP runs that hung the old build at the
+  fourth cycle and after the eleventh. That application memory is *why* is still
+  a reading of the stacks: whether Desktop Video copies application buffers into
+  pool memory of its own is still unknown.
+- **The stall (#13).** One re-anchor per stop, eleven times, and nothing late
+  or dropped afterwards, an hour on.
+- **`buffer_overlaps`.** 0 from the first two minutes to the end of the soak, so
+  Desktop Video 16.4 does not hold a read access for a frame's whole life with
+  the output. Whether it brackets each transfer, which is the case in which 0
+  also clears the ring, is still not known.
+- **The playhead and the ring.** On the UltraStudio, `buffered_frames` sat at 5
+  untouched and at 4 to 5 after eleven re-anchors, and a ring of 10 never ran
+  out at 1080p25 keyed.
+
+Still open: a driver wedged mid-call in the running process (nothing wedged, so
+step 5 never ran); audio across a re-anchor, and audio over SDI at all; the
+pre-14.3 path, whose ring is SDK memory and has met no card, since this build
+was against 16.0; any other card, raster or Desktop Video version; and any of
+it on a card here.
 
 ## Not verified
 
@@ -3384,11 +3473,16 @@ yet. Section 19a also records a live defect in the 1080p50 keyed error message,
 which names rates that a keyer-less profile cannot use.
 
 **The DeckLink frame ring, its application-owned memory and stall
-re-anchoring (#12, #13).** Written with no card attached. They pass against a
-simulated card, which the pre-fix code fails, and the engine's and source map's
-lock changes pass against NDI (section 40), but nothing of either has met
-Desktop Video, and how the real SDK treats application memory is unknown. The premultiplied fill (`--key-premultiplied`,
-#11) is measured only on its author's rig, not here.
+re-anchoring (#12, #13) — run on a real card by the reporter, not here.**
+Written with no card attached. Here they pass against a simulated card, which
+the pre-fix code fails, and the engine's and source map's lock changes pass
+against NDI. Daniel Nyström then ran them on the UltraStudio Mini Replay 12G that
+found both bugs (Desktop Video 16.4, 1080p25 keyed): the recipe, and an
+eight-hour soak with 42 injected faults, with no hang and every counter 0
+(section 40). None of it has been run on a card here. How the real SDK treats
+application memory is still unknown, the pre-14.3 path has met no card, and a
+driver wedged mid-call has only ever been a fake one. The premultiplied fill
+(`--key-premultiplied`, #11) is measured only on its author's rig, not here.
 
 **AJA.** Compiles against libajantv2 18.1. AutoCirculate playout follows the
 SDK's documented sequence. No card connected. Also untested: whether

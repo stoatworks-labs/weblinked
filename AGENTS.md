@@ -374,14 +374,19 @@ off the wire where premultiplied would be ~95, the exact value NDI produced
 before `unpremultiplyBgra`. Not measured on DeckLink: the key channel itself,
 the internal-keying composite, audio over SDI, genlock over hours.
 
-**Not on a card yet:** the DeckLink frame ring, its application-owned memory
-on SDK 14.3 and later, and the stall re-anchoring that fixed #12 and #13. They
-were written with no card attached, pass against a simulated card
-(`tools/dl_fake_card.cpp`) that the old code fails, and wait on a run on the
-rig that found the bugs (section 40). What the real SDK does with application
-memory is unknown. The engine's and the source map's lock changes are verified
-against NDI only; a driver wedged mid-call has only ever been a fake one, in
-`tests/test_output_slot.cpp` and `tests/test_source_table.cpp`.
+**On a card, but not here:** the DeckLink frame ring, its application-owned
+memory on SDK 14.3 and later, and the stall re-anchoring that fixed #12 and
+#13. They were written with no card attached and pass against a simulated card
+(`tools/dl_fake_card.cpp`) that the old code fails. Daniel Nyström then ran
+them on the rig that found the bugs (UltraStudio Mini Replay 12G, Desktop Video
+16.4, an SDK 16.0 build, 1080p25 keyed): the section 40 recipe and an
+eight-hour soak with 42 injected faults, no hang, every counter 0 and
+`buffer_overlaps` 0 throughout. That is a user's run, reported in #12, not one
+made here; keep the two apart. What the real SDK does with application memory
+is still unknown, and the pre-14.3 path has met no card. The engine's and the
+source map's lock changes are verified against NDI here and ran under a real
+driver only on that rig; a driver wedged mid-call has only ever been a fake one,
+in `tests/test_output_slot.cpp` and `tests/test_source_table.cpp`.
 
 **Also verified, against Resolume Arena:** the shared (Syphon) output. Arena
 7.27.1 lists it, loads it on a layer, reports it at 1920x1080 and labels it
@@ -610,7 +615,8 @@ The rules that keep it true:
     the SDK's pool, which is where #12 deadlocked. `buffer_overlaps` counts a
     write starting while a read is open on the same buffer; it should stay 0,
     unless the SDK turns out to hold reads for a frame's whole life (see the
-    caveat in section 40's recipe).
+    caveat in section 40's recipe). Desktop Video 16.4 does not: it stayed 0
+    through Daniel Nyström's eight hours on an UltraStudio (section 40).
 13. **At shutdown, an engine with a request still inside is kept, not
     dropped.** Dropping it would leave the straggling thread to run `~Engine`,
     which closes a browser, possibly after `CefShutdown`. `SourceManager::stop`

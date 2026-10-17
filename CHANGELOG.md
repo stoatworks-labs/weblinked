@@ -84,7 +84,9 @@ himself.
   A simulated card (`tools/dl_fake_card.cpp`) also showed the old stop sequence
   leaking the frames still queued at each stop, because it removed the
   completion callback before the card flushed them. The new order flushes first.
-  None of the DeckLink changes have run on a card yet: see section 40 of
+  None of the DeckLink changes had run on a card at release. On 16 October
+  Daniel ran them on the rig that found the bugs, for eight hours with no hang;
+  none of it has run on a card here. See section 40 of
   `docs/04-verification.md`.
 
 ## v1.2.0 — 2026-10-06

@@ -144,8 +144,11 @@ engine calls), the clock parked across a format change's driver calls, and the
 SDK's allocator pool still emptied at every stop; fixed with SourceTable, a
 narrower park, and application-owned frame memory on SDK 14.3+. **No card was
 attached** when any of it was written: it passes against `tools/dl_fake_card.cpp`,
-which the old code fails, and waits on Daniel's rig. Section 40 of the
-verification doc has the recipe he was given.
+which the old code fails. On 2026-10-16 Daniel ran it on that rig, the recipe and
+then an eight-hour soak with 42 injected faults: no hang, against four in 15
+hours on the old build, and both issues closed. No card has run it here.
+Section 40 of the verification doc has the recipe and Daniel's figures as
+reported.
 
 **Design decisions worth not re-litigating:** our clock drives Chromium via
 `SendExternalBeginFrame` (1 tick = 1 paint) rather than `windowless_frame_rate`;

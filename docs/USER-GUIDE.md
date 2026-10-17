@@ -22,9 +22,12 @@ it doesn't try to hide the broadcast decisions from you.
 > can't sustain a rate. [04-verification.md](04-verification.md) gives the numbers and the
 > method rather than a promise.
 >
-> One more, newer than the rest. The DeckLink fixes in v1.3.0 (frames made once and reused,
-> and catching up after a stall) were written with no card plugged in. They've run against a
-> simulated card, and **they're waiting on a real one**: the rig that found the bugs.
+> One more, newer than the rest. I wrote the DeckLink fixes in v1.3.0 (frames made once and
+> reused, and catching up after a stall) with no card plugged in, and ran them against a
+> simulated one. Daniel Nyström, who found the bugs, then ran them on the rig they were found
+> on: eight hours into an ATEM with 42 faults thrown at it, and no hang. **I still haven't run
+> them on a card myself**, so section 40 of the verification doc gives Daniel's figures as
+> Daniel's.
 
 ---
 
