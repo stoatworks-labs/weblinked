@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.3.1 — 2026-10-18
+
+The engine is the same as v1.3.0. What's new is the evidence: the DeckLink fixes
+for #12 and #13 have now run on a real card. Daniel Nyström put them through the
+test recipe and an eight-hour soak with faults thrown at it, on the UltraStudio
+Mini Replay 12G that found both bugs, with no hang. I still haven't run them on a
+card myself; section 40 of `docs/04-verification.md` has Daniel's figures.
+
 ## v1.3.0 — 2026-10-16
 
 All four of these come from Daniel Nyström (@speakman), who found them on a real
