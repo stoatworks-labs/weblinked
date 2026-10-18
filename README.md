@@ -85,15 +85,15 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 ## Download
 
-**[v1.3.0](https://github.com/stoatworks-labs/weblinked/releases/tag/v1.3.0)** — prebuilt for macOS, Windows and Linux. Pick your platform:
+**[v1.3.1](https://github.com/stoatworks-labs/weblinked/releases/tag/v1.3.1)** — prebuilt for macOS, Windows and Linux. Pick your platform:
 
 <details>
 <summary><b>macOS</b> — Apple Silicon</summary>
 
 | Build | Download | Size |
 | --- | --- | --- |
-| Apple Silicon · .dmg disk image | [`weblinked-engine-1.3.0-macos-arm64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v1.3.0/weblinked-engine-1.3.0-macos-arm64.dmg) | 141 MB |
-| Apple Silicon · .pkg installer | [`weblinked-engine-1.3.0-macos-arm64.pkg`](https://github.com/stoatworks-labs/weblinked/releases/download/v1.3.0/weblinked-engine-1.3.0-macos-arm64.pkg) | 141 MB |
+| Apple Silicon · .dmg disk image | [`weblinked-engine-1.3.1-macos-arm64.dmg`](https://github.com/stoatworks-labs/weblinked/releases/download/v1.3.1/weblinked-engine-1.3.1-macos-arm64.dmg) | 141 MB |
+| Apple Silicon · .pkg installer | [`weblinked-engine-1.3.1-macos-arm64.pkg`](https://github.com/stoatworks-labs/weblinked/releases/download/v1.3.1/weblinked-engine-1.3.1-macos-arm64.pkg) | 141 MB |
 
 </details>
 
@@ -102,8 +102,8 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 | Build | Download | Size |
 | --- | --- | --- |
-| x64 · .exe installer | [`weblinked-engine-1.3.0-windows-x86_64-setup.exe`](https://github.com/stoatworks-labs/weblinked/releases/download/v1.3.0/weblinked-engine-1.3.0-windows-x86_64-setup.exe) | 135 MB |
-| x64 · .zip archive | [`weblinked-engine-1.3.0-windows-x86_64.zip`](https://github.com/stoatworks-labs/weblinked/releases/download/v1.3.0/weblinked-engine-1.3.0-windows-x86_64.zip) | 182 MB |
+| x64 · .exe installer | [`weblinked-engine-1.3.1-windows-x86_64-setup.exe`](https://github.com/stoatworks-labs/weblinked/releases/download/v1.3.1/weblinked-engine-1.3.1-windows-x86_64-setup.exe) | 135 MB |
+| x64 · .zip archive | [`weblinked-engine-1.3.1-windows-x86_64.zip`](https://github.com/stoatworks-labs/weblinked/releases/download/v1.3.1/weblinked-engine-1.3.1-windows-x86_64.zip) | 182 MB |
 
 </details>
 
@@ -112,7 +112,7 @@ Regenerate all five with [`tools/screenshots.sh`](tools/screenshots.sh).
 
 | Build | Download | Size |
 | --- | --- | --- |
-| x64 · .tar.gz archive | [`weblinked-engine-1.3.0-linux-x86_64.tar.gz`](https://github.com/stoatworks-labs/weblinked/releases/download/v1.3.0/weblinked-engine-1.3.0-linux-x86_64.tar.gz) | 357 MB |
+| x64 · .tar.gz archive | [`weblinked-engine-1.3.1-linux-x86_64.tar.gz`](https://github.com/stoatworks-labs/weblinked/releases/download/v1.3.1/weblinked-engine-1.3.1-linux-x86_64.tar.gz) | 357 MB |
 
 </details>
 
