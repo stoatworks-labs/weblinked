@@ -73,7 +73,7 @@ jobs:
 
       - name: Metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/stoatworks-labs/weblinked
           flavor: latest=false
