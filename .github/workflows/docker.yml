@@ -93,7 +93,7 @@ jobs:
       # Built into the runner's Docker first and tested there, so an image that
       # fails the smoke test never reaches the registry.
       - name: Build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile
@@ -155,7 +155,7 @@ jobs:
       # Same inputs as Build, so every layer is a cache hit and this only pushes.
       - name: Push
         if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile
