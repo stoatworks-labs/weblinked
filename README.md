@@ -13,6 +13,8 @@
 
 **A URL in. SDI and video-over-IP out.**
 
+The [project page](https://stoatworks-labs.com/software/weblinked/) has the downloads, the [user guide](https://stoatworks-labs.com/software/weblinked/guide/) and the video.
+
 WebLinked renders a web page offscreen at a broadcast raster and frame rate, then sends it to
 Blackmagic DeckLink and AJA cards over SDI, to the network as [NDI](https://ndi.video) and
 [OMT](https://openmediatransport.org), and fullscreen to a GPU-attached display. Point it at a
